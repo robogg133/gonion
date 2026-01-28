@@ -1,3 +1,5 @@
+//go:build auth
+
 package main
 
 import (

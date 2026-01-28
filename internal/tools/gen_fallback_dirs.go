@@ -1,3 +1,5 @@
+//go:build fallback
+
 package main
 
 import (
