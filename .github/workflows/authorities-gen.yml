@@ -1,0 +1,39 @@
+name: Update Directory Authorities
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 3 * * *"
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.6"
+
+      - name: Generate Go source
+        run: |
+          go run internal/tools/gen_auth_dirs.go > shared/auth_dirs.go
+          go run internal/tools/gen_fallback_dirs.go > shared/fallback_dirs.go
+
+      - name: Format Go code
+        run: |
+          gofmt -w shared/auth_dirs.go
+          gofmt -w shared/fallback_dirs.go
+
+      - name: Commit changes
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+
+          git add shared/auth_dirs.go
+          git add shared/fallback_dirs.go
+          git diff --cached --quiet || git commit -m "update directory authorities"
+          git push
