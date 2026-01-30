@@ -2,10 +2,12 @@ package connection
 
 import (
 	"context"
+	"crypto/cipher"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/binary"
 	"fmt"
+	"hash"
 	"io"
 	"net"
 	"net/netip"
@@ -13,6 +15,7 @@ import (
 	"time"
 
 	"github.com/robogg133/gonion/connection/cells"
+	"github.com/robogg133/gonion/tor_crypto"
 )
 
 const CONNECTION_TIMEOUT = 60 * time.Second
@@ -20,7 +23,16 @@ const CONNECTION_TIMEOUT = 60 * time.Second
 type TORConnection struct {
 	ProtocolVersion uint16
 
+	CircuitID uint32
+
 	ServerCertificate x509.Certificate
+	NetInfo           cells.NetInfoCell
+
+	ForwardDigest   hash.Hash
+	BackWardsDigest hash.Hash
+
+	KeyForwardAES128CTR   cipher.Stream
+	KeyBackwardsAES128CTR cipher.Stream
 
 	Conn net.Conn
 }
@@ -180,7 +192,53 @@ func (t *TORConnection) SendNetInfo() error {
 		OtherAddr: addr.Addr(),
 		MyAdress:  []netip.Addr{},
 	}
-
 	_, err = t.Conn.Write(a.Serialize())
 	return err
+}
+
+func OpenConnection(ip string, orport uint16) (*TORConnection, error) {
+
+	torConn, err := CreateConnection(ip, orport)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := torConn.NegotiateVersion(); err != nil {
+		return nil, err
+	}
+
+	certs, err := torConn.GetCerts()
+	if err != nil {
+		return nil, err
+	}
+
+	var cert4 *tor_crypto.TorCert
+	var cert5 *tor_crypto.TorCert
+	for _, v := range certs.Certificates {
+		if v.Type == 4 {
+			cert4, err = tor_crypto.ParseIdentityVSigningCert(v.Cert)
+			if err != nil {
+				return nil, err
+			}
+		} else if v.Type == 5 {
+			cert5, err = tor_crypto.ParseIdentityVSigningCert(v.Cert)
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+	if err := tor_crypto.VerifyConnection(cert4, cert5, torConn.ServerCertificate.Raw); err != nil {
+		return nil, err
+	}
+
+	if err := torConn.ReadAuthChallange(); err != nil {
+		return nil, err
+	}
+	ptr, err := torConn.ReadNetInfo()
+	if err != nil {
+		return nil, err
+	}
+	torConn.NetInfo = *ptr
+
+	return torConn, torConn.SendNetInfo()
 }
