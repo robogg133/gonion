@@ -65,22 +65,18 @@ func ConnectToRelayAndGetConsensus(ipaddr string, orport uint16) (*shared.Consen
 	if err := torConn.SendRelayBeginDir(); err != nil {
 		return nil, err
 	}
-	fmt.Println("oi")
 
 	if err := torConn.ReadRelayCell(); err != nil {
 		return nil, err
 	}
-	fmt.Println("oi")
 	if err := torConn.SendRelayGetConsensus(); err != nil {
 		return nil, err
 	}
-	fmt.Println("oi")
 
 	data, err := torConn.ReadRelayData()
 	if err != nil {
 		return nil, err
 	}
-	fmt.Println("oi")
 
 	con, err := shared.ParseConsensus(bufio.NewScanner(bytes.NewReader(data)))
 	if err != nil {
