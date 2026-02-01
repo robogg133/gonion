@@ -15,15 +15,10 @@ func (t *TORConnection) SendCreateFast() ([20]byte, error) {
 		return [20]byte{}, err
 	}
 
-	var msbCircID uint32 = 1
-	msbCircID |= 0x80000000
-
-	t.CircuitID = msbCircID
-
 	x := [20]byte(randomBytes)
 
 	cell := cells.CreateFastCell{
-		CircuitID: msbCircID,
+		CircuitID: t.CircuitID,
 		X:         x,
 	}
 

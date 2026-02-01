@@ -12,7 +12,7 @@ type GenericCell struct {
 }
 
 // CheckGenericCell is mean to be used with cells that does not have paylods inside
-func CheckGenericCell(b []byte, cellCommand uint8, backwards *hash.Hash) error {
+func CheckGenericCell(b []byte, cellCommand uint8, backwards hash.Hash) error {
 	var c GenericCell
 
 	if b[0] != cellCommand {
@@ -44,13 +44,12 @@ func isGeneric(i uint8) bool {
 	return false
 }
 
-func backwardCheck(b []byte, originalDigest [4]byte, backwards *hash.Hash) bool {
+func backwardCheck(b []byte, originalDigest [4]byte, backwards hash.Hash) bool {
+
 	copy(b[5:9], []byte{0, 0, 0, 0})
 
-	digest := *backwards
-
-	digest.Write(b)
-	sum := digest.Sum(nil)
+	backwards.Write(b)
+	sum := backwards.Sum(nil)
 
 	if !bytes.Equal(originalDigest[:], sum[0:4]) {
 		return false

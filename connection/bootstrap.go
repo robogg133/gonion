@@ -23,7 +23,9 @@ const CONNECTION_TIMEOUT = 60 * time.Second
 type TORConnection struct {
 	ProtocolVersion uint16
 
-	CircuitID uint32
+	CircuitID      uint32
+	CircuitID_HOP2 uint32
+	CircuitID_HOP3 uint32
 
 	ServerCertificate x509.Certificate
 	NetInfo           cells.NetInfoCell
@@ -33,6 +35,10 @@ type TORConnection struct {
 
 	KeyForwardAES128CTR   cipher.Stream
 	KeyBackwardsAES128CTR cipher.Stream
+
+	CircuitChannelPackets uint8
+
+	RelayStreamID uint16
 
 	Conn net.Conn
 }

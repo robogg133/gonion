@@ -18,7 +18,7 @@ type RelayCell struct {
 	relay.RelayCell
 }
 
-func (c *RelayCell) Serialize(cip *cipher.Stream) []byte {
+func (c *RelayCell) Serialize(stream cipher.Stream) []byte {
 	var result bytes.Buffer
 
 	circID := make([]byte, 4)
@@ -28,8 +28,6 @@ func (c *RelayCell) Serialize(cip *cipher.Stream) []byte {
 	result.Write(circID)
 	result.WriteByte(COMMAND_RELAY)
 
-	stream := *cip
-
 	payload := make([]byte, 509)
 	stream.XORKeyStream(payload, c.RelayCell)
 
@@ -38,7 +36,26 @@ func (c *RelayCell) Serialize(cip *cipher.Stream) []byte {
 	return result.Bytes()
 }
 
-func RelayCheckIfConnected(b []byte, cip *cipher.Stream, dig *hash.Hash) error {
+func ReadDataCell(b []byte, stream cipher.Stream, dig hash.Hash) (*RelayCell, error) {
+	var c RelayCell
+
+	c.CircuitID = binary.BigEndian.Uint32(b[0:4])
+
+	if b[4] != COMMAND_RELAY {
+		fmt.Println(b)
+		return nil, fmt.Errorf("invalid cell command")
+	}
+
+	payload := b[5:]
+
+	stream.XORKeyStream(payload, payload)
+
+	var err error
+	c.RelayCell, err = relay.UnserializeDataCell(payload, dig)
+	return &c, err
+}
+
+func RelayCheckIfConnected(b []byte, cip *cipher.Stream, dig hash.Hash) error {
 
 	if b[4] != COMMAND_RELAY {
 		return fmt.Errorf("invalid cell command")
@@ -47,10 +64,9 @@ func RelayCheckIfConnected(b []byte, cip *cipher.Stream, dig *hash.Hash) error {
 	payload := b[5:]
 
 	stream := *cip
-	fmt.Println(payload)
+
 	res := make([]byte, len(payload))
 	stream.XORKeyStream(res, payload)
-	fmt.Println(res)
 
 	err := relay.CheckGenericCell(res, relay.COMMAND_CONNECTED, dig)
 

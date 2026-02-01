@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/binary"
+	"errors"
+	"fmt"
 	"hash"
 )
 
@@ -13,7 +15,7 @@ type DataCell struct {
 	StreamID uint16
 
 	// If you are sending this cell this needs to be the Forward hash otherwise needs to be the backwards
-	DigestWriter *hash.Hash
+	DigestWriter hash.Hash
 	// If you sending this cell this can be empty
 	Digest [4]byte
 
@@ -46,12 +48,46 @@ func (c *DataCell) Serialize() RelayCell {
 	buffer := result.Bytes()
 	result.Reset()
 
-	w := *c.DigestWriter
-
-	w.Write(buffer)
-	sum := w.Sum(nil)
+	c.DigestWriter.Write(buffer)
+	sum := c.DigestWriter.Sum(nil)
 
 	copy(buffer[5:9], sum[0:4])
 
 	return buffer
+}
+
+var ErrRelayEnd = errors.New("data end")
+
+func UnserializeDataCell(b []byte, backwards hash.Hash) ([]byte, error) {
+	var c DataCell
+
+	if b[0] != COMMAND_DATA {
+		if b[0] == COMMAND_RELAY_END {
+			if !bytes.Equal(b[1:3], []byte{0, 0}) {
+				return nil, nil
+			}
+			CheckGenericCell(b, COMMAND_RELAY_END, backwards)
+			return nil, ErrRelayEnd
+		}
+
+		return nil, fmt.Errorf("invalid cell command")
+	}
+
+	if !bytes.Equal(b[1:3], []byte{0, 0}) {
+		return nil, fmt.Errorf("the payload is still encrypted")
+	}
+
+	c.StreamID = binary.BigEndian.Uint16(b[3:5])
+
+	if !backwardCheck(b, [4]byte(b[5:9]), backwards) {
+		return nil, fmt.Errorf("cell digest is not valid")
+	}
+
+	length := binary.BigEndian.Uint16(b[9:11])
+
+	payload := make([]byte, length)
+
+	copy(payload, b[11:])
+
+	return payload, nil
 }
