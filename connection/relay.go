@@ -2,6 +2,7 @@ package connection
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 
 	"github.com/robogg133/gonion/connection/cells"
@@ -62,6 +63,23 @@ func (t *TORConnection) SendRelayGetConsensus() error {
 		StreamID:     t.RelayStreamID,
 		DigestWriter: t.ForwardDigest,
 		Payload:      []byte(PAYLOAD_GET_CONSENSUS),
+	}
+
+	c := cells.RelayCell{
+		CircuitID: t.CircuitID,
+		RelayCell: rc.Serialize(),
+	}
+
+	_, err := t.Conn.Write(c.Serialize(t.KeyForwardAES128CTR))
+
+	return err
+}
+
+func (t *TORConnection) SendRelayGetMicrodescriptors(d1, d2, d3 string) error {
+	rc := relay.DataCell{
+		StreamID:     t.RelayStreamID,
+		DigestWriter: t.ForwardDigest,
+		Payload:      []byte(fmt.Sprintf(PAYLOAD_GET_MICRODESCRIPTORS, d1, d2, d3)),
 	}
 
 	c := cells.RelayCell{
