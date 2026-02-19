@@ -3,7 +3,6 @@ package cells
 import (
 	"bytes"
 	"encoding/binary"
-	"fmt"
 	"io"
 )
 
@@ -25,22 +24,26 @@ type certificate struct {
 }
 
 type CertsCell struct {
-	CircuitID    uint32
+	CircID       uint32
 	Certificates []certificate
 }
 
-func (*CertsCell) ID() uint8 { return COMMAND_CERTS }
+func (*CertsCell) ID() uint8               { return COMMAND_CERTS }
+func (c *CertsCell) GetCircuitID() uint32  { return c.CircID }
+func (c *CertsCell) setCircuitID(n uint32) { c.CircID = n }
 
 func (c *CertsCell) Decode(r io.Reader) error {
 
-	length := make([]byte, 2)
-	if _, err := io.ReadFull(r, length); err != nil {
+	if c.CircID != 0 {
+		return ErrInvalidCircID
+	}
+
+	var length uint16
+	if err := binary.Read(r, binary.BigEndian, &length); err != nil {
 		return err
 	}
 
-	totalLenght := binary.BigEndian.Uint16(length)
-
-	buffer := make([]byte, totalLenght)
+	buffer := make([]byte, length)
 	if _, err := io.ReadFull(r, buffer); err != nil {
 		return err
 	}
@@ -60,32 +63,7 @@ func (c *CertsCell) Decode(r io.Reader) error {
 	return nil
 }
 
-func UnserializeCertsCell(b []byte) (*CertsCell, error) {
-
-	var cell CertsCell
-
-	cell.CircuitID = binary.BigEndian.Uint32(b[0:4])
-	if cell.CircuitID != 0 {
-		return nil, fmt.Errorf("circuitID is not 0, circuitID : %d", cell.CircuitID)
-	}
-	if uint8(b[4]) != COMMAND_CERTS {
-		return nil, fmt.Errorf("invalid certs cell: invalid command: %d", uint8(b[4]))
-	}
-
-	certAmmount := uint8(b[7])
-
-	offset := 8
-	for range certAmmount {
-		cert, n := readCertficate(bytes.NewReader(b[offset:]))
-		offset += n
-
-		if cert != nil {
-			cell.Certificates = append(cell.Certificates, *cert)
-		}
-	}
-
-	return &cell, nil
-}
+func (*CertsCell) Encode(io.Writer) error { return nil }
 
 // readCertificate reads from reader, return certificate and ammount of readed bytes
 func readCertficate(reader *bytes.Reader) (*certificate, int) {

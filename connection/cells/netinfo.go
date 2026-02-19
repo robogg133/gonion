@@ -3,7 +3,7 @@ package cells
 import (
 	"bytes"
 	"encoding/binary"
-	"fmt"
+	"io"
 	"net/netip"
 )
 
@@ -17,85 +17,88 @@ const (
 type NetInfoCell struct {
 	CircuitID uint32
 
-	Timestamp uint32       // UNIX Timestamp (should be empty if you aren't a node)
+	Timestamp uint32       // UNIX Timestamp (should be empty if you aren't a relay)
 	OtherAddr netip.Addr   // recipient's address
-	MyAdress  []netip.Addr // sender's adress (should be empty if you aren't a node)
+	MyAdress  []netip.Addr // sender's adress (should be empty if you aren't a relay)
 }
 
-func (cell *NetInfoCell) Serialize() []byte {
-	var result bytes.Buffer
+func (*NetInfoCell) ID() uint8               { return COMMAND_NETINFO }
+func (c *NetInfoCell) GetCircuitID() uint32  { return c.CircuitID }
+func (c *NetInfoCell) setCircuitID(n uint32) { c.CircuitID = n }
 
-	circID := make([]byte, 4)
-	binary.BigEndian.PutUint32(circID, cell.CircuitID)
+func (c *NetInfoCell) Encode(w io.Writer) error {
 
-	result.Write(circID)
-	result.WriteByte(COMMAND_NETINFO)
-
+	// Writing time stamp
 	time := make([]byte, 4)
-	binary.BigEndian.PutUint32(time, cell.Timestamp)
-	result.Write(time)
-
-	result.Write(serializeIp(cell.OtherAddr))
-
-	result.WriteByte(uint8(len(cell.MyAdress)))
-
-	for _, v := range cell.MyAdress {
-		result.Write(serializeIp(v))
+	binary.BigEndian.PutUint32(time, c.Timestamp)
+	if _, err := w.Write(time); err != nil {
+		return err
 	}
 
-	for _ = range 514 - result.Len() {
-		result.WriteByte(0x00)
+	// Writing OtherAddr
+	if _, err := w.Write(serializeIp(c.OtherAddr)); err != nil {
+		return err
 	}
-	return result.Bytes()
+	//Writing MyAdress
+	// LEN
+	if _, err := w.Write([]byte{uint8(len(c.MyAdress))}); err != nil {
+		return err
+	}
+
+	for _, v := range c.MyAdress {
+		w.Write(serializeIp(v))
+	}
+
+	return nil
 }
 
-func UnserializeNetInfo(b []byte) (*NetInfoCell, error) {
-	var cell NetInfoCell
-
-	if len(b) != 514 {
-		return nil, fmt.Errorf("net info with wrong length != 514")
+func (c *NetInfoCell) Decode(r io.Reader) error {
+	if err := binary.Read(r, binary.BigEndian, &c.Timestamp); err != nil {
+		return err
 	}
 
-	if uint8(b[4]) != COMMAND_NETINFO {
-		return nil, fmt.Errorf("invalid netinfo (%d) cell: invalid command: %d", COMMAND_NETINFO, uint8(b[4]))
+	c.OtherAddr = unserializeIp(r)
+
+	totalAddr := make([]byte, 1)
+	if _, err := io.ReadFull(r, totalAddr); err != nil {
+		return err
 	}
 
-	cell.CircuitID = binary.BigEndian.Uint32(b[0:4])
+	for range totalAddr[0] {
+		c.MyAdress = append(c.MyAdress, unserializeIp(r))
+	}
 
-	cell.Timestamp = binary.BigEndian.Uint32(b[5:9])
+	return nil
+}
 
-	reader := bytes.NewReader(b[9:])
+func unserializeIp(reader io.Reader) netip.Addr {
 
-	cell.OtherAddr = unserializeIp(reader)
-
-	totalAddr, err := reader.ReadByte()
+	b := make([]byte, 1)
+	_, err := reader.Read(b)
 	if err != nil {
-		return nil, err
+		panic(err)
 	}
+	atype := b[0]
 
-	for _ = range uint8(totalAddr) {
-		cell.MyAdress = append(cell.MyAdress, unserializeIp(reader))
+	if _, err := io.CopyN(io.Discard, reader, 1); err != nil {
+		panic(err)
 	}
-
-	return &cell, nil
-}
-
-func unserializeIp(reader *bytes.Reader) netip.Addr {
-
-	atype, _ := reader.ReadByte()
-	reader.ReadByte()
 
 	switch atype {
 	case NETINFO_IPV4:
 		buffer := make([]byte, 4)
-		reader.Read(buffer)
+		if _, err := io.ReadFull(reader, buffer); err != nil {
+			panic(err)
+		}
 
 		addr, _ := netip.AddrFromSlice(buffer)
 		return addr
 
 	case NETINFO_IPV6:
 		buffer := make([]byte, 16)
-		reader.Read(buffer)
+		if _, err := io.ReadFull(reader, buffer); err != nil {
+			panic(err)
+		}
 
 		addr, _ := netip.AddrFromSlice(buffer)
 		return addr

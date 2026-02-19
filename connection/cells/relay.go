@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"hash"
+	"io"
 
 	"github.com/robogg133/gonion/relay"
 )
@@ -15,8 +16,22 @@ const COMMAND_RELAY uint8 = 3
 type RelayCell struct {
 	CircuitID uint32
 
-	relay.RelayCell
+	KeyForwardAES128CTR   cipher.Stream
+	KeyBackwardsAES128CTR cipher.Stream
+
+	RelayCell relay.RelayCell
 }
+
+func (*RelayCell) ID() uint8               { return COMMAND_RELAY }
+func (c *RelayCell) GetCircuitID() uint32  { return c.CircuitID }
+func (c *RelayCell) setCircuitID(n uint32) { c.CircuitID = n }
+
+func (c *RelayCell) Encode(w io.Writer) error {
+
+	return fmt.Errorf("cannot parse relay cells")
+
+}
+func (c *RelayCell) Decode(r io.Writer) error { return nil }
 
 func (c *RelayCell) Serialize(stream cipher.Stream) []byte {
 	var result bytes.Buffer

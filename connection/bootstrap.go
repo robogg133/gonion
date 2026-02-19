@@ -38,6 +38,8 @@ type TORConnection struct {
 
 	CircuitChannelPackets uint8
 
+	Translator cells.CellTranslator
+
 	RelayStreamID uint16
 
 	Conn net.Conn
@@ -134,23 +136,14 @@ func (t *TORConnection) NegotiateVersion() error {
 
 func (t *TORConnection) GetCerts() (*cells.CertsCell, error) {
 
-	initial := make([]byte, 7)
-	t.Conn.Read(initial)
+	t.Translator = cells.NewCellTranslator(t.Conn, t.Conn, 4, cells.AllKnownCells)
 
-	if uint8(initial[4]) != cells.COMMAND_CERTS {
-		return nil, fmt.Errorf("invalid certs (%d) cell: invalid command: %d", cells.COMMAND_CERTS, uint8(initial[4]))
+	c, err := t.Translator.ReadCell()
+	if err != nil {
+		return nil, err
 	}
 
-	totalLenght := binary.BigEndian.Uint16(initial[5:])
-
-	certCellBlob := make([]byte, 7+totalLenght)
-	copy(certCellBlob, initial)
-	t.Conn.Read(certCellBlob[7:])
-	initial = nil
-
-	cell, err := cells.UnserializeCertsCell(certCellBlob)
-
-	return cell, err
+	return c.(*cells.CertsCell), err
 }
 
 func (t *TORConnection) ReadAuthChallange() error {
@@ -170,20 +163,12 @@ func (t *TORConnection) ReadAuthChallange() error {
 
 func (t *TORConnection) ReadNetInfo() (*cells.NetInfoCell, error) {
 
-	header := make([]byte, 5)
-	t.Conn.Read(header)
-
-	if uint8(header[4]) != cells.COMMAND_NETINFO {
-		return nil, fmt.Errorf("invalid netinfo (%d) cell: invalid command: %d", cells.COMMAND_NETINFO, uint8(header[4]))
+	c, err := t.Translator.ReadCell()
+	if err != nil {
+		return nil, err
 	}
 
-	netinfoSerialized := make([]byte, 514)
-	copy(netinfoSerialized, header)
-	header = nil
-
-	t.Conn.Read(netinfoSerialized[5:])
-
-	return cells.UnserializeNetInfo(netinfoSerialized)
+	return c.(*cells.NetInfoCell), nil
 }
 
 func (t *TORConnection) SendNetInfo() error {
@@ -198,8 +183,8 @@ func (t *TORConnection) SendNetInfo() error {
 		OtherAddr: addr.Addr(),
 		MyAdress:  []netip.Addr{},
 	}
-	_, err = t.Conn.Write(a.Serialize())
-	return err
+
+	return t.Translator.WriteCell(&a)
 }
 
 func OpenConnection(ip string, orport uint16) (*TORConnection, error) {
@@ -212,7 +197,6 @@ func OpenConnection(ip string, orport uint16) (*TORConnection, error) {
 	if err := torConn.NegotiateVersion(); err != nil {
 		return nil, err
 	}
-
 	certs, err := torConn.GetCerts()
 	if err != nil {
 		return nil, err
