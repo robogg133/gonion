@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"io"
 )
 
 const COMMAND_CERTS uint8 = 129
@@ -28,6 +29,37 @@ type CertsCell struct {
 	Certificates []certificate
 }
 
+func (*CertsCell) ID() uint8 { return COMMAND_CERTS }
+
+func (c *CertsCell) Decode(r io.Reader) error {
+
+	length := make([]byte, 2)
+	if _, err := io.ReadFull(r, length); err != nil {
+		return err
+	}
+
+	totalLenght := binary.BigEndian.Uint16(length)
+
+	buffer := make([]byte, totalLenght)
+	if _, err := io.ReadFull(r, buffer); err != nil {
+		return err
+	}
+
+	certAmmount := buffer[0]
+
+	offset := 1
+	for range certAmmount {
+		cert, n := readCertficate(bytes.NewReader(buffer[offset:]))
+		offset += n
+
+		if cert != nil {
+			c.Certificates = append(c.Certificates, *cert)
+		}
+	}
+
+	return nil
+}
+
 func UnserializeCertsCell(b []byte) (*CertsCell, error) {
 
 	var cell CertsCell
@@ -43,7 +75,7 @@ func UnserializeCertsCell(b []byte) (*CertsCell, error) {
 	certAmmount := uint8(b[7])
 
 	offset := 8
-	for _ = range certAmmount {
+	for range certAmmount {
 		cert, n := readCertficate(bytes.NewReader(b[offset:]))
 		offset += n
 
