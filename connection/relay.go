@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"net/url"
 
 	"github.com/robogg133/gonion/connection/cells"
 	"github.com/robogg133/gonion/relay"
@@ -11,7 +12,7 @@ import (
 
 const (
 	PAYLOAD_GET_DIRECTORY_INFO   string = "GET /tor/server/authority HTTP/1.0\r\n\r\n"
-	PAYLOAD_GET_CONSENSUS        string = "GET /tor/status-vote/current/consensus HTTP/1.0\r\n\r\n"
+	PAYLOAD_GET_CONSENSUS        string = "GET /tor/status-vote/current/consensus-microdesc HTTP/1.0\r\n\r\n"
 	PAYLOAD_GET_MICRODESCRIPTORS string = "GET /tor/micro/d/%s-%s-%s HTTP/1.0\r\n\r\n"
 )
 
@@ -76,10 +77,16 @@ func (t *TORConnection) SendRelayGetConsensus() error {
 }
 
 func (t *TORConnection) SendRelayGetMicrodescriptors(d1, d2, d3 string) error {
+
+	d1 = url.QueryEscape(d1)
+	d2 = url.QueryEscape(d2)
+	d3 = url.QueryEscape(d3)
+	test := fmt.Sprintf(PAYLOAD_GET_MICRODESCRIPTORS, d1, d2, d3)
+	fmt.Println(test)
 	rc := relay.DataCell{
 		StreamID:     t.RelayStreamID,
 		DigestWriter: t.ForwardDigest,
-		Payload:      []byte(fmt.Sprintf(PAYLOAD_GET_MICRODESCRIPTORS, d1, d2, d3)),
+		Payload:      []byte(test),
 	}
 
 	c := cells.RelayCell{

@@ -2,7 +2,6 @@ package connection
 
 import (
 	"crypto/rand"
-	"fmt"
 
 	"github.com/robogg133/gonion/connection/cells"
 )
@@ -22,22 +21,17 @@ func (t *TORConnection) SendCreateFast() ([20]byte, error) {
 		X:         x,
 	}
 
-	_, err := t.Conn.Write(cell.Serialize())
+	err := t.Translator.WriteCell(&cell)
 
 	return x, err
 }
 
 func (t *TORConnection) ReadCreatedFast() (*cells.CreatedFastCell, error) {
 
-	cellSerial := make([]byte, 514)
-
-	n, err := t.Conn.Read(cellSerial)
+	c, err := t.Translator.ReadCell()
 	if err != nil {
 		return nil, err
 	}
-	if n != 514 {
-		return nil, fmt.Errorf("cell length is not 514")
-	}
 
-	return cells.UnserializeCreatedFast(cellSerial)
+	return c.(*cells.CreatedFastCell), nil
 }

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"io"
 )
 
@@ -72,23 +71,22 @@ func (r *CellTranslator) ReadCell() (Cell, error) {
 
 	cell.setCircuitID(circuitID)
 	err := cell.Decode(r.reader)
-	fmt.Println("finish him")
 	return cell, err
 }
 
 func (r *CellTranslator) WriteCell(cell Cell) error {
 
-	cID := make([]byte, r.circIDLength)
+	circID := make([]byte, r.circIDLength)
 
 	switch r.circIDLength {
 	case 2:
 		n := uint16(cell.GetCircuitID())
-		binary.BigEndian.PutUint16(cID, n)
+		binary.BigEndian.PutUint16(circID, n)
 	case 4:
-		binary.BigEndian.PutUint32(cID, cell.GetCircuitID())
+		binary.BigEndian.PutUint32(circID, cell.GetCircuitID())
 	}
 
-	if _, err := r.writer.Write(cID); err != nil {
+	if _, err := r.writer.Write(circID); err != nil {
 		return err
 	}
 
@@ -102,7 +100,7 @@ func (r *CellTranslator) WriteCell(cell Cell) error {
 	}
 
 	for _ = range CELL_BODY_LEN - buffer.Len() {
-		buffer.WriteByte(0x00)
+		buffer.WriteByte(0)
 	}
 
 	_, err := r.writer.Write(buffer.Bytes())

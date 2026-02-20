@@ -88,7 +88,7 @@ func ConnectToRelayAndGetConsensus(ipaddr string, orport uint16) (*shared.Consen
 		Reason:    0,
 	}
 
-	_, err = torConn.Conn.Write(cellDestroy.Serialize())
+	err = torConn.Translator.WriteCell(&cellDestroy)
 	torConn.Conn.Close()
 
 	return con, err

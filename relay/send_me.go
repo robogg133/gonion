@@ -1,10 +1,8 @@
 package relay
 
 import (
-	"bytes"
-	"crypto/rand"
 	"encoding/binary"
-	"hash"
+	"io"
 )
 
 const COMMAND_SENDME uint8 = 5
@@ -12,48 +10,55 @@ const COMMAND_SENDME uint8 = 5
 type SendMeCell struct {
 	StreamID uint16
 
+	Version uint8
+
 	Sha1ForLastCell [20]byte
-	Forward         hash.Hash
 }
 
-func (c *SendMeCell) Serialize() []byte {
-	var result bytes.Buffer
+func (*SendMeCell) ID() uint8              { return COMMAND_SENDME }
+func (c *SendMeCell) GetStreamID() uint16  { return c.StreamID }
+func (c *SendMeCell) setStreamID(n uint16) { c.StreamID = n }
 
-	result.WriteByte(COMMAND_SENDME)
+func (c *SendMeCell) Encode(w io.Writer) error {
 
-	result.Write([]byte{0, 0}) // Recognized
+	if _, err := w.Write([]byte{c.Version}); err != nil {
+		return err
+	}
 
-	streamID := make([]byte, 2)
-	binary.BigEndian.PutUint16(streamID, c.StreamID)
-	result.Write(streamID)
-
-	result.Write([]byte{0, 0, 0, 0}) // Digest
-
-	length := make([]byte, 2)
-	binary.BigEndian.PutUint16(length, 23)
-	result.Write(length)
-
-	// DATA
-
-	result.WriteByte(1)
-
+	// Length
 	twenty := make([]byte, 2)
 	binary.BigEndian.PutUint16(twenty, 20)
-	result.Write(twenty)
-	result.Write(c.Sha1ForLastCell[:])
+	if _, err := w.Write(twenty); err != nil {
+		return err
+	}
 
-	// END
+	// SHA1
+	_, err := w.Write(c.Sha1ForLastCell[:])
+	return err
+}
+func (c *SendMeCell) Decode(r io.Reader) error {
 
-	padding := make([]byte, 509-result.Len())
-	rand.Read(padding[4:])
-	result.Write(padding)
+	ver := make([]byte, 1)
 
-	buffer := result.Bytes()
-	result.Reset()
+	if _, err := io.ReadFull(r, ver); err != nil {
+		return err
+	}
+	c.Version = ver[0]
 
-	c.Forward.Write(buffer)
+	lengthB := make([]byte, 2)
+	if _, err := io.ReadFull(r, lengthB); err != nil {
+		return err
+	}
 
-	copy(buffer[5:9], c.Forward.Sum(nil)[0:4])
+	lenght := binary.BigEndian.Uint16(lengthB)
+	lengthB = nil
 
-	return buffer
+	sum := make([]byte, lenght)
+	if _, err := io.ReadFull(r, sum); err != nil {
+		return err
+	}
+
+	c.Sha1ForLastCell = [20]byte(sum)
+
+	return nil
 }
