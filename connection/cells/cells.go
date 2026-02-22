@@ -5,6 +5,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+
+	"github.com/robogg133/gonion/relay"
 )
 
 const CELL_BODY_LEN = 509
@@ -13,7 +15,7 @@ type Cell interface {
 	ID() uint8
 
 	GetCircuitID() uint32
-	setCircuitID(uint32)
+	SetCircuitID(uint32)
 
 	Decode(r io.Reader) error
 	Encode(w io.Writer) error
@@ -25,10 +27,9 @@ var (
 )
 
 type CellTranslator struct {
-	circIDLength uint8
-	reader       io.Reader
-	writer       io.Writer
-	knownCells   map[uint8]Cell
+	knownCells map[uint8]Cell
+
+	Constructor relay.RelayCellConstructor
 }
 
 var AllKnownCells map[uint8]Cell = map[uint8]Cell{
@@ -37,30 +38,29 @@ var AllKnownCells map[uint8]Cell = map[uint8]Cell{
 	COMMAND_CREATED_FAST: &CreatedFastCell{},
 	COMMAND_DESTROY:      &DestroyCell{},
 	COMMAND_NETINFO:      &NetInfoCell{},
+	COMMAND_RELAY:        &RelayCell{},
 }
 
-func NewCellTranslator(r io.Reader, w io.Writer, circIDLen uint8, knwonCells map[uint8]Cell) CellTranslator {
+// NewCellTranslator can encode and decode cells
+func NewCellTranslator(knwonCells map[uint8]Cell, constructor relay.RelayCellConstructor) CellTranslator {
 	return CellTranslator{
-		reader:       r,
-		writer:       w,
-		circIDLength: circIDLen,
-		knownCells:   knwonCells,
+		knownCells:  knwonCells,
+		Constructor: constructor,
 	}
 }
 
-func (r *CellTranslator) ReadCell() (Cell, error) {
+// ReadCell reads a cell from the reader
+func (r *CellTranslator) ReadCell(reader io.Reader) (Cell, error) {
 
-	cID := make([]byte, r.circIDLength)
-
-	if _, err := io.ReadFull(r.reader, cID); err != nil {
+	cID := make([]byte, 4)
+	if _, err := io.ReadFull(reader, cID); err != nil {
 		return nil, err
 	}
-
 	circuitID := binary.BigEndian.Uint32(cID)
 
 	cmd := make([]byte, 1)
 
-	if _, err := io.ReadFull(r.reader, cmd); err != nil {
+	if _, err := io.ReadFull(reader, cmd); err != nil {
 		return nil, err
 	}
 
@@ -69,28 +69,35 @@ func (r *CellTranslator) ReadCell() (Cell, error) {
 		return nil, ErrUnknownCommandID
 	}
 
-	cell.setCircuitID(circuitID)
-	err := cell.Decode(r.reader)
-	return cell, err
-}
+	cell.SetCircuitID(circuitID)
 
-func (r *CellTranslator) WriteCell(cell Cell) error {
-
-	circID := make([]byte, r.circIDLength)
-
-	switch r.circIDLength {
-	case 2:
-		n := uint16(cell.GetCircuitID())
-		binary.BigEndian.PutUint16(circID, n)
-	case 4:
-		binary.BigEndian.PutUint32(circID, cell.GetCircuitID())
+	if cell.ID() == COMMAND_RELAY {
+		cell.(*RelayCell).Constructor = &r.Constructor
 	}
 
-	if _, err := r.writer.Write(circID); err != nil {
+	if err := cell.Decode(reader); err != nil {
+		return nil, err
+	}
+
+	return cell, nil
+}
+
+func (r *CellTranslator) WriteCellBytes(cell Cell) ([]byte, error) {
+	var a bytes.Buffer
+	err := r.WriteCell(cell, &a)
+	return a.Bytes(), err
+}
+
+func (r *CellTranslator) WriteCell(cell Cell, writer io.Writer) error {
+
+	circID := make([]byte, 4)
+	binary.BigEndian.PutUint32(circID, cell.GetCircuitID())
+
+	if _, err := writer.Write(circID); err != nil {
 		return err
 	}
 
-	if _, err := r.writer.Write([]byte{cell.ID()}); err != nil {
+	if _, err := writer.Write([]byte{cell.ID()}); err != nil {
 		return err
 	}
 
@@ -103,6 +110,6 @@ func (r *CellTranslator) WriteCell(cell Cell) error {
 		buffer.WriteByte(0)
 	}
 
-	_, err := r.writer.Write(buffer.Bytes())
+	_, err := writer.Write(buffer.Bytes())
 	return err
 }

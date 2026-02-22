@@ -10,38 +10,39 @@ import (
 	"io"
 )
 
-// All cells must be 514 bytes (on version 4+): 5 bytes for the headers, +11 for internal relay protocol
+// All cells must be 514 bytes (on version 4+): 5 bytes for the headers, +11 for internal relay protocol, so the body must be 498 bytes
 const RELAY_BODY_LEN = 498
 
 var AllKnownRellayCells map[uint8]Cell = map[uint8]Cell{
-	COMMAND_DATA: &DataCell{},
+	COMMAND_DATA:      &DataCell{},
+	COMMAND_CONNECTED: &ConnectedCell{},
+	COMMAND_SENDME:    &SendMeCell{},
+	COMMAND_RELAY_END: &RelayEndCell{},
+	COMMAND_BEGIN_DIR: &BeginDir{},
 }
 
 type Cell interface {
 	ID() uint8
 
 	GetStreamID() uint16
-	setStreamID(uint16)
+	SetStreamID(uint16)
 
 	Decode(r io.Reader) error
 	Encode(w io.Writer) error
 }
 
-type DataCellConstructor struct {
+type RelayCellConstructor struct {
 	backwardsHash   hash.Hash
 	backwardsStream cipher.Stream
-
-	stream uint16
 
 	forwardsHash   hash.Hash
 	forwardsStream cipher.Stream
 }
 
-func NewDataCellConstructor(bh, fh hash.Hash, bs, fs cipher.Stream, streamID uint16) DataCellConstructor {
-	return DataCellConstructor{
+func NewDataCellConstructor(bh, fh hash.Hash, bs, fs cipher.Stream) RelayCellConstructor {
+	return RelayCellConstructor{
 		backwardsHash:   bh,
 		backwardsStream: bs,
-		stream:          streamID,
 
 		forwardsHash:   fh,
 		forwardsStream: fs,
@@ -49,7 +50,7 @@ func NewDataCellConstructor(bh, fh hash.Hash, bs, fs cipher.Stream, streamID uin
 }
 
 // Marshal Encodes the given cell, aply all relay headers, apply digest to the header and returns []byte with encrypted data
-func (d *DataCellConstructor) Marshal(c Cell) ([]byte, error) {
+func (d *RelayCellConstructor) Marshal(c Cell) ([]byte, error) {
 	var buffer bytes.Buffer
 
 	// Command pos[0]
@@ -63,7 +64,7 @@ func (d *DataCellConstructor) Marshal(c Cell) ([]byte, error) {
 	}
 
 	// StreamID pos[3:5]
-	if err := binary.Write(&buffer, binary.BigEndian, &d.stream); err != nil {
+	if err := binary.Write(&buffer, binary.BigEndian, c.GetStreamID()); err != nil {
 		return nil, err
 	}
 
@@ -114,7 +115,7 @@ func (d *DataCellConstructor) Marshal(c Cell) ([]byte, error) {
 	return dst, nil
 }
 
-func (d *DataCellConstructor) Unmarshal(b []byte) (Cell, error) {
+func (d *RelayCellConstructor) Unmarshal(b []byte) (Cell, error) {
 
 	plain := make([]byte, len(b))
 
@@ -130,15 +131,15 @@ func (d *DataCellConstructor) Unmarshal(b []byte) (Cell, error) {
 	c := AllKnownRellayCells[plain[0]]
 
 	// StreamID [3:5]
-	c.setStreamID(binary.BigEndian.Uint16(plain[3:5]))
+	c.SetStreamID(binary.BigEndian.Uint16(plain[3:5]))
 
 	if err := d.backwardCheck(plain); err != nil {
 		return nil, err
 	}
 
-	payloadLen := binary.BigEndian.Uint16(b[9:11])
+	payloadLen := binary.BigEndian.Uint16(plain[9:11])
 
-	reader := bytes.NewReader(b[11 : payloadLen+11])
+	reader := bytes.NewReader(plain[11 : payloadLen+11])
 
 	return c, c.Decode(reader)
 }
@@ -172,7 +173,7 @@ func applyPadding(buffer *bytes.Buffer) error {
 	return err
 }
 
-func (d *DataCellConstructor) backwardCheck(b []byte) error {
+func (d *RelayCellConstructor) backwardCheck(b []byte) error {
 	// [5:9] Digest position (4 bytes)
 
 	// Saving the original value

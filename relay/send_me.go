@@ -17,7 +17,7 @@ type SendMeCell struct {
 
 func (*SendMeCell) ID() uint8              { return COMMAND_SENDME }
 func (c *SendMeCell) GetStreamID() uint16  { return c.StreamID }
-func (c *SendMeCell) setStreamID(n uint16) { c.StreamID = n }
+func (c *SendMeCell) SetStreamID(n uint16) { c.StreamID = n }
 
 func (c *SendMeCell) Encode(w io.Writer) error {
 

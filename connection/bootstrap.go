@@ -197,10 +197,18 @@ func OpenConnection(ip string, orport uint16) (*TORConnection, error) {
 	if err := torConn.NegotiateVersion(); err != nil {
 		return nil, err
 	}
-	certs, err := torConn.GetCerts()
+
+	constructor := cells.NewCellTranslator(torConn.Conn, torConn.Conn, 4, cells.AllKnownCells)
+
+	pkg, err := constructor.ReadCell()
 	if err != nil {
 		return nil, err
 	}
+	if pkg.ID() != cells.COMMAND_CERTS {
+		return nil, fmt.Errorf("protocol violation: incorrect package order")
+	}
+
+	certs := pkg.(*cells.CertsCell)
 
 	var cert4 *tor_crypto.TorCert
 	var cert5 *tor_crypto.TorCert
@@ -224,11 +232,19 @@ func OpenConnection(ip string, orport uint16) (*TORConnection, error) {
 	if err := torConn.ReadAuthChallange(); err != nil {
 		return nil, err
 	}
-	ptr, err := torConn.ReadNetInfo()
+
+	pkg, err = constructor.ReadCell()
 	if err != nil {
 		return nil, err
 	}
-	torConn.NetInfo = *ptr
+	if pkg.ID() != cells.COMMAND_NETINFO {
+		return nil, fmt.Errorf("protocol violation: incorrect package order")
+	}
+
+	netinfo := pkg.(*cells.NetInfoCell)
+	torConn.NetInfo = *netinfo
+
+	torConn.Translator = constructor
 
 	return torConn, torConn.SendNetInfo()
 }

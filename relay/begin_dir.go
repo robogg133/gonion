@@ -16,7 +16,7 @@ type BeginDir struct {
 
 func (*BeginDir) ID() uint8              { return COMMAND_BEGIN_DIR }
 func (c *BeginDir) GetStreamID() uint16  { return c.StreamID }
-func (c *BeginDir) setStreamID(n uint16) { c.StreamID = n }
+func (c *BeginDir) SetStreamID(n uint16) { c.StreamID = n }
 
 func (*BeginDir) Encode(io.Writer) error { return nil }
 func (*BeginDir) Decode(io.Reader) error { return nil }

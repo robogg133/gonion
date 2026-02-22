@@ -11,14 +11,14 @@ const COMMAND_RELAY uint8 = 3
 type RelayCell struct {
 	CircuitID uint32
 
-	Constructor relay.DataCellConstructor
+	Constructor *relay.RelayCellConstructor
 
 	Cell relay.Cell
 }
 
 func (*RelayCell) ID() uint8               { return COMMAND_RELAY }
 func (c *RelayCell) GetCircuitID() uint32  { return c.CircuitID }
-func (c *RelayCell) setCircuitID(n uint32) { c.CircuitID = n }
+func (c *RelayCell) SetCircuitID(n uint32) { c.CircuitID = n }
 
 func (c *RelayCell) Encode(w io.Writer) error {
 

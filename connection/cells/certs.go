@@ -30,7 +30,7 @@ type CertsCell struct {
 
 func (*CertsCell) ID() uint8               { return COMMAND_CERTS }
 func (c *CertsCell) GetCircuitID() uint32  { return c.CircID }
-func (c *CertsCell) setCircuitID(n uint32) { c.CircID = n }
+func (c *CertsCell) SetCircuitID(n uint32) { c.CircID = n }
 
 func (c *CertsCell) Decode(r io.Reader) error {
 

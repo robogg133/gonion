@@ -1,39 +1,12 @@
 package connection
 
-import (
-	"bytes"
-	"fmt"
-	"io"
-	"net/url"
-
-	"github.com/robogg133/gonion/connection/cells"
-	"github.com/robogg133/gonion/relay"
-)
-
 const (
 	PAYLOAD_GET_DIRECTORY_INFO   string = "GET /tor/server/authority HTTP/1.0\r\n\r\n"
 	PAYLOAD_GET_CONSENSUS        string = "GET /tor/status-vote/current/consensus-microdesc HTTP/1.0\r\n\r\n"
 	PAYLOAD_GET_MICRODESCRIPTORS string = "GET /tor/micro/d/%s-%s-%s HTTP/1.0\r\n\r\n"
 )
 
-func (t *TORConnection) SendRelayBeginDir() error {
-
-	t.RelayStreamID = 1
-
-	relayRelayCell := relay.BeginDir{
-		StreamID:     t.RelayStreamID,
-		DigestWriter: &t.ForwardDigest,
-	}
-
-	relayCell := cells.RelayCell{
-		CircuitID: t.CircuitID,
-		RelayCell: relayRelayCell.Serialize(),
-	}
-
-	_, err := t.Conn.Write(relayCell.Serialize(t.KeyForwardAES128CTR))
-	return err
-}
-
+/*
 func (t *TORConnection) ReadRelayCell() error {
 
 	c := make([]byte, 514)
@@ -167,3 +140,4 @@ func (t *TORConnection) ReadRelayData() ([]byte, error) {
 
 	return result.Bytes(), nil
 }
+*/

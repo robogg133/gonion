@@ -14,7 +14,7 @@ type DataCell struct {
 
 func (*DataCell) ID() uint8              { return COMMAND_DATA }
 func (c *DataCell) GetStreamID() uint16  { return c.StreamID }
-func (c *DataCell) setStreamID(n uint16) { c.StreamID = n }
+func (c *DataCell) SetStreamID(n uint16) { c.StreamID = n }
 
 func (c *DataCell) Encode(w io.Writer) error {
 	_, err := w.Write(c.Payload)

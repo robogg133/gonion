@@ -13,7 +13,7 @@ type CreatedFastCell struct {
 
 func (*CreatedFastCell) ID() uint8               { return COMMAND_CREATED_FAST }
 func (c *CreatedFastCell) GetCircuitID() uint32  { return c.CircuitID }
-func (c *CreatedFastCell) setCircuitID(n uint32) { c.CircuitID = n }
+func (c *CreatedFastCell) SetCircuitID(n uint32) { c.CircuitID = n }
 
 func (*CreatedFastCell) Encode(io.Writer) error { return nil }
 

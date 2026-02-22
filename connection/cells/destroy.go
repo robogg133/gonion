@@ -30,7 +30,7 @@ const (
 
 func (*DestroyCell) ID() uint8               { return COMMAND_DESTROY }
 func (c *DestroyCell) GetCircuitID() uint32  { return c.CircuitID }
-func (c *DestroyCell) setCircuitID(n uint32) { c.CircuitID = n }
+func (c *DestroyCell) SetCircuitID(n uint32) { c.CircuitID = n }
 
 func (c *DestroyCell) Encode(w io.Writer) error {
 	_, err := w.Write([]byte{c.Reason})
