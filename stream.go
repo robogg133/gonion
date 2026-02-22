@@ -120,15 +120,23 @@ func (s *Stream) Write(b []byte) (int, error) {
 
 func (s *Stream) loop() {
 	for {
+		fmt.Println("stream", s.ReceiveWindow)
+		s.circuit.mu.RLock()
+		rcvWindow := s.ReceiveWindow
+		s.circuit.mu.RUnlock()
+		if rcvWindow%50 == 0 && rcvWindow != 500 {
 
-		if s.ReceiveWindow%50 == 0 && s.ReceiveWindow != 500 {
+			sum := s.circuit.DigestBackwards
+			fmt.Println("stream: unlocked")
 			select {
 			case s.circuit.WriteRelayCell <- &relay.SendMeCell{
 				StreamID:        s.ID,
 				Version:         1,
-				Sha1ForLastCell: [20]byte(s.circuit.BackWardsDigest.Sum(nil)),
+				Sha1ForLastCell: [20]byte(sum),
 			}:
+				s.circuit.mu.Lock()
 				s.ReceiveWindow += 50
+				s.circuit.mu.Unlock()
 			case <-s.CloseCh:
 				s.Close()
 				return
@@ -146,7 +154,7 @@ func (s *Stream) loop() {
 }
 
 func (s *Stream) Close() {
-
+	fmt.Println("STREAM CLOSE REQUESTED")
 	end := relay.RelayEndCell{
 		StreamID: s.ID,
 	}
@@ -164,11 +172,14 @@ func (s *Stream) handleCell(cell relay.Cell) {
 	switch cell.ID() {
 	case relay.COMMAND_DATA:
 		// Shrinking the ReceiveWindow
+		s.circuit.mu.Lock()
 		s.ReceiveWindow--
 		s.circuit.ReceiveWindow--
+		s.circuit.mu.Unlock()
 
 		// Writing data to the stream pipe
 		dataCell := cell.(*relay.DataCell)
+
 		_, err := s.Writer.Write(dataCell.Payload)
 		if err != nil {
 			s.Close()

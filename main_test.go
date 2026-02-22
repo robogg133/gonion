@@ -3,6 +3,7 @@ package gonion_test
 import (
 	"fmt"
 	"io"
+	"os"
 	"testing"
 
 	"github.com/robogg133/gonion"
@@ -40,6 +41,6 @@ func TestNewConn(t *testing.T) {
 	if err != nil {
 		t.Error(err)
 	}
-	fmt.Println(string(b))
+	os.WriteFile("consensus.txt", b, 0777)
 
 }

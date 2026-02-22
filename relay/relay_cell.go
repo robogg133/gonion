@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"hash"
 	"io"
+	"sync"
 )
 
 // All cells must be 514 bytes (on version 4+): 5 bytes for the headers, +11 for internal relay protocol, so the body must be 498 bytes
@@ -35,16 +36,24 @@ type RelayCellConstructor struct {
 	backwardsHash   hash.Hash
 	backwardsStream cipher.Stream
 
+	RunningDigestBackwards *[]byte
+	RunningDigestForward   *[]byte
+
+	lock sync.RWMutex
+
 	forwardsHash   hash.Hash
 	forwardsStream cipher.Stream
 }
 
-func NewDataCellConstructor(bh, fh hash.Hash, bs, fs cipher.Stream) RelayCellConstructor {
+func NewDataCellConstructor(bd, fd hash.Hash, bs, fs cipher.Stream, backwardDigest, forwardDigest *[]byte) RelayCellConstructor {
 	return RelayCellConstructor{
-		backwardsHash:   bh,
+		backwardsHash:   bd,
 		backwardsStream: bs,
+		
+		RunningDigestBackwards: backwardDigest,
+		RunningDigestForward: forwardDigest,
 
-		forwardsHash:   fh,
+		forwardsHash:   fd,
 		forwardsStream: fs,
 	}
 }
@@ -101,12 +110,19 @@ func (d *RelayCellConstructor) Marshal(c Cell) ([]byte, error) {
 	b := buffer.Bytes()
 	buffer.Reset()
 
+	d.lock.Lock()
 	_, err := d.forwardsHash.Write(b)
+	d.lock.Unlock()
 	if err != nil {
 		return nil, err
 	}
 
+	d.lock.RLock()
 	digest := d.forwardsHash.Sum(nil)
+	d.lock.RUnlock()
+
+	*d.RunningDigestForward = digest
+
 	copy(b[5:9], digest[0:4]) // Copy the firsts 4 bytes from the sum, to the Digest
 
 	dst := make([]byte, 509) // 509 = 498 (Payload length) + 11 (Headers length)
@@ -183,8 +199,15 @@ func (d *RelayCellConstructor) backwardCheck(b []byte) error {
 	// Replacing the original value with 0's
 	copy(b[5:9], []byte{0, 0, 0, 0})
 
+	d.lock.Lock()
 	d.backwardsHash.Write(b)
+	d.lock.Unlock()
+
+	d.lock.RLock()
 	sum := d.backwardsHash.Sum(nil)
+	d.lock.RUnlock()
+	
+	*d.RunningDigestBackwards = sum
 
 	if !bytes.Equal(originalD[:], sum[0:4]) {
 		return fmt.Errorf("error doing backward check, expected result: (%v), but got: (%v)", originalD, sum[0:4])

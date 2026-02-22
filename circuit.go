@@ -26,7 +26,6 @@ type Circuit struct {
 	mu sync.RWMutex
 
 	Translator cells.CellTranslator
-	// Constructor relay.RelayCellConstructor
 
 	ReceiveWindow uint16
 	SendWindow    uint16
@@ -36,9 +35,11 @@ type Circuit struct {
 
 	// Crypto
 
-	ForwardDigest   hash.Hash
-	BackWardsDigest hash.Hash
+	DigestFoward    []byte
+	DigestBackwards []byte
 
+	ForwardDigest         hash.Hash
+	BackWardsDigest       hash.Hash
 	KeyForwardAES128CTR   cipher.Stream
 	KeyBackwardsAES128CTR cipher.Stream
 
@@ -141,7 +142,7 @@ func (c *Conn) NewFastCircuit(id uint32) (*Circuit, error) {
 	tmp = make([]byte, 16)
 	circuit.KeyBackwardsAES128CTR = cipher.NewCTR(block2, tmp)
 
-	circuit.Translator = cells.NewCellTranslator(cells.AllKnownCells, relay.NewDataCellConstructor(circuit.BackWardsDigest, circuit.ForwardDigest, circuit.KeyBackwardsAES128CTR, circuit.KeyForwardAES128CTR))
+	circuit.Translator = cells.NewCellTranslator(cells.AllKnownCells, relay.NewDataCellConstructor(circuit.BackWardsDigest, circuit.ForwardDigest, circuit.KeyBackwardsAES128CTR, circuit.KeyForwardAES128CTR, &circuit.DigestBackwards, &circuit.DigestFoward))
 
 	suc = true
 	go circuit.loop()
@@ -168,7 +169,12 @@ func (c *Circuit) SendCell(cell cells.Cell) error {
 
 func (c *Circuit) loop() {
 	for {
-		if c.ReceiveWindow%100 == 0 && c.ReceiveWindow != 1000 {
+		c.mu.RLock()
+		rcvWindow := c.ReceiveWindow
+		c.mu.RUnlock()
+		if rcvWindow%100 == 0 && rcvWindow != 1000 {
+
+			sum := c.DigestBackwards
 
 			sendme := cells.RelayCell{
 				CircuitID:   c.ID,
@@ -176,20 +182,21 @@ func (c *Circuit) loop() {
 				Cell: &relay.SendMeCell{
 					StreamID:        0,
 					Version:         1,
-					Sha1ForLastCell: [20]byte(c.BackWardsDigest.Sum(nil)),
+					Sha1ForLastCell: [20]byte(sum),
 				},
 			}
 			if err := c.SendCell(&sendme); err != nil {
 				c.CloseCh <- struct{}{}
 				return
 			}
+			c.mu.Lock()
 			c.ReceiveWindow += 100
+			c.mu.Unlock()
 
 		}
 
 		select {
 		case rawCell := <-c.Inbound:
-
 			cell, err := c.Translator.ReadCell(bytes.NewReader(rawCell))
 			if err != nil {
 				c.CloseCh <- struct{}{}
@@ -221,7 +228,9 @@ func (c *Circuit) handleCell(cell cells.Cell) {
 		// TODO: Need to check SHA1 too
 		if relayCell.Cell.ID() == relay.COMMAND_SENDME {
 			if relayCell.Cell.GetStreamID() == 0 {
+				c.mu.Lock()
 				c.SendWindow += 100
+				c.mu.Unlock()
 			}
 			return
 		}
