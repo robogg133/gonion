@@ -41,6 +41,7 @@ func TestNewConn(t *testing.T) {
 	if err != nil {
 		t.Error(err)
 	}
+	stream.Reader.Close()
 	os.WriteFile("consensus.txt", b, 0777)
 
 }

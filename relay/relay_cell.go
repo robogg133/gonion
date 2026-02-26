@@ -14,12 +14,12 @@ import (
 // All cells must be 514 bytes (on version 4+): 5 bytes for the headers, +11 for internal relay protocol, so the body must be 498 bytes
 const RELAY_BODY_LEN = 498
 
-var AllKnownRellayCells map[uint8]Cell = map[uint8]Cell{
-	COMMAND_DATA:      &DataCell{},
-	COMMAND_CONNECTED: &ConnectedCell{},
-	COMMAND_SENDME:    &SendMeCell{},
-	COMMAND_RELAY_END: &RelayEndCell{},
-	COMMAND_BEGIN_DIR: &BeginDir{},
+var AllKnownRellayCells = map[uint8]func() Cell{
+	COMMAND_DATA:      func() Cell { return &DataCell{} },
+	COMMAND_CONNECTED: func() Cell { return &ConnectedCell{} },
+	COMMAND_SENDME:    func() Cell { return &SendMeCell{} },
+	COMMAND_RELAY_END: func() Cell { return &RelayEndCell{} },
+	COMMAND_BEGIN_DIR: func() Cell { return &BeginDir{} },
 }
 
 type Cell interface {
@@ -35,26 +35,24 @@ type Cell interface {
 type RelayCellConstructor struct {
 	backwardsHash   hash.Hash
 	backwardsStream cipher.Stream
+	forwardsHash    hash.Hash
+	forwardsStream  cipher.Stream
 
 	RunningDigestBackwards *[]byte
 	RunningDigestForward   *[]byte
 
-	lock sync.RWMutex
-
-	forwardsHash   hash.Hash
-	forwardsStream cipher.Stream
+	mu *sync.RWMutex // mutex do circuito para proteger os digests
 }
 
-func NewDataCellConstructor(bd, fd hash.Hash, bs, fs cipher.Stream, backwardDigest, forwardDigest *[]byte) RelayCellConstructor {
+func NewDataCellConstructor(bd, fd hash.Hash, bs, fs cipher.Stream, backwardDigest, forwardDigest *[]byte, mu *sync.RWMutex) RelayCellConstructor {
 	return RelayCellConstructor{
-		backwardsHash:   bd,
-		backwardsStream: bs,
-		
+		backwardsHash:          bd,
+		backwardsStream:        bs,
+		forwardsHash:           fd,
+		forwardsStream:         fs,
 		RunningDigestBackwards: backwardDigest,
-		RunningDigestForward: forwardDigest,
-
-		forwardsHash:   fd,
-		forwardsStream: fs,
+		RunningDigestForward:   forwardDigest,
+		mu:                     mu,
 	}
 }
 
@@ -110,18 +108,16 @@ func (d *RelayCellConstructor) Marshal(c Cell) ([]byte, error) {
 	b := buffer.Bytes()
 	buffer.Reset()
 
-	d.lock.Lock()
 	_, err := d.forwardsHash.Write(b)
-	d.lock.Unlock()
 	if err != nil {
 		return nil, err
 	}
 
-	d.lock.RLock()
 	digest := d.forwardsHash.Sum(nil)
-	d.lock.RUnlock()
 
+	d.mu.Lock()
 	*d.RunningDigestForward = digest
+	d.mu.Unlock()
 
 	copy(b[5:9], digest[0:4]) // Copy the firsts 4 bytes from the sum, to the Digest
 
@@ -144,7 +140,7 @@ func (d *RelayCellConstructor) Unmarshal(b []byte) (Cell, error) {
 		return nil, fmt.Errorf("recognized is not 0")
 	}
 
-	c := AllKnownRellayCells[plain[0]]
+	c := AllKnownRellayCells[plain[0]]()
 
 	// StreamID [3:5]
 	c.SetStreamID(binary.BigEndian.Uint16(plain[3:5]))
@@ -199,15 +195,13 @@ func (d *RelayCellConstructor) backwardCheck(b []byte) error {
 	// Replacing the original value with 0's
 	copy(b[5:9], []byte{0, 0, 0, 0})
 
-	d.lock.Lock()
 	d.backwardsHash.Write(b)
-	d.lock.Unlock()
 
-	d.lock.RLock()
 	sum := d.backwardsHash.Sum(nil)
-	d.lock.RUnlock()
-	
+
+	d.mu.Lock()
 	*d.RunningDigestBackwards = sum
+	d.mu.Unlock()
 
 	if !bytes.Equal(originalD[:], sum[0:4]) {
 		return fmt.Errorf("error doing backward check, expected result: (%v), but got: (%v)", originalD, sum[0:4])

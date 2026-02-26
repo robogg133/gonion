@@ -27,22 +27,22 @@ var (
 )
 
 type CellTranslator struct {
-	knownCells map[uint8]Cell
+	knownCells map[uint8]func() Cell
 
 	Constructor relay.RelayCellConstructor
 }
 
-var AllKnownCells map[uint8]Cell = map[uint8]Cell{
-	COMMAND_CERTS:        &CertsCell{},
-	COMMAND_CREATE_FAST:  &CertsCell{},
-	COMMAND_CREATED_FAST: &CreatedFastCell{},
-	COMMAND_DESTROY:      &DestroyCell{},
-	COMMAND_NETINFO:      &NetInfoCell{},
-	COMMAND_RELAY:        &RelayCell{},
+var AllKnownCells = map[uint8]func() Cell{
+	COMMAND_CERTS:        func() Cell { return &CertsCell{} },
+	COMMAND_CREATE_FAST:  func() Cell { return &CreateFastCell{} },
+	COMMAND_CREATED_FAST: func() Cell { return &CreatedFastCell{} },
+	COMMAND_DESTROY:      func() Cell { return &DestroyCell{} },
+	COMMAND_NETINFO:      func() Cell { return &NetInfoCell{} },
+	COMMAND_RELAY:        func() Cell { return &RelayCell{} },
 }
 
 // NewCellTranslator can encode and decode cells
-func NewCellTranslator(knwonCells map[uint8]Cell, constructor relay.RelayCellConstructor) CellTranslator {
+func NewCellTranslator(knwonCells map[uint8]func() Cell, constructor relay.RelayCellConstructor) CellTranslator {
 	return CellTranslator{
 		knownCells:  knwonCells,
 		Constructor: constructor,
@@ -64,10 +64,7 @@ func (r *CellTranslator) ReadCell(reader io.Reader) (Cell, error) {
 		return nil, err
 	}
 
-	cell, exists := r.knownCells[cmd[0]]
-	if !exists {
-		return nil, ErrUnknownCommandID
-	}
+	cell := r.knownCells[cmd[0]]()
 
 	cell.SetCircuitID(circuitID)
 

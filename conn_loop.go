@@ -3,6 +3,7 @@ package gonion
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"io"
 
 	"github.com/robogg133/gonion/connection/cells"
@@ -12,6 +13,10 @@ func (c *Conn) writeLoop() {
 	for {
 		select {
 		case cell := <-c.writeCall:
+
+			fmt.Println("SENDING")
+			fmt.Println(cell)
+			fmt.Println(len(cell))
 			if _, err := c.socket.Write(cell); err != nil {
 				c.closeCh <- struct{}{}
 				return
@@ -62,6 +67,10 @@ func (c *Conn) readLoop() {
 		if circuit == nil {
 			continue
 		}
+
+		fmt.Println("RECEIVING")
+		fmt.Println(buffer.Bytes())
+		fmt.Println(buffer.Len())
 
 		select {
 		case circuit.Inbound <- buffer.Bytes():

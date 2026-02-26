@@ -11,6 +11,7 @@ import (
 	"hash"
 	"io"
 	"sync"
+	"time"
 
 	"github.com/robogg133/gonion/connection/cells"
 	"github.com/robogg133/gonion/relay"
@@ -18,7 +19,6 @@ import (
 )
 
 type Circuit struct {
-
 	// Info
 	conn *Conn
 
@@ -34,7 +34,6 @@ type Circuit struct {
 	nextStreamID uint16
 
 	// Crypto
-
 	DigestFoward    []byte
 	DigestBackwards []byte
 
@@ -44,10 +43,10 @@ type Circuit struct {
 	KeyBackwardsAES128CTR cipher.Stream
 
 	// Channels
-
 	WriteRelayCell chan relay.Cell
 	Inbound        chan []byte
 	CloseCh        chan struct{}
+	closeOnce      sync.Once
 }
 
 // NewFastCircuit creates an one hop circuit with CREATE_FAST
@@ -59,8 +58,8 @@ func (c *Conn) NewFastCircuit(id uint32) (*Circuit, error) {
 		conn:           c,
 		ID:             circID,
 		CloseCh:        make(chan struct{}),
-		Inbound:        make(chan []byte, 32),
-		WriteRelayCell: make(chan relay.Cell, 32),
+		Inbound:        make(chan []byte, 128),
+		WriteRelayCell: make(chan relay.Cell, 128),
 		streams:        make(map[uint16]*Stream),
 		ReceiveWindow:  1000,
 		SendWindow:     1000,
@@ -100,7 +99,6 @@ func (c *Conn) NewFastCircuit(id uint32) (*Circuit, error) {
 	case rawCell = <-circuit.Inbound:
 	case <-c.closeCh:
 		return nil, errors.New("connection closed")
-
 	}
 	cell, err := circuit.Translator.ReadCell(bytes.NewReader(rawCell))
 	if err != nil {
@@ -142,7 +140,16 @@ func (c *Conn) NewFastCircuit(id uint32) (*Circuit, error) {
 	tmp = make([]byte, 16)
 	circuit.KeyBackwardsAES128CTR = cipher.NewCTR(block2, tmp)
 
-	circuit.Translator = cells.NewCellTranslator(cells.AllKnownCells, relay.NewDataCellConstructor(circuit.BackWardsDigest, circuit.ForwardDigest, circuit.KeyBackwardsAES128CTR, circuit.KeyForwardAES128CTR, &circuit.DigestBackwards, &circuit.DigestFoward))
+	circuit.Translator = cells.NewCellTranslator(cells.AllKnownCells,
+		relay.NewDataCellConstructor(
+			circuit.BackWardsDigest,
+			circuit.ForwardDigest,
+			circuit.KeyBackwardsAES128CTR,
+			circuit.KeyForwardAES128CTR,
+			&circuit.DigestBackwards,
+			&circuit.DigestFoward,
+			&circuit.mu,
+		))
 
 	suc = true
 	go circuit.loop()
@@ -160,8 +167,8 @@ func (c *Circuit) SendCell(cell cells.Cell) error {
 	select {
 	case c.conn.writeCall <- b:
 	case <-c.CloseCh:
-		c.teardown()
-		c.Close()
+		return errors.New("circuit closed")
+	case <-c.conn.closeCh:
 		return errors.New("connection closed")
 	}
 	return nil
@@ -169,103 +176,111 @@ func (c *Circuit) SendCell(cell cells.Cell) error {
 
 func (c *Circuit) loop() {
 	for {
-		c.mu.RLock()
-		rcvWindow := c.ReceiveWindow
-		c.mu.RUnlock()
-		if rcvWindow%100 == 0 && rcvWindow != 1000 {
-
-			sum := c.DigestBackwards
-
-			sendme := cells.RelayCell{
-				CircuitID:   c.ID,
-				Constructor: &c.Translator.Constructor,
-				Cell: &relay.SendMeCell{
-					StreamID:        0,
-					Version:         1,
-					Sha1ForLastCell: [20]byte(sum),
-				},
-			}
-			if err := c.SendCell(&sendme); err != nil {
-				c.CloseCh <- struct{}{}
-				return
-			}
-			c.mu.Lock()
-			c.ReceiveWindow += 100
-			c.mu.Unlock()
-
+		select {
+		case <-c.CloseCh:
+			c.teardown()
+			return
+		default:
 		}
+
+		func() {
+			c.mu.RLock()
+			rcvWindow := c.ReceiveWindow
+			sum := c.DigestBackwards
+			c.mu.RUnlock()
+			if rcvWindow%100 == 0 && rcvWindow != 1000 {
+				sendme := cells.RelayCell{
+					CircuitID:   c.ID,
+					Constructor: &c.Translator.Constructor,
+					Cell: &relay.SendMeCell{
+						StreamID:        0,
+						Version:         1,
+						Sha1ForLastCell: [20]byte(sum),
+					},
+				}
+				select {
+				case c.WriteRelayCell <- sendme.Cell:
+					c.mu.Lock()
+					c.ReceiveWindow += 100
+					c.mu.Unlock()
+				case <-c.CloseCh:
+					return
+				case <-time.After(100 * time.Millisecond):
+				}
+			}
+		}()
 
 		select {
 		case rawCell := <-c.Inbound:
 			cell, err := c.Translator.ReadCell(bytes.NewReader(rawCell))
 			if err != nil {
-				c.CloseCh <- struct{}{}
+				c.Close()
 				return
 			}
-
 			c.handleCell(cell)
 		case relaycell := <-c.WriteRelayCell:
-			c.SendCell(&cells.RelayCell{
+			relayCell := &cells.RelayCell{
 				CircuitID:   c.ID,
 				Constructor: &c.Translator.Constructor,
 				Cell:        relaycell,
-			})
+			}
+			if err := c.SendCell(relayCell); err != nil {
+				c.Close()
+				return
+			}
 		case <-c.CloseCh:
 			c.teardown()
-			c.Close()
 			return
 		}
 	}
 }
 
 func (c *Circuit) handleCell(cell cells.Cell) {
-
 	switch cell.ID() {
 	case cells.COMMAND_RELAY:
 		relayCell := cell.(*cells.RelayCell)
 
-		// Checking if is a SEND_ME for the circuit
-		// TODO: Need to check SHA1 too
-		if relayCell.Cell.ID() == relay.COMMAND_SENDME {
-			if relayCell.Cell.GetStreamID() == 0 {
-				c.mu.Lock()
-				c.SendWindow += 100
-				c.mu.Unlock()
-			}
+		if relayCell.Cell.ID() == relay.COMMAND_SENDME && relayCell.Cell.GetStreamID() == 0 {
+			c.mu.Lock()
+			c.SendWindow += 100
+			c.mu.Unlock()
 			return
 		}
 
 		c.mu.RLock()
 		stream := c.streams[relayCell.Cell.GetStreamID()]
 		c.mu.RUnlock()
+		if stream == nil {
+			return
+		}
 
 		select {
 		case stream.Inbound <- relayCell.Cell:
 		case <-c.CloseCh:
-			c.teardown()
-			c.Close()
+			return
+		case <-stream.CloseCh:
 			return
 		}
+
+	case cells.COMMAND_DESTROY:
+		fmt.Println("RECEIVED DESTROY")
+		fmt.Printf("REASON %d\n", cell.(*cells.DestroyCell).Reason)
+		c.Close()
+		return
 	}
 }
 
-func (c *Circuit) Close() error {
-	fmt.Println("==CIRCUIT CLOSING==")
-	err := c.SendCell(&cells.DestroyCell{
-		CircuitID: c.ID,
-		Reason:    0,
+func (c *Circuit) Close() {
+	c.closeOnce.Do(func() {
+		close(c.CloseCh)
 	})
-
-	return err
 }
 
 func (c *Circuit) teardown() {
-	fmt.Println("invoked")
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	for _, s := range c.streams {
-		s.CloseCh <- struct{}{}
-		delete(c.streams, s.ID)
+		s.Close()
 	}
-	c.mu.Unlock()
-
+	c.streams = make(map[uint16]*Stream)
 }
