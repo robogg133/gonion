@@ -1,9 +1,13 @@
 package gonion_test
 
 import (
+	"bufio"
+	"bytes"
+	"crypto/sha256"
+	"encoding/base64"
 	"fmt"
 	"io"
-	"os"
+	"net/http"
 	"testing"
 
 	"github.com/robogg133/gonion"
@@ -30,18 +34,41 @@ func TestNewConn(t *testing.T) {
 	fmt.Println("Stream created")
 
 	fmt.Println("Writing Payload")
-	if _, err := stream.Write([]byte("GET /tor/status-vote/current/consensus-microdesc HTTP/1.0\r\n\r\n")); err != nil {
+
+	req, err := http.NewRequest("GET", "/tor/micro/d/FFLmryM0N2S+0JJ3P+H4YA89iwmLe68tvlkzIGz3G60", nil)
+	if err != nil {
 		t.Fatal(err)
 	}
+
+	req.Write(stream)
 	fmt.Println("Wrote the payload")
 
 	fmt.Println("Reading from pipe")
 
-	b, err := io.ReadAll(stream)
+	resp, err := http.ReadResponse(bufio.NewReader(stream.Reader), req)
 	if err != nil {
-		t.Error(err)
+		t.Fatal(err)
 	}
-	stream.Reader.Close()
-	os.WriteFile("consensus.txt", b, 0777)
+	defer resp.Body.Close()
+	defer stream.Reader.Close()
+
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rawDigest, err := base64.RawStdEncoding.DecodeString("FFLmryM0N2S+0JJ3P+H4YA89iwmLe68tvlkzIGz3G60")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	res := sha256.Sum256(b)
+
+	if !bytes.Equal(rawDigest, res[:]) {
+		fmt.Println("invalid check")
+		t.Error("FASDFASDFASDFASDFASFADSF")
+	}
+
+	fmt.Println(string(b))
 
 }

@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/robogg133/gonion/connection/cells"
+	"github.com/robogg133/gonion/cells"
 	"github.com/robogg133/gonion/relay"
 	"github.com/robogg133/gonion/tor_crypto"
 )

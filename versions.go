@@ -6,7 +6,7 @@ import (
 	"io"
 	"slices"
 
-	"github.com/robogg133/gonion/connection/cells"
+	"github.com/robogg133/gonion/cells"
 )
 
 func negotiateVersion(r io.Reader, w io.Writer) (uint16, error) {

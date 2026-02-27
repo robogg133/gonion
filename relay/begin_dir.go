@@ -8,15 +8,13 @@ const (
 	COMMAND_BEGIN_DIR uint8 = 13
 )
 
-type RelayCell []byte
-
-type BeginDir struct {
+type BeginDirCell struct {
 	StreamID uint16
 }
 
-func (*BeginDir) ID() uint8              { return COMMAND_BEGIN_DIR }
-func (c *BeginDir) GetStreamID() uint16  { return c.StreamID }
-func (c *BeginDir) SetStreamID(n uint16) { c.StreamID = n }
+func (*BeginDirCell) ID() uint8              { return COMMAND_BEGIN_DIR }
+func (c *BeginDirCell) GetStreamID() uint16  { return c.StreamID }
+func (c *BeginDirCell) SetStreamID(n uint16) { c.StreamID = n }
 
-func (*BeginDir) Encode(io.Writer) error { return nil }
-func (*BeginDir) Decode(io.Reader) error { return nil }
+func (*BeginDirCell) Encode(io.Writer) error { return nil }
+func (*BeginDirCell) Decode(io.Reader) error { return nil }

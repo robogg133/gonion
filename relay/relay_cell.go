@@ -19,7 +19,7 @@ var AllKnownRellayCells = map[uint8]func() Cell{
 	COMMAND_CONNECTED: func() Cell { return &ConnectedCell{} },
 	COMMAND_SENDME:    func() Cell { return &SendMeCell{} },
 	COMMAND_RELAY_END: func() Cell { return &RelayEndCell{} },
-	COMMAND_BEGIN_DIR: func() Cell { return &BeginDir{} },
+	COMMAND_BEGIN_DIR: func() Cell { return &BeginDirCell{} },
 }
 
 type Cell interface {

@@ -2,7 +2,6 @@ package gonion
 
 import (
 	"errors"
-	"fmt"
 	"io"
 	"sync"
 	"time"
@@ -39,11 +38,8 @@ const (
 func (c *Circuit) NewStream(kind string) (*Stream, error) {
 	var suc bool
 
-	fmt.Println("=> Creating pipe")
 	r, w := io.Pipe()
-	fmt.Println("=> Pipe done")
 
-	fmt.Println("=> Instantiating the struct")
 	stream := &Stream{
 		ID:            c.nextStreamID,
 		circuit:       c,
@@ -55,7 +51,6 @@ func (c *Circuit) NewStream(kind string) (*Stream, error) {
 		Reader:        r,
 		Writer:        w,
 	}
-	fmt.Println("=> Instantiated the struct")
 
 	defer func() {
 		if !suc {
@@ -68,26 +63,19 @@ func (c *Circuit) NewStream(kind string) (*Stream, error) {
 
 	c.nextStreamID++
 
-	fmt.Println("=> Preparing to lock")
 	c.mu.Lock()
-	fmt.Println("=> Locked")
 	c.streams[stream.ID] = stream
-	fmt.Println("=> Wrote ")
 	c.mu.Unlock()
-	fmt.Println("=> Unlocked")
 
 	switch kind {
 	case "dir":
-		fmt.Println("=> Sending begin dir")
 		if err := stream.beginDir(); err != nil {
 			return nil, err
 		}
-		fmt.Println("=> Sent begin dir Done")
 	}
 	stream.mu.Lock()
 	stream.State = STREAM_OPEN
 	stream.mu.Unlock()
-	fmt.Println("=> Starting main loop")
 	go stream.loop()
 	suc = true
 	return stream, nil
@@ -146,7 +134,6 @@ func (s *Stream) loop() {
 		rcvWindow := s.ReceiveWindow
 		sum := s.circuit.DigestBackwards
 		s.circuit.mu.RUnlock()
-		fmt.Println("receive window", rcvWindow)
 		if rcvWindow%50 == 0 && rcvWindow != 500 {
 			sendme := &relay.SendMeCell{
 				StreamID:        s.ID,
@@ -200,7 +187,6 @@ func (s *Stream) Close() {
 		close(s.CloseCh)
 		s.Writer.Close()
 		s.Reader.Close()
-		fmt.Println("Stream closed")
 	})
 }
 
