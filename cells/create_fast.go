@@ -16,7 +16,7 @@ type CreateFastCell struct {
 
 func (*CreateFastCell) ID() uint8               { return COMMAND_CREATE_FAST }
 func (c *CreateFastCell) GetCircuitID() uint32  { return c.CircuitID }
-func (c *CreateFastCell) setCircuitID(n uint32) { c.CircuitID = n }
+func (c *CreateFastCell) SetCircuitID(n uint32) { c.CircuitID = n }
 
 func (c *CreateFastCell) Encode(w io.Writer) error {
 	_, err := w.Write(c.X[:])

@@ -157,28 +157,22 @@ func (c *Consensus) parseRouterState(s string) error {
 		}
 		c.routerStatusTmp.NodeID = [20]byte(b)
 
-		b, err = base64.RawStdEncoding.DecodeString(separated[2])
-		if err != nil {
-			return err
-		}
-		c.routerStatusTmp.Digest = [20]byte(b)
+		// Ignore 2 and 3 cuz they are timestamps
 
-		// Ignore 3 and 4 cuz they are timestamps
+		c.routerStatusTmp.Ipv4Addr = separated[4]
 
-		c.routerStatusTmp.Ipv4Addr = separated[5]
-
-		c.routerStatusTmp.IPLevel, err = IPLevel(separated[5], 0)
+		c.routerStatusTmp.IPLevel, err = IPLevel(separated[4], 0)
 		if err != nil {
 			return err
 		}
 
-		n, err := strconv.Atoi(separated[6])
+		n, err := strconv.Atoi(separated[5])
 		if err != nil {
 			return err
 		}
 		c.routerStatusTmp.ORPort = uint16(n)
 
-		n, err = strconv.Atoi(separated[7])
+		n, err = strconv.Atoi(separated[6])
 		if err != nil {
 			return err
 		}
@@ -285,6 +279,11 @@ func (c *Consensus) parseRouterState(s string) error {
 		}
 		c.routerStatusTmp.BandWidth = uint32(n)
 
+		return nil
+	case strings.HasPrefix(s, "m "):
+		s = strings.TrimPrefix(s, "m ")
+
+		c.routerStatusTmp.MicrodescriptorDigest = s
 		return nil
 	case strings.HasPrefix(s, "p "):
 		s = strings.TrimPrefix(s, "p ")

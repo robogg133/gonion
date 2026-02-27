@@ -24,7 +24,7 @@ type NetInfoCell struct {
 
 func (*NetInfoCell) ID() uint8               { return COMMAND_NETINFO }
 func (c *NetInfoCell) GetCircuitID() uint32  { return c.CircuitID }
-func (c *NetInfoCell) setCircuitID(n uint32) { c.CircuitID = n }
+func (c *NetInfoCell) SetCircuitID(n uint32) { c.CircuitID = n }
 
 func (c *NetInfoCell) Encode(w io.Writer) error {
 
@@ -53,36 +53,42 @@ func (c *NetInfoCell) Encode(w io.Writer) error {
 }
 
 func (c *NetInfoCell) Decode(r io.Reader) error {
+
 	if err := binary.Read(r, binary.BigEndian, &c.Timestamp); err != nil {
 		return err
 	}
+	offst := 4
 
-	c.OtherAddr = unserializeIp(r)
+	c.OtherAddr = unserializeIp(r, &offst)
 
 	totalAddr := make([]byte, 1)
 	if _, err := io.ReadFull(r, totalAddr); err != nil {
 		return err
 	}
+	offst += 1
 
 	for range totalAddr[0] {
-		c.MyAdress = append(c.MyAdress, unserializeIp(r))
+		c.MyAdress = append(c.MyAdress, unserializeIp(r, &offst))
 	}
+	_, err := io.CopyN(io.Discard, r, int64(CELL_BODY_LEN-offst))
 
-	return nil
+	return err
 }
 
-func unserializeIp(reader io.Reader) netip.Addr {
+func unserializeIp(reader io.Reader, offset *int) netip.Addr {
 
 	b := make([]byte, 1)
 	_, err := reader.Read(b)
 	if err != nil {
 		panic(err)
 	}
+	*offset += 1
 	atype := b[0]
 
 	if _, err := io.CopyN(io.Discard, reader, 1); err != nil {
 		panic(err)
 	}
+	*offset += 1
 
 	switch atype {
 	case NETINFO_IPV4:
@@ -92,6 +98,7 @@ func unserializeIp(reader io.Reader) netip.Addr {
 		}
 
 		addr, _ := netip.AddrFromSlice(buffer)
+		*offset += 4
 		return addr
 
 	case NETINFO_IPV6:
@@ -101,6 +108,7 @@ func unserializeIp(reader io.Reader) netip.Addr {
 		}
 
 		addr, _ := netip.AddrFromSlice(buffer)
+		*offset += 16
 		return addr
 	}
 

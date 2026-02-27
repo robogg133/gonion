@@ -1,53 +1,20 @@
 package relay
 
 import (
-	"bytes"
-	"crypto/rand"
-	"encoding/binary"
-	"hash"
+	"io"
 )
 
 const (
 	COMMAND_BEGIN_DIR uint8 = 13
 )
 
-type RelayCell []byte
-
-type BeginDir struct {
+type BeginDirCell struct {
 	StreamID uint16
-
-	DigestWriter *hash.Hash
 }
 
-func (c *BeginDir) Serialize() RelayCell {
+func (*BeginDirCell) ID() uint8              { return COMMAND_BEGIN_DIR }
+func (c *BeginDirCell) GetStreamID() uint16  { return c.StreamID }
+func (c *BeginDirCell) SetStreamID(n uint16) { c.StreamID = n }
 
-	var result bytes.Buffer
-
-	result.WriteByte(COMMAND_BEGIN_DIR)
-	result.Write([]byte{0, 0}) //Recognized
-
-	streamID := make([]byte, 2)
-	binary.BigEndian.PutUint16(streamID, c.StreamID)
-	result.Write(streamID)
-
-	result.Write([]byte{0, 0, 0, 0}) // Digest 5:9
-
-	result.Write([]byte{0, 0}) // Length
-
-	padding := make([]byte, 498)
-	rand.Read(padding[4:])
-
-	result.Write(padding)
-
-	buffer := result.Bytes()
-	result.Reset()
-
-	w := *c.DigestWriter
-
-	w.Write(buffer)
-	sum := w.Sum(nil)
-
-	copy(buffer[5:9], sum[0:4])
-
-	return buffer
-}
+func (*BeginDirCell) Encode(io.Writer) error { return nil }
+func (*BeginDirCell) Decode(io.Reader) error { return nil }

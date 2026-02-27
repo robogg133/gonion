@@ -83,6 +83,8 @@ type RouterStatus struct {
 	ORPort   uint16
 	IPLevel  uint32
 
+	MicrodescriptorDigest string
+
 	DirPort uint16
 
 	BandWidth uint32
@@ -93,6 +95,10 @@ type RouterStatus struct {
 	StatusFlags   [FLAG_ARRAY_LENGTH]bool
 
 	Ports Ports
+
+	OnionKey     []byte
+	NtorOnionKey []byte
+	IdEd25519    []byte
 }
 
 type BandWidthWeight struct {
