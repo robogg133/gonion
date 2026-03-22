@@ -39,15 +39,19 @@ type Conn struct {
 
 	guardID uint32
 	exitID  uint32
+
+	cellBodyLen int
 }
 
 func NewConn(addr string) (*Conn, error) {
 
-	var conn Conn
-	conn.writeCall = make(chan []byte, 256)
-	conn.closeCh = make(chan string)
-	conn.circuits = &circuits{
-		circs: make(map[uint32]*Circuit),
+	conn := &Conn{
+		writeCall: make(chan []byte, 256),
+		closeCh:   make(chan string),
+		circuits: &circuits{
+			circs: make(map[uint32]*Circuit),
+		},
+		cellBodyLen: cells.CELL_BODY_LEN,
 	}
 
 	var err error
@@ -126,7 +130,7 @@ func NewConn(addr string) (*Conn, error) {
 	go conn.readLoop()
 	go conn.writeLoop()
 
-	return &conn, nil
+	return conn, nil
 }
 
 func (conn *Conn) Close() error {

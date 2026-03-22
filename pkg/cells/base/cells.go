@@ -43,17 +43,21 @@ var AllKnownCells = map[uint8]func() Cell{
 	COMMAND_RELAY:        func() Cell { return &RelayCell{} },
 }
 
-// NewCellTranslator can encode and decode cells
-func NewCellCoder(knwonCells map[uint8]func() Cell, constructor *relay.RelayCellCoder) *CellCoder {
+// NewCellCoder can encode and decode cells
+func NewCellCoder(knwonCells map[uint8]func() Cell, relayCoder *relay.RelayCellCoder) *CellCoder {
 	return &CellCoder{
 		knownCells:  knwonCells,
-		RelayCoder:  constructor,
+		RelayCoder:  relayCoder,
 		cellBodyLen: CELL_BODY_LEN,
 	}
 }
 
 // ReadCell reads a cell from the reader
 func (r *CellCoder) ReadCell(reader io.Reader) (Cell, error) {
+
+	if _, err := io.CopyN(io.Discard, reader, 4); err != nil {
+		return nil, err
+	}
 
 	cmd := make([]byte, 1)
 

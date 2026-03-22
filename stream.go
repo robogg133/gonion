@@ -2,6 +2,7 @@ package gonion2
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"sync"
 
@@ -17,7 +18,7 @@ type Stream struct {
 	CloseCh chan struct{}
 
 	Reader *io.PipeReader
-	Writer *io.PipeWriter
+	writer *io.PipeWriter
 
 	SendWindow    *window
 	ReceiveWindow *window
@@ -27,7 +28,7 @@ type Stream struct {
 	mu        sync.RWMutex
 	closeOnce sync.Once
 
-	receivedWindow chan struct{}
+	receiveSendMe chan struct{}
 }
 
 const (
@@ -42,10 +43,11 @@ func (c *Circuit) NewStream(kind string) (*Stream, error) {
 	r, w := io.Pipe()
 
 	stream := &Stream{
-		ID:      c.nextStreamID,
-		circuit: c,
-		Inbound: make(chan relay.Cell, 512),
-		CloseCh: make(chan struct{}),
+		ID:            c.nextStreamID,
+		circuit:       c,
+		Inbound:       make(chan relay.Cell, 512),
+		CloseCh:       make(chan struct{}, 1),
+		receiveSendMe: make(chan struct{}, 1),
 
 		SendWindow: &window{
 			v: 500,
@@ -56,7 +58,7 @@ func (c *Circuit) NewStream(kind string) (*Stream, error) {
 
 		State: STREAM_OPENING,
 
-		Writer: w,
+		writer: w,
 		Reader: r,
 	}
 
@@ -87,6 +89,7 @@ func (c *Circuit) NewStream(kind string) (*Stream, error) {
 
 func (s *Stream) loop() {
 	for {
+
 		s.ReceiveWindow.mu.Lock()
 		if s.ReceiveWindow.v%50 == 0 && s.ReceiveWindow.v != 500 {
 
@@ -96,13 +99,9 @@ func (s *Stream) loop() {
 				Sha1ForLastCell: [20]byte(s.circuit.Backwards.Sum()),
 			}
 
-			select {
-			case s.circuit.WriteRelayCell <- cell:
-				s.ReceiveWindow.Add(50)
-			case <-s.CloseCh:
-				s.Close()
-				return
-			}
+			s.SendCell(cell)
+			s.ReceiveWindow.v += 50
+
 		}
 		s.ReceiveWindow.mu.Unlock()
 
@@ -122,16 +121,60 @@ func (s *Stream) handleCell(cell relay.Cell) {
 	case relay.COMMAND_DATA:
 		s.ReceiveWindow.Subtract(1)
 		s.circuit.ReceiveWindow.Subtract(1)
-
-		if _, err := io.Copy(s.Writer, bytes.NewReader(cell.(*relay.DataCell).Payload)); err != nil {
+		if _, err := io.Copy(s.writer, bytes.NewReader(cell.(*relay.DataCell).Payload)); err != nil {
 			s.Close()
 			return
 		}
 	case relay.COMMAND_SENDME:
-		s.receivedWindow <- struct{}{}
+		s.receiveSendMe <- struct{}{}
 	case relay.COMMAND_RELAY_END:
 		s.Close()
 	}
+}
+
+func (s *Stream) Write(b []byte) (n int, err error) {
+	if s.State != STREAM_OPEN {
+		s.mu.RUnlock()
+		return 0, errors.New("stream closed")
+	}
+	var wrote int
+
+	for len(b) > 0 {
+		n := min(len(b), relay.RELAY_BODY_LEN)
+		payload := b[:n]
+		b = b[n:]
+		wrote += n
+
+		err := s.SendCell(&relay.DataCell{
+			StreamID: s.ID,
+			Payload:  payload,
+		})
+		if err != nil {
+			return wrote, err
+		}
+	}
+	return wrote, nil
+}
+
+func (s *Stream) SendCell(cell relay.Cell) error {
+
+	s.SendWindow.mu.Lock()
+	defer s.SendWindow.mu.Unlock()
+
+	cell.SetStreamID(s.ID)
+
+	if s.SendWindow.v%50 == 0 && s.SendWindow.v != 500 {
+		<-s.receiveSendMe
+		s.SendWindow.v += 50
+	}
+
+	select {
+	case s.circuit.WriteRelayCell <- cell:
+	case <-s.CloseCh:
+		return errors.New("stream closed")
+	}
+
+	return nil
 }
 
 func (s *Stream) Close() error {
@@ -139,8 +182,8 @@ func (s *Stream) Close() error {
 	s.State = STREAM_CLOSED
 
 	close(s.CloseCh)
-	close(s.receivedWindow)
+	close(s.receiveSendMe)
 	close(s.Inbound)
 
-	return s.Writer.Close()
+	return s.writer.Close()
 }

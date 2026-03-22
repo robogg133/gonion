@@ -35,12 +35,15 @@ type RelayCellCoder struct {
 	Backwards *crypto.RunningValues
 
 	Forwards *crypto.RunningValues
+
+	relayBodyLen int
 }
 
 func NewDataCellCoder(backwards, forward *crypto.RunningValues) *RelayCellCoder {
 	return &RelayCellCoder{
-		Backwards: backwards,
-		Forwards:  forward,
+		Backwards:    backwards,
+		Forwards:     forward,
+		relayBodyLen: RELAY_BODY_LEN,
 	}
 }
 
@@ -86,7 +89,7 @@ func (d *RelayCellCoder) Marshal(c Cell) ([]byte, error) {
 		return nil, err
 	}
 
-	applyPadding(&payload)
+	d.applyPadding(&payload)
 
 	if _, err := buffer.Write(payload.Bytes()); err != nil {
 		return nil, err
@@ -139,9 +142,9 @@ func (d *RelayCellCoder) Unmarshal(b []byte) (Cell, error) {
 	return c, c.Decode(reader)
 }
 
-func applyPadding(buffer *bytes.Buffer) error {
+func (d *RelayCellCoder) applyPadding(buffer *bytes.Buffer) error {
 
-	paddingNeed := RELAY_BODY_LEN - buffer.Len()
+	paddingNeed := d.relayBodyLen - buffer.Len()
 
 	if paddingNeed <= 4 {
 		for range paddingNeed {

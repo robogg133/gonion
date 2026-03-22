@@ -51,6 +51,7 @@ func (c *Conn) NewFastCircuit(id uint32) (*Circuit, error) {
 		CloseCh:        make(chan struct{}),
 		Inbound:        make(chan []byte, 512),
 		WriteRelayCell: make(chan relay.Cell, 128),
+		sendMeReceived: make(chan struct{}, 1),
 
 		streams: &streams{
 			streams: make(map[uint16]*Stream),
@@ -136,13 +137,16 @@ func (c *Conn) NewFastCircuit(id uint32) (*Circuit, error) {
 	return circuit, nil
 }
 
-func (*Circuit) Close() error {
+func (c *Circuit) Close() error {
+	c.teardown()
 	return nil
 }
 
 func (c *Circuit) loop() {
 	for {
+		fmt.Println("start circuit loop")
 
+		// Cheking receive window to send SENDME
 		c.ReceiveWindow.mu.Lock()
 		if c.ReceiveWindow.v%100 == 0 && c.ReceiveWindow.v != 1000 {
 
@@ -159,10 +163,12 @@ func (c *Circuit) loop() {
 				c.Close()
 				return
 			}
-			c.ReceiveWindow.Add(100)
+			c.ReceiveWindow.v += 100
 		}
 		c.ReceiveWindow.mu.Unlock()
+		fmt.Println("unlock loop")
 
+		// Read loop
 		select {
 		case rawCell := <-c.Inbound:
 			cell, err := c.Coder.ReadCell(bytes.NewReader(rawCell))
@@ -170,24 +176,45 @@ func (c *Circuit) loop() {
 				c.Close()
 				return
 			}
+
+			fmt.Printf("cell command : %d\n", cell.ID())
+
+			if cell.ID() == cells.COMMAND_RELAY {
+				fmt.Println("caught relay cell")
+				relaycell := cell.(*cells.RelayCell).Cell
+
+				if relaycell.GetStreamID() == 0 && relaycell.ID() == relay.COMMAND_SENDME {
+					c.sendMeReceived <- struct{}{}
+					continue
+				}
+
+				stream := c.streams.Get(relaycell.GetStreamID())
+				fmt.Println("select")
+				select {
+				case stream.Inbound <- relaycell:
+				case <-stream.CloseCh:
+					continue
+				}
+				fmt.Println("end select")
+
+			}
+
 			go c.handleCell(cell)
+			// Received relay cell from a stream and sending
 		case relayCell := <-c.WriteRelayCell:
 			cell := &cells.RelayCell{
 				RelayCoder: c.Coder.RelayCoder,
 				Cell:       relayCell,
 			}
 
-			if relayCell.ID() == relay.COMMAND_SENDME && relayCell.GetStreamID() == 0 {
-				c.sendMeReceived <- struct{}{}
-			}
-
-			go c.SendCell(cell)
+			c.SendCell(cell)
 
 		case <-c.CloseCh:
 			c.Close()
 			return
 
 		}
+		fmt.Println("end loop")
 	}
 }
 
@@ -236,8 +263,9 @@ func (c *Circuit) SendCell(cell cells.Cell) error {
 
 	cell.SetCircuitID(c.ID)
 
-	if c.SendWindow.v%100 == 0 && c.SendWindow.v < 1000 {
+	if c.SendWindow.v%100 == 0 && c.SendWindow.v != 1000 {
 		<-c.sendMeReceived
+		c.SendWindow.v += 100
 	}
 
 	b, err := c.Coder.MarshalCell(cell)
