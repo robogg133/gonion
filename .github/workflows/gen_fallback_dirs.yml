@@ -31,6 +31,8 @@ jobs:
           git config user.name "fallback dirs bot"
           git config user.email "github-actions@github.com"
 
+          git config pull.rebase true
+
           git add internal/shared/fallback_dirs.go
           git diff --cached --quiet || git commit -m "update fallback directory"
           git pull
