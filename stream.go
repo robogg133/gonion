@@ -46,7 +46,7 @@ func (c *Circuit) NewStream(kind string) (*Stream, error) {
 		ID:            c.nextStreamID,
 		circuit:       c,
 		Inbound:       make(chan relay.Cell, 512),
-		CloseCh:       make(chan struct{}, 1),
+		CloseCh:       make(chan struct{}),
 		receiveSendMe: make(chan struct{}, 1),
 
 		SendWindow: &window{
@@ -65,7 +65,7 @@ func (c *Circuit) NewStream(kind string) (*Stream, error) {
 	defer func() {
 		if !suc {
 			c.streams.Delete(stream.ID)
-			close(stream.CloseCh)
+			stream.Close()
 		}
 	}()
 
@@ -89,29 +89,27 @@ func (c *Circuit) NewStream(kind string) (*Stream, error) {
 
 func (s *Stream) loop() {
 	for {
-
+		// Check receive window and send SENDME if needed
 		s.ReceiveWindow.mu.Lock()
 		if s.ReceiveWindow.v%50 == 0 && s.ReceiveWindow.v != 500 {
-
 			cell := &relay.SendMeCell{
-				StreamID:        0,
-				Version:         1,
+				StreamID:        s.ID,
+				Version:         s.circuit.SendMeVersion,
 				Sha1ForLastCell: [20]byte(s.circuit.Backwards.Sum()),
 			}
-
 			s.SendCell(cell)
 			s.ReceiveWindow.v += 50
-
 		}
 		s.ReceiveWindow.mu.Unlock()
 
 		select {
-		case cell := <-s.Inbound:
-			go s.handleCell(cell)
+		case cell, ok := <-s.Inbound:
+			if !ok {
+				return
+			}
+			s.handleCell(cell)
 		case <-s.CloseCh:
-			s.Close()
 			return
-
 		}
 	}
 }
@@ -126,15 +124,24 @@ func (s *Stream) handleCell(cell relay.Cell) {
 			return
 		}
 	case relay.COMMAND_SENDME:
-		s.receiveSendMe <- struct{}{}
+		// Non-blocking send: if nobody is waiting it's fine to drop.
+		select {
+		case s.receiveSendMe <- struct{}{}:
+		default:
+		}
 	case relay.COMMAND_RELAY_END:
+		// Acknowledge the stream close by sending our own RELAY_END back.
+		// Without this, some relays send DESTROY with "protocol violation"
+		// because the stream teardown was half-closed from their perspective.
 		s.Close()
 	}
 }
 
 func (s *Stream) Write(b []byte) (n int, err error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
 	if s.State != STREAM_OPEN {
-		s.mu.RUnlock()
 		return 0, errors.New("stream closed")
 	}
 	var wrote int
@@ -157,15 +164,18 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 }
 
 func (s *Stream) SendCell(cell relay.Cell) error {
-
 	s.SendWindow.mu.Lock()
 	defer s.SendWindow.mu.Unlock()
 
 	cell.SetStreamID(s.ID)
 
 	if s.SendWindow.v%50 == 0 && s.SendWindow.v != 500 {
-		<-s.receiveSendMe
-		s.SendWindow.v += 50
+		select {
+		case <-s.receiveSendMe:
+			s.SendWindow.v += 50
+		case <-s.CloseCh:
+			return errors.New("stream closed")
+		}
 	}
 
 	select {
@@ -178,12 +188,16 @@ func (s *Stream) SendCell(cell relay.Cell) error {
 }
 
 func (s *Stream) Close() error {
+	var err error
+	s.closeOnce.Do(func() {
+		s.mu.Lock()
+		s.State = STREAM_CLOSED
+		s.mu.Unlock()
 
-	s.State = STREAM_CLOSED
-
-	close(s.CloseCh)
-	close(s.receiveSendMe)
-	close(s.Inbound)
-
-	return s.writer.Close()
+		close(s.CloseCh)
+		// Drain and close receiveSendMe so any blocked SendCell unblocks.
+		close(s.receiveSendMe)
+		err = s.writer.Close()
+	})
+	return err
 }

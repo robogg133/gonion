@@ -1,0 +1,38 @@
+package common
+
+import cells "git.servidordomal.fun/robogg133/gonion-rewrite/pkg/cells/base"
+
+func DestroyGetReasonS(reason uint8) string {
+
+	switch reason {
+	case cells.DESTROY_REASON_NONE:
+		return cells.DESTROY_REASON_NONE_MSG
+	case cells.DESTROY_REASON_PROTCOL:
+		return cells.DESTROY_REASON_PROTCOL_MSG
+	case cells.DESTROY_REASON_INTERNAL:
+		return cells.DESTROY_REASON_INTERNAL_MSG
+	case cells.DESTROY_REASON_REQUESTED:
+		return cells.DESTROY_REASON_REQUESTED_MSG
+	case cells.DESTROY_REASON_HIBERNATING:
+		return cells.DESTROY_REASON_HIBERNATING_MSG
+	case cells.DESTROY_REASON_RESOURCELIMIT:
+		return cells.DESTROY_REASON_RESOURCELIMIT_MSG
+	case cells.DESTROY_REASON_CONNECTFAILED:
+		return cells.DESTROY_REASON_CONNECTFAILED_MSG
+	case cells.DESTROY_REASON_OR_IDENTITY:
+		return cells.DESTROY_REASON_OR_IDENTITY_MSG
+	case cells.DESTROY_REASON_CHANNEL_CLOSED:
+		return cells.DESTROY_REASON_CHANNEL_CLOSED_MSG
+	case cells.DESTROY_REASON_FINISHED:
+		return cells.DESTROY_REASON_FINISHED_MSG
+	case cells.DESTROY_REASON_TIMEOUT:
+		return cells.DESTROY_REASON_TIMEOUT_MSG
+	case cells.DESTROY_REASON_DESTROYED:
+		return cells.DESTROY_REASON_DESTROYED_MSG
+	case cells.DESTROY_REASON_NOSUCHSERVICE:
+		return cells.DESTROY_REASON_NOSUCHSERVICE_MSG
+	default:
+		return ""
+	}
+
+}

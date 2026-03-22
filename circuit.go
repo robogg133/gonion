@@ -8,6 +8,7 @@ import (
 	"io"
 	"sync"
 
+	"git.servidordomal.fun/robogg133/gonion-rewrite/internal/common"
 	cells "git.servidordomal.fun/robogg133/gonion-rewrite/pkg/cells/base"
 	"git.servidordomal.fun/robogg133/gonion-rewrite/pkg/cells/relay"
 	"git.servidordomal.fun/robogg133/gonion-rewrite/pkg/crypto"
@@ -23,6 +24,7 @@ type Circuit struct {
 
 	Coder *cells.CellCoder
 
+	SendMeVersion uint8
 	ReceiveWindow *window
 	SendWindow    *window
 
@@ -63,6 +65,7 @@ func (c *Conn) NewFastCircuit(id uint32) (*Circuit, error) {
 		SendWindow: &window{
 			v: 1000,
 		},
+		SendMeVersion: 0,
 
 		nextStreamID: 1,
 		isUp:         true,
@@ -144,31 +147,26 @@ func (c *Circuit) Close() error {
 
 func (c *Circuit) loop() {
 	for {
-		fmt.Println("start circuit loop")
-
-		// Cheking receive window to send SENDME
+		// Check circuit receive window and send SENDME if needed
 		c.ReceiveWindow.mu.Lock()
 		if c.ReceiveWindow.v%100 == 0 && c.ReceiveWindow.v != 1000 {
-
 			cell := &cells.RelayCell{
 				RelayCoder: c.Coder.RelayCoder,
 				Cell: &relay.SendMeCell{
 					StreamID:        0,
-					Version:         1,
+					Version:         c.SendMeVersion,
 					Sha1ForLastCell: [20]byte(c.Backwards.Sum()),
 				},
 			}
-
 			if err := c.SendCell(cell); err != nil {
+				c.ReceiveWindow.mu.Unlock()
 				c.Close()
 				return
 			}
 			c.ReceiveWindow.v += 100
 		}
 		c.ReceiveWindow.mu.Unlock()
-		fmt.Println("unlock loop")
 
-		// Read loop
 		select {
 		case rawCell := <-c.Inbound:
 			cell, err := c.Coder.ReadCell(bytes.NewReader(rawCell))
@@ -177,44 +175,39 @@ func (c *Circuit) loop() {
 				return
 			}
 
-			fmt.Printf("cell command : %d\n", cell.ID())
-
 			if cell.ID() == cells.COMMAND_RELAY {
-				fmt.Println("caught relay cell")
 				relaycell := cell.(*cells.RelayCell).Cell
 
 				if relaycell.GetStreamID() == 0 && relaycell.ID() == relay.COMMAND_SENDME {
-					c.sendMeReceived <- struct{}{}
+					c.SendWindow.Add(100)
 					continue
 				}
 
 				stream := c.streams.Get(relaycell.GetStreamID())
-				fmt.Println("select")
+				if stream == nil {
+					continue
+				}
 				select {
 				case stream.Inbound <- relaycell:
 				case <-stream.CloseCh:
-					continue
 				}
-				fmt.Println("end select")
-
+				continue
 			}
 
+			// Non-relay cells (DESTROY, etc.)
 			go c.handleCell(cell)
-			// Received relay cell from a stream and sending
+
 		case relayCell := <-c.WriteRelayCell:
 			cell := &cells.RelayCell{
 				RelayCoder: c.Coder.RelayCoder,
 				Cell:       relayCell,
 			}
-
 			c.SendCell(cell)
 
 		case <-c.CloseCh:
 			c.Close()
 			return
-
 		}
-		fmt.Println("end loop")
 	}
 }
 
@@ -242,8 +235,9 @@ func (c *Circuit) handleCell(cell cells.Cell) {
 		}
 
 	case cells.COMMAND_DESTROY:
-		fmt.Println("RECEIVED DESTROY")
-		fmt.Printf("REASON %d\n", cell.(*cells.DestroyCell).Reason)
+		// #debug
+		fmt.Printf("RECEIVED DESTROY: (%d) %s\n", cell.(*cells.DestroyCell).Reason, common.DestroyGetReasonS(cell.(*cells.DestroyCell).Reason))
+		// #debug
 		c.Close()
 		return
 	}
@@ -264,8 +258,12 @@ func (c *Circuit) SendCell(cell cells.Cell) error {
 	cell.SetCircuitID(c.ID)
 
 	if c.SendWindow.v%100 == 0 && c.SendWindow.v != 1000 {
-		<-c.sendMeReceived
-		c.SendWindow.v += 100
+		select {
+		case <-c.sendMeReceived:
+			c.SendWindow.v += 100
+		case <-c.CloseCh:
+			return errors.New("circuit closed")
+		}
 	}
 
 	b, err := c.Coder.MarshalCell(cell)
