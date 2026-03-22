@@ -33,4 +33,5 @@ jobs:
 
           git add internal/shared/fallback_dirs.go
           git diff --cached --quiet || git commit -m "update fallback directory"
+          git pull
           git push

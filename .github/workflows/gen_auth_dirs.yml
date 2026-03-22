@@ -33,4 +33,5 @@ jobs:
 
           git add internal/shared/auth_dirs.go
           git diff --cached --quiet || git commit -m "update directory authorities"
+          git pull
           git push
