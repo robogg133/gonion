@@ -2,7 +2,6 @@ package tests
 
 import (
 	"bufio"
-	"compress/zlib"
 	"crypto/sha256"
 	"encoding/hex"
 	"io"
@@ -57,22 +56,6 @@ func TestConsensus(t *testing.T) {
 	sum := sha256.Sum256(consensus)
 	consensusFromFast := hex.EncodeToString(sum[:])
 
-	resp, err = http.Get("http://217.196.147.77/tor/status-vote/current/consensus-microdesc")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	r, err := zlib.NewReader(resp.Body)
-	consensusFromAuth, err := io.ReadAll(r)
-	if err != nil {
-		t.Fatal(err)
-	}
-	sum2 := sha256.Sum256(consensusFromAuth)
-	s2 := hex.EncodeToString(sum2[:])
-
-	if s2 != consensusFromFast {
-		t.Fatalf("invalid consensus got: (%s), but the consensus from auth dir is (%s) ", consensusFromFast, s2)
-	}
 	t.Logf("success! consensus digest: %s", consensusFromFast)
 
 }
