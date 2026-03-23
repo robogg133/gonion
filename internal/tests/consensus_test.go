@@ -32,7 +32,7 @@ func TestConsensus(t *testing.T) {
 	}
 	t.Log("Stream open")
 
-	req, err := http.NewRequest("GET", "/tor/status-vote/current/consensus-microdesc", nil)
+	req, err := http.NewRequest("GET", gonion2.HTTP_PATH_CONSENSUS_MICRODESC, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
