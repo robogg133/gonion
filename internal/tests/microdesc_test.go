@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"testing"
 
 	gonion2 "git.servidordomal.fun/robogg133/gonion-rewrite"
@@ -32,14 +33,14 @@ func TestMicrodesc(t *testing.T) {
 	}
 	t.Log("Stream open")
 
-	blobDigest, err := base64.RawStdEncoding.DecodeString("CY/HgOYzVyCkQKpS5P+MlU/qD3gRbb7NROmuGTUx2g0")
+	blobDigest, err := base64.RawStdEncoding.DecodeString("XqUDv1SH3bF+mozbmkZxGbaNn3MqaUj21GAnY4UTvHo")
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	fmt.Printf("given sha256sum: %x\n", blobDigest)
 
-	req, err := http.NewRequest("GET", fmt.Sprintf(gonion2.HTTP_PATH_MICRODESCRIPTOR_DIR_FORMAT, "CY/HgOYzVyCkQKpS5P+MlU/qD3gRbb7NROmuGTUx2g0"), nil)
+	req, err := http.NewRequest("GET", fmt.Sprintf(gonion2.HTTP_PATH_MICRODESCRIPTOR_DIR_FORMAT, "XqUDv1SH3bF+mozbmkZxGbaNn3MqaUj21GAnY4UTvHo"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,5 +66,7 @@ func TestMicrodesc(t *testing.T) {
 	if !bytes.Equal(sum[:], blobDigest) {
 		t.Fatal("unequivalent sha256sum")
 	}
+
+	os.WriteFile("microdesc_dir.txt", desc, 0777)
 
 }
