@@ -1,11 +1,13 @@
 package gonion2
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"sync"
 
 	"git.servidordomal.fun/robogg133/gonion-rewrite/internal/common"
@@ -139,6 +141,40 @@ func (c *Conn) NewFastCircuit(id uint32) (*Circuit, error) {
 	go circuit.loop()
 	return circuit, nil
 }
+
+func (c *Circuit) GetConsensus() (*common.Consensus, error) {
+	s, err := c.NewStream("dir")
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("GET", HTTP_PATH_CONSENSUS_MICRODESC, nil)
+	if err != nil {
+		return nil, err
+	}
+	if err := req.Write(s); err != nil {
+		return nil, err
+	}
+
+	consensusResp, err := http.ReadResponse(bufio.NewReader(s.Reader), req)
+	if err != nil {
+		return nil, err
+	}
+	defer consensusResp.Body.Close()
+
+	consensus, err := common.ParseConsensus(bufio.NewScanner(consensusResp.Body))
+	if err != nil {
+		return nil, err
+	}
+
+	return consensus, nil
+}
+// GetMicrodescriptors uses src with microdescriptorsDigset and return it's values
+func (c *Circuit) GetMicrodescriptors(src []string) error {
+
+	return nil
+}
+
 
 func (c *Circuit) Close() error {
 	c.teardown()

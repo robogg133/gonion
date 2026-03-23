@@ -96,7 +96,7 @@ type RouterStatus struct {
 	Ports Ports
 
 	OnionKey     []byte
-	NtorOnionKey []byte
+	NTorOnionKey []byte
 	IdEd25519    []byte
 
 	Family [][20]byte

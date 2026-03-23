@@ -9,6 +9,10 @@ import (
 	"git.servidordomal.fun/robogg133/gonion-rewrite/pkg/cells/relay"
 )
 
+const (
+	HTTP_PATH_CONSENSUS_MICRODESC string = "/tor/status-vote/current/consensus-microdesc"
+)
+
 type Stream struct {
 	ID uint16
 
