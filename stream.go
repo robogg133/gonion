@@ -10,7 +10,8 @@ import (
 )
 
 const (
-	HTTP_PATH_CONSENSUS_MICRODESC string = "/tor/status-vote/current/consensus-microdesc"
+	HTTP_PATH_CONSENSUS_MICRODESC        string = "/tor/status-vote/current/consensus-microdesc"
+	HTTP_PATH_MICRODESCRIPTOR_DIR_FORMAT string = "/tor/micro/d/%s"
 )
 
 type Stream struct {
