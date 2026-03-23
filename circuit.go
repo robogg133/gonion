@@ -227,7 +227,7 @@ func (c *Circuit) loop() {
 				Cell: &relay.SendMeCell{
 					StreamID:        0,
 					Version:         c.SendMeVersion,
-					Sha1ForLastCell: [20]byte(c.Backwards.Sum()),
+					Sha1ForLastCell: c.Backwards.GetLastSumDataCell(),
 				},
 			}
 			if err := c.SendCell(cell); err != nil {

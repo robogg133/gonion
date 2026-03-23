@@ -100,7 +100,7 @@ func (s *Stream) loop() {
 			cell := &relay.SendMeCell{
 				StreamID:        s.ID,
 				Version:         s.circuit.SendMeVersion,
-				Sha1ForLastCell: [20]byte(s.circuit.Backwards.Sum()),
+				Sha1ForLastCell: s.circuit.Backwards.GetLastSumDataCell(),
 			}
 			s.SendCell(cell)
 			s.ReceiveWindow.v += 50
@@ -169,6 +169,11 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 }
 
 func (s *Stream) SendCell(cell relay.Cell) error {
+
+	if s.State == STREAM_CLOSED {
+		return nil
+	}
+
 	s.SendWindow.mu.Lock()
 	defer s.SendWindow.mu.Unlock()
 

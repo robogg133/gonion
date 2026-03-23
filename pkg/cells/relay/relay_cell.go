@@ -104,12 +104,16 @@ func (d *RelayCellCoder) Marshal(c Cell) ([]byte, error) {
 	}
 
 	digest := d.Forwards.Sum()
+	if c.ID() == COMMAND_DATA {
+		d.Forwards.SetLastSumDataCell([20]byte(digest))
+	}
 
 	copy(b[5:9], digest[0:4]) // Copy the firsts 4 bytes from the sum, to the Digest
 
 	dst := make([]byte, 509) // 509 = 498 (Payload length) + 11 (Headers length)
 	d.Forwards.XORKeyStream(dst, b)
 	b = nil
+
 	return dst, nil
 }
 
@@ -185,6 +189,9 @@ func (d *RelayCellCoder) backwardCheck(b []byte) error {
 		return err
 	}
 	sum := d.Backwards.Sum()
+	if b[0] == COMMAND_DATA {
+		d.Backwards.SetLastSumDataCell([20]byte(sum))
+	}
 
 	if !bytes.Equal(originalD[:], sum[0:4]) {
 		return fmt.Errorf("error doing backward check, expected result: (%x), but got: (%x)", originalD, sum[0:4])
