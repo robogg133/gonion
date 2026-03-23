@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 
 	"git.servidordomal.fun/robogg133/gonion-rewrite/internal/common"
@@ -169,12 +170,47 @@ func (c *Circuit) GetConsensus() (*common.Consensus, error) {
 
 	return consensus, nil
 }
+
 // GetMicrodescriptors uses src with microdescriptorsDigset and return it's values
-func (c *Circuit) GetMicrodescriptors(src []string) error {
+func (c *Circuit) GetMicrodescriptors(src []string) ([]*common.Microdesc, error) {
 
-	return nil
+	if len(src) > 91 {
+		return nil, fmt.Errorf("max digests overflow (91): %d", len(src))
+	}
+
+	var builder strings.Builder
+
+	for _, str := range src {
+		if _, err := builder.WriteString(str + "-"); err != nil {
+			return nil, err
+		}
+	}
+
+	allDigests := strings.TrimSuffix(builder.String(), "-")
+
+	s, err := c.NewStream("dir")
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("GET", fmt.Sprintf(HTTP_PATH_MICRODESCRIPTOR_DIR_FORMAT, allDigests), nil)
+	if err != nil {
+		return nil, err
+	}
+	if err := req.Write(s); err != nil {
+		return nil, err
+	}
+
+	microDescs, err := http.ReadResponse(bufio.NewReader(s.Reader), req)
+	if err != nil {
+		return nil, err
+	}
+	defer microDescs.Body.Close()
+
+	// NEED TO IMPLEMENT
+
+	return nil, nil
 }
-
 
 func (c *Circuit) Close() error {
 	c.teardown()
