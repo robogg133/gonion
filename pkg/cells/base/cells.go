@@ -6,7 +6,7 @@ import (
 	"errors"
 	"io"
 
-	"git.servidordomal.fun/robogg133/gonion-rewrite/pkg/cells/relay"
+	"git.servidordomal.fun/robogg133/gonion/pkg/cells/relay"
 )
 
 const CELL_BODY_LEN int = 509

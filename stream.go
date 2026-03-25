@@ -6,7 +6,7 @@ import (
 	"io"
 	"sync"
 
-	"git.servidordomal.fun/robogg133/gonion-rewrite/pkg/cells/relay"
+	"git.servidordomal.fun/robogg133/gonion/pkg/cells/relay"
 )
 
 const (

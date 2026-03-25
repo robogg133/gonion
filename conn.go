@@ -13,9 +13,9 @@ import (
 	"sync"
 	"time"
 
-	cells "git.servidordomal.fun/robogg133/gonion-rewrite/pkg/cells/base"
-	"git.servidordomal.fun/robogg133/gonion-rewrite/pkg/cells/relay"
-	"git.servidordomal.fun/robogg133/gonion-rewrite/pkg/crypto"
+	cells "git.servidordomal.fun/robogg133/gonion/pkg/cells/base"
+	"git.servidordomal.fun/robogg133/gonion/pkg/cells/relay"
+	"git.servidordomal.fun/robogg133/gonion/pkg/crypto"
 )
 
 const CONNECTION_TIMEOUT = 60 * time.Second

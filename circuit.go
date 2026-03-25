@@ -11,10 +11,10 @@ import (
 	"strings"
 	"sync"
 
-	"git.servidordomal.fun/robogg133/gonion-rewrite/internal/common"
-	cells "git.servidordomal.fun/robogg133/gonion-rewrite/pkg/cells/base"
-	"git.servidordomal.fun/robogg133/gonion-rewrite/pkg/cells/relay"
-	"git.servidordomal.fun/robogg133/gonion-rewrite/pkg/crypto"
+	"git.servidordomal.fun/robogg133/gonion/internal/common"
+	cells "git.servidordomal.fun/robogg133/gonion/pkg/cells/base"
+	"git.servidordomal.fun/robogg133/gonion/pkg/cells/relay"
+	"git.servidordomal.fun/robogg133/gonion/pkg/crypto"
 )
 
 type Circuit struct {

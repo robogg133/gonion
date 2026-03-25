@@ -1,6 +1,6 @@
 package common
 
-import cells "git.servidordomal.fun/robogg133/gonion-rewrite/pkg/cells/base"
+import cells "git.servidordomal.fun/robogg133/gonion/pkg/cells/base"
 
 func DestroyGetReasonS(reason uint8) string {
 

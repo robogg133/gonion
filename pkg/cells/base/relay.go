@@ -3,7 +3,7 @@ package cells
 import (
 	"io"
 
-	"git.servidordomal.fun/robogg133/gonion-rewrite/pkg/cells/relay"
+	"git.servidordomal.fun/robogg133/gonion/pkg/cells/relay"
 )
 
 const COMMAND_RELAY uint8 = 3

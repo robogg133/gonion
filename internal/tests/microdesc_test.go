@@ -11,7 +11,7 @@ import (
 	"os"
 	"testing"
 
-	gonion2 "git.servidordomal.fun/robogg133/gonion-rewrite"
+	gonion2 "git.servidordomal.fun/robogg133/gonion"
 )
 
 func TestMicrodesc(t *testing.T) {

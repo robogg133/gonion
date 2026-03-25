@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"io"
 
-	"git.servidordomal.fun/robogg133/gonion-rewrite/pkg/crypto"
+	"git.servidordomal.fun/robogg133/gonion/pkg/crypto"
 )
 
 // All cells must be 514 bytes (on version 4+): 5 bytes for the headers, +11 for internal relay protocol, so the body must be 498 bytes

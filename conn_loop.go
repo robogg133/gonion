@@ -5,7 +5,7 @@ import (
 	"encoding/binary"
 	"io"
 
-	cells "git.servidordomal.fun/robogg133/gonion-rewrite/pkg/cells/base"
+	cells "git.servidordomal.fun/robogg133/gonion/pkg/cells/base"
 )
 
 func (c *Conn) readLoop() {

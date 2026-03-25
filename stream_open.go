@@ -3,7 +3,7 @@ package gonion2
 import (
 	"errors"
 
-	"git.servidordomal.fun/robogg133/gonion-rewrite/pkg/cells/relay"
+	"git.servidordomal.fun/robogg133/gonion/pkg/cells/relay"
 )
 
 func (s *Stream) beginDir() error {
