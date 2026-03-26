@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"testing"
@@ -13,7 +14,12 @@ import (
 )
 
 func TestConsensus(t *testing.T) {
-	conn, err := gonion2.NewConn("38.102.127.252:9004")
+
+	c, err := net.Dial("tcp", "38.102.127.252:9004")
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := gonion2.NewConn(c)
 	if err != nil {
 		t.Fatal(err)
 	}

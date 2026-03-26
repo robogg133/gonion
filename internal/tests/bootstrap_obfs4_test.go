@@ -2,15 +2,15 @@ package tests
 
 import (
 	"fmt"
-	"net"
 	"testing"
 
 	gonion2 "git.servidordomal.fun/robogg133/gonion"
+	"git.servidordomal.fun/robogg133/gonion/pkg/transports/obfs4"
 )
 
-func TestMicrodesc(t *testing.T) {
-
-	c, err := net.Dial("tcp", "38.102.127.252:9004")
+// obfs4 93.177.73.226:24852 99ED350316AFC4ED1964CFE9EC84C201416D143D cert=KciXEUlkxmOHsVFLh6s3fAEWO7p0GHt6jhhTj/XaWM8/VmCYqbzPmRM+Q4PA1AcJ8JyWBA iat-mode=0
+func TestMicrodescObfs4(t *testing.T) {
+	c, err := obfs4.Dial("93.177.73.226:24852", "99ED350316AFC4ED1964CFE9EC84C201416D143D", "KciXEUlkxmOHsVFLh6s3fAEWO7p0GHt6jhhTj/XaWM8/VmCYqbzPmRM+Q4PA1AcJ8JyWBA", "0")
 	if err != nil {
 		t.Fatal(err)
 	}

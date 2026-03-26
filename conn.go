@@ -43,7 +43,7 @@ type Conn struct {
 	cellBodyLen int
 }
 
-func NewConn(addr string) (*Conn, error) {
+func NewConn(c net.Conn) (*Conn, error) {
 
 	conn := &Conn{
 		writeCall: make(chan []byte, 256),
@@ -55,10 +55,12 @@ func NewConn(addr string) (*Conn, error) {
 	}
 
 	var err error
-	conn.socket, conn.Cert, err = setupTls(addr)
+	conn.socket, conn.Cert, err = setupTls(c)
 	if err != nil {
 		return nil, err
 	}
+
+	conn.socket.SetDeadline(time.Now().Add(60 * time.Second))
 
 	conn.ProtcolVersion, err = negotiateVersion(conn.socket, conn.socket)
 	if err != nil {
@@ -123,9 +125,8 @@ func NewConn(addr string) (*Conn, error) {
 	if err := coder.WriteCell(&info, conn.socket); err != nil {
 		return nil, err
 	}
-	if err := conn.socket.SetDeadline(time.Time{}); err != nil {
-		return nil, err
-	}
+
+	conn.socket.SetDeadline(time.Time{})
 
 	go conn.readLoop()
 	go conn.writeLoop()
@@ -137,39 +138,25 @@ func (conn *Conn) Close() error {
 	return nil
 }
 
-func setupTls(addr string) (net.Conn, *x509.Certificate, error) {
+func setupTls(c net.Conn) (net.Conn, *x509.Certificate, error) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), CONNECTION_TIMEOUT)
 	defer cancel()
 
-	dialer := &tls.Dialer{
-		Config: &tls.Config{
+	tlsConn := tls.Client(c, &tls.Config{
+		InsecureSkipVerify: true,
 
-			InsecureSkipVerify: true,
-
-			// Adding tor cipher suites
-			CipherSuites: []uint16{
-				tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
-				tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,
-			},
-			// Disabling session resumption
-			SessionTicketsDisabled: true,
-			ClientSessionCache:     nil,
+		// Adding tor cipher suites
+		CipherSuites: []uint16{
+			tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+			tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,
 		},
-	}
+		// Disabling session resumption
+		SessionTicketsDisabled: true,
+		ClientSessionCache:     nil,
+	})
 
-	conn, err := dialer.DialContext(ctx, "tcp", addr)
-	if err != nil {
-		return nil, nil, err
-	}
-	conn.SetDeadline(time.Now().Add(60 * time.Second))
-
-	tlsConn, ok := conn.(*tls.Conn)
-	if !ok {
-		return nil, nil, err
-	}
-
-	if err := tlsConn.Handshake(); err != nil {
+	if err := tlsConn.HandshakeContext(ctx); err != nil {
 		return nil, nil, err
 	}
 

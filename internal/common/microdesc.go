@@ -27,6 +27,8 @@ type Microdesc struct {
 	IdEd25519    []byte
 	Family       [][]byte
 	Familys      []*FamilyIDs
+
+	ExitRules *Ports
 }
 
 type FamilyIDs struct {
@@ -142,6 +144,17 @@ func parseMicrodescBlock(data []byte) (*Microdesc, error) {
 			if err != nil {
 				return nil, err
 			}
+
+		case strings.HasPrefix(txt, "p "):
+			txt = strings.TrimPrefix(txt, "p ")
+			txt = strings.TrimSuffix(txt, "\n")
+
+			ports := &Ports{}
+			if err := ParsePortsLine(ports, txt); err != nil {
+				return nil, err
+			}
+
+			m.ExitRules = ports
 		}
 	}
 
