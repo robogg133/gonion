@@ -54,7 +54,7 @@ func (c *Circuit) GetMicrodescriptors(src []string) ([]*common.Microdesc, error)
 
 	digests := make([][]byte, len(src))
 
-	for _, str := range src {
+	for i, str := range src {
 		if _, err := builder.WriteString(str + "-"); err != nil {
 			return nil, err
 		}
@@ -63,7 +63,7 @@ func (c *Circuit) GetMicrodescriptors(src []string) ([]*common.Microdesc, error)
 		if err != nil {
 			return nil, err
 		}
-		digests = append(digests, b)
+		digests[i] = b
 	}
 	allDigests := strings.TrimSuffix(builder.String(), "-")
 

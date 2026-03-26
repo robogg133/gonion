@@ -7,7 +7,8 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/pem"
-	"fmt"
+	"errors"
+
 	"io"
 	"strings"
 )
@@ -33,7 +34,7 @@ type FamilyIDs struct {
 	Value []byte
 }
 
-func ParseMicrodescFile(reader *bufio.Reader, digsetsInOrder [][]byte) (microdesc []*Microdesc, err error) {
+func ParseMicrodescFile(reader *bufio.Reader, digsets [][]byte) (microdesc []*Microdesc, err error) {
 
 	builder := &bytes.Buffer{}
 
@@ -54,11 +55,20 @@ func ParseMicrodescFile(reader *bufio.Reader, digsetsInOrder [][]byte) (microdes
 		if strings.HasPrefix(string(text), id_ed25519_microdesc_prefix) {
 
 			digNow := sha256.Sum256(builder.Bytes())
-			digMust := digsetsInOrder[i]
 
-			if !bytes.Equal(digNow[:], digMust) {
-				return nil, fmt.Errorf("microdesc: invalid digest block id: %d", i)
+			found := false
+
+			// idk, this isn't used too many times so i think it can be that for now and later be changed for a map
+			for _, v := range digsets {
+				if bytes.Equal(digNow[:], v) {
+					found = true
+				}
 			}
+
+			if !found {
+				return nil, errors.New("invalid dir")
+			}
+
 			i++
 
 			m, err := parseMicrodescBlock(builder.Bytes())
@@ -158,8 +168,6 @@ func parseOnionKey(r *bufio.Reader) []byte {
 		}
 	}
 
-	fmt.Print(b.String())
-
 	p, _ := pem.Decode(b.Bytes())
 
 	return p.Bytes
@@ -195,7 +203,6 @@ func parseFamily(s string) (family [][]byte, err error) {
 
 		b, err := hex.DecodeString(str)
 		if err != nil {
-			fmt.Println(str)
 			return nil, err
 		}
 

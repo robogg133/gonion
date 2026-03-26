@@ -23,8 +23,9 @@ func TestMicrodesc(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Log("Got consensus")
 
-	a := make([]string, 91)
+	var a []string
 
 	for i := range 91 {
 		a = append(a, cns.RelayInformation[i].MicrodescriptorDigest)
@@ -34,6 +35,8 @@ func TestMicrodesc(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	t.Log("Got microdescriptors")
 
 	if len(desc) != 91 {
 		t.Fatal(err)
