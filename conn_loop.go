@@ -1,4 +1,4 @@
-package gonion2
+package gonion
 
 import (
 	"bytes"
