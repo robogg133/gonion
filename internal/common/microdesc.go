@@ -1,5 +1,7 @@
 package common
 
+// This file have some perfomance issues and NEED's a refactor in the future
+
 import (
 	"bufio"
 	"bytes"
@@ -36,14 +38,12 @@ type FamilyIDs struct {
 	Value []byte
 }
 
-func ParseMicrodescFile(reader *bufio.Reader, digsets [][]byte) (microdesc []*Microdesc, err error) {
-
+func ParseMicrodescFile(reader *bufio.Reader, digests [][]byte) (microdesc []*Microdesc, err error) {
 	builder := &bytes.Buffer{}
 
-	i := 0
+	microdesc = make([]*Microdesc, len(digests))
 
 	for {
-
 		text, err := reader.ReadBytes('\n')
 		if err != nil {
 			if err == io.EOF {
@@ -59,11 +59,13 @@ func ParseMicrodescFile(reader *bufio.Reader, digsets [][]byte) (microdesc []*Mi
 			digNow := sha256.Sum256(builder.Bytes())
 
 			found := false
+			index := 0
 
 			// idk, this isn't used too many times so i think it can be that for now and later be changed for a map
-			for _, v := range digsets {
+			for i, v := range digests {
 				if bytes.Equal(digNow[:], v) {
 					found = true
+					index = i
 				}
 			}
 
@@ -71,13 +73,11 @@ func ParseMicrodescFile(reader *bufio.Reader, digsets [][]byte) (microdesc []*Mi
 				return nil, errors.New("invalid dir")
 			}
 
-			i++
-
 			m, err := parseMicrodescBlock(builder.Bytes())
 			if err != nil {
 				return nil, err
 			}
-			microdesc = append(microdesc, m)
+			microdesc[index] = m
 			builder.Reset()
 		}
 

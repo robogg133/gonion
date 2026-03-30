@@ -1,15 +1,16 @@
 package common
 
 import (
+	"sync"
 	"time"
 )
 
 const AUTH_DIR_NUM_AGREEMENTS uint8 = 9
 
-var GlobalConsensus Consensus
+var GlobalConsensus *Consensus
 var alrInit bool
 
-func SetGlobalConsensus(c Consensus) {
+func SetGlobalConsensus(c *Consensus) {
 	GlobalConsensus = c
 	alrInit = true
 }
@@ -18,7 +19,7 @@ func GetGlobalConsensus() *Consensus {
 	if !alrInit {
 		return nil
 	}
-	return &GlobalConsensus
+	return GlobalConsensus
 }
 
 const (
@@ -61,6 +62,8 @@ func (p *Ports) turnOnAllPorts() {
 type Consensus struct {
 	NetowrkStatusVersion uint8
 
+	Mu sync.RWMutex
+
 	ValidAfter time.Time
 	FreshUntil time.Time
 	ValidUntil time.Time
@@ -99,7 +102,8 @@ type RouterStatus struct {
 	NTorOnionKey []byte
 	IdEd25519    []byte
 
-	Family [][20]byte
+	Family  [][]byte
+	Familys []*FamilyIDs
 }
 
 type BandWidthWeight struct {

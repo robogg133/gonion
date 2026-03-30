@@ -1,10 +1,10 @@
 package tests
 
 import (
-	"fmt"
 	"net"
 	"testing"
 
+	"git.servidordomal.fun/robogg133/gonion"
 	gonion2 "git.servidordomal.fun/robogg133/gonion"
 )
 
@@ -21,38 +21,8 @@ func TestMicrodesc(t *testing.T) {
 	}
 	t.Log("Created conn")
 
-	circuit, err := conn.NewFastCircuit(1)
-	if err != nil {
+	if err := gonion.BootstrapOneConn(conn); err != nil {
 		t.Fatal(err)
-	}
-	t.Log("Created circuit")
-
-	cns, err := circuit.GetConsensus()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Log("Got consensus")
-
-	var a []string
-
-	for i := range 91 {
-		a = append(a, cns.RelayInformation[i].MicrodescriptorDigest)
-	}
-
-	desc, err := circuit.GetMicrodescriptors(a)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	t.Log("Got microdescriptors")
-
-	for _, v := range desc {
-		if v.ExitRules == nil {
-			fmt.Println(false)
-			continue
-		}
-		fmt.Println(v.ExitRules.IsAllowed(80))
-
 	}
 
 }
