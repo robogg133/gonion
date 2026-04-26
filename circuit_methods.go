@@ -2,9 +2,15 @@ package gonion
 
 import (
 	"bufio"
+	"bytes"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"git.servidordomal.fun/robogg133/gonion/internal/common"
@@ -84,7 +90,23 @@ func (c *Circuit) GetMicrodescriptors(src []string) ([]*common.Microdesc, error)
 	if err != nil {
 		return nil, err
 	}
-	defer microDescs.Body.Close()
 
-	return common.ParseMicrodescFile(bufio.NewReader(microDescs.Body), digests)
+	content, err := io.ReadAll(microDescs.Body)
+	if err != nil {
+		return nil, err
+	}
+	microDescs.Body.Close()
+
+	if err := os.MkdirAll("microdescs", 0755); err != nil {
+		return nil, err
+	}
+
+	sum := sha256.Sum256(content)
+	if err := os.WriteFile(filepath.Join("microdescs", hex.EncodeToString(sum[:])), content, 0755); err != nil {
+		return nil, err
+	}
+
+	fmt.Println("=====THIS MICRODESC DIGEST IS=====\n" + hex.EncodeToString(sum[:]) + "\n=====") // debugging
+
+	return common.ParseMicrodescFile(bufio.NewReader(bytes.NewReader(content)), digests)
 }

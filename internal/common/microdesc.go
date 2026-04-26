@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/pem"
 	"errors"
+	"fmt"
 
 	"io"
 	"strings"
@@ -44,6 +45,7 @@ func ParseMicrodescFile(reader *bufio.Reader, digests [][]byte) (microdesc []*Mi
 	microdesc = make([]*Microdesc, len(digests))
 
 	for {
+		fmt.Println("=> Read loop start")
 		text, err := reader.ReadBytes('\n')
 		if err != nil {
 			if err == io.EOF {
@@ -81,6 +83,7 @@ func ParseMicrodescFile(reader *bufio.Reader, digests [][]byte) (microdesc []*Mi
 			builder.Reset()
 		}
 
+		fmt.Println("=> loop END")
 	}
 
 	return microdesc, nil

@@ -136,7 +136,8 @@ func (c *Conn) NewFastCircuit(id uint32) (*Circuit, error) {
 	)
 
 	suc = true
-	go circuit.loop()
+	go circuit.readloop()
+	go circuit.writeLoop()
 	return circuit, nil
 }
 
