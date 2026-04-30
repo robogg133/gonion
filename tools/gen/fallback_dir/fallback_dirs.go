@@ -80,9 +80,12 @@ func main() {
 		}
 	}
 
+	fmt.Println("/* type=fallback */")
+	fmt.Println("/* version=4.0.0 */")
 	fmt.Printf("/* timestamp=%d */\n", time.Now().UTC().Unix())
+	fmt.Println("/* source=offer-list */")
 	fmt.Println("//")
-	fmt.Printf("// Generated on: %s\n\n", time.Now().String())
+	fmt.Printf("// Generated on: %s\n\n", time.Now().UTC().Format("Mon, 02 Jan 2006 15:04:05 -0700"))
 
 	fmt.Print("package shared\n\n")
 	fmt.Println("type FallbackDir struct {")

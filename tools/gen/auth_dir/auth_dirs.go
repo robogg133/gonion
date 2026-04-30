@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"time"
 )
 
 const TOR_AUTH_DIRS_INC_GITLAB_RAW string = "https://gitlab.torproject.org/tpo/core/tor/-/raw/main/src/app/config/auth_dirs.inc?ref_type=heads&inline=false"
@@ -100,10 +99,6 @@ func main() {
 			cur = nil
 		}
 	}
-
-	fmt.Printf("/* timestamp=%d */\n", time.Now().UTC().Unix())
-	fmt.Println("//")
-	fmt.Printf("// Generated on: %s\n\n", time.Now().String())
 
 	fmt.Print("package shared\n\n")
 	fmt.Println("type DirectoryAuthority struct {")
