@@ -1,7 +1,3 @@
-/* timestamp=1777259730 */
-//
-// Generated on: 2026-04-27 03:15:30.26090226 +0000 UTC m=+0.560689500
-
 package shared
 
 type DirectoryAuthority struct {
