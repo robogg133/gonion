@@ -1,6 +1,9 @@
-/* timestamp=1777518338 */
+/* type=fallback */
+/* version=4.0.0 */
+/* timestamp=1777604738 */
+/* source=offer-list */
 //
-// Generated on: 2026-04-30 03:05:38.683448314 +0000 UTC m=+0.818870568
+// Generated on: Fri, 01 May 2026 03:05:38 +0000
 
 package shared
 
