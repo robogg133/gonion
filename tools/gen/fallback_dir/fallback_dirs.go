@@ -4,11 +4,9 @@ package main
 import (
 	"bufio"
 	"fmt"
-	"log"
 	"net/http"
 	"strconv"
 	"strings"
-	"time"
 )
 
 const TOR_FALLBACK_DIRS_INC_GITLAB_RAW string = "https://gitlab.torproject.org/tpo/core/tor/-/raw/main/src/app/config/fallback_dirs.inc?ref_type=heads&inline=false"
@@ -22,7 +20,7 @@ func main() {
 
 	in, err := http.Get(TOR_FALLBACK_DIRS_INC_GITLAB_RAW)
 	if err != nil {
-		log.Fatal(err)
+		panic(err)
 	}
 	defer in.Body.Close()
 
@@ -30,6 +28,16 @@ func main() {
 	var cur *Fallback
 
 	scanner := bufio.NewScanner(in.Body)
+
+	var metaData string
+	for i := range 6 {
+		if !scanner.Scan() {
+			panic(fmt.Errorf("error scanning for line number %d", i))
+		}
+		metaData = metaData + scanner.Text() + "\n"
+	}
+	metaData += "\n"
+
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 
@@ -80,12 +88,16 @@ func main() {
 		}
 	}
 
-	fmt.Println("/* type=fallback */")
-	fmt.Println("/* version=4.0.0 */")
-	fmt.Printf("/* timestamp=%d */\n", time.Now().UTC().Unix())
-	fmt.Println("/* source=offer-list */")
-	fmt.Println("//")
-	fmt.Printf("// Generated on: %s\n\n", time.Now().UTC().Format("Mon, 02 Jan 2006 15:04:05 -0700"))
+	/*
+		fmt.Println("/* type=fallback *\/")
+		fmt.Println("/* version=4.0.0 *\/")
+		fmt.Printf("/* timestamp=%d *\/\n", time.Now().UTC().Unix())
+		fmt.Println("/* source=offer-list *\/")
+		fmt.Println("//")
+		fmt.Printf("// Generated on: %s\n\n", time.Now().UTC().Format("Mon, 02 Jan 2006 15:04:05 -0700"))
+	*/
+
+	fmt.Print(metaData)
 
 	fmt.Print("package shared\n\n")
 	fmt.Println("type FallbackDir struct {")
