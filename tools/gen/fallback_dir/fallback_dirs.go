@@ -24,6 +24,10 @@ func main() {
 	}
 	defer in.Body.Close()
 
+	if in.StatusCode != http.StatusOK {
+		panic("not 200")
+	}
+
 	var entries []Fallback
 	var cur *Fallback
 
