@@ -147,8 +147,6 @@ func (s *Stream) sendController() {
 	}
 }
 
-// WriteAsync will not lock until the receive of a send_me and will put the packet in a line
-
 func (s *Stream) Write(b []byte) (n int, err error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
