@@ -86,20 +86,20 @@ func (c *Circuit) NewStream(kind string) (*Stream, error) {
 	stream.mu.Lock()
 	stream.State = STREAM_OPEN
 	stream.mu.Unlock()
-	go stream.loop()
+	go stream.controlLoop()
 	go stream.sendController()
 	suc = true
 	return stream, nil
 }
 
-func (s *Stream) loop() {
+func (s *Stream) controlLoop() {
 	for {
 		select {
 		case cell, ok := <-s.InboundControl:
 			if !ok {
 				return
 			}
-
+			// SWITCH for controll cells
 			switch cell.ID() {
 			case relay.COMMAND_SENDME:
 				s.receiveSendMe <- struct{}{}
