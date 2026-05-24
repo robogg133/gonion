@@ -254,3 +254,7 @@ Security auditing, edge-case handling, hardening, and spec verification are stil
 This project is a work in progress.
 
 The API is unstable and may change frequently while the protocol implementation evolves.
+
+---
+
+## [Tor specs](https://spec.torproject.org/intro/index.html)
