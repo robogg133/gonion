@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"testing"
 
-	gonion2 "git.servidordomal.fun/robogg133/gonion"
-	"git.servidordomal.fun/robogg133/gonion/pkg/transports/obfs4"
+	gonion2 "github.com/robogg133/gonion"
+	"github.com/robogg133/gonion/pkg/transports/obfs4"
 )
 
 // obfs4 93.177.73.226:24852 99ED350316AFC4ED1964CFE9EC84C201416D143D cert=KciXEUlkxmOHsVFLh6s3fAEWO7p0GHt6jhhTj/XaWM8/VmCYqbzPmRM+Q4PA1AcJ8JyWBA iat-mode=0

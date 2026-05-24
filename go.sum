@@ -2,6 +2,8 @@ filippo.io/edwards25519 v1.0.0 h1:0wAIcmJUqRdI8IJ/3eGi5/HwXZWPujYXXlkrQogz0Ek=
 filippo.io/edwards25519 v1.0.0/go.mod h1:N1IkdkCkiLB6tki+MYJoSx2JTY9NUlxZE7eHn5EwJns=
 github.com/dchest/siphash v1.2.3 h1:QXwFc8cFOR2dSa/gE6o/HokBMWtLUaNDVd+22aKHeEA=
 github.com/dchest/siphash v1.2.3/go.mod h1:0NvQU092bT0ipiFN++/rXm69QG9tVxLAlQHIXMPAkHc=
+github.com/smallnest/ringbuffer v0.1.1 h1:KL2iILLdDCr9nWxYrNcsQ7Px7EVnoNBDJ0r/M/hEksA=
+github.com/smallnest/ringbuffer v0.1.1/go.mod h1:tAG61zBM1DYRaGIPloumExGvScf08oHuo0kFoOqdbT0=
 github.com/yuin/goldmark v1.4.13/go.mod h1:6yULJ656Px+3vBD8DxQVa3kxgyrAnzto9xy5taEt/CY=
 gitlab.com/yawning/edwards25519-extra v0.0.0-20231005122941-2149dcafc266 h1:IvjshROr8z24+UCiOe/90cUWt3QDr8Rt+VkUjZsn+i0=
 gitlab.com/yawning/edwards25519-extra v0.0.0-20231005122941-2149dcafc266/go.mod h1:K/3SQWdJL6udzwInHk1gaYaECYxMp9dDayniPq6gCSo=
@@ -9,8 +11,6 @@ gitlab.com/yawning/obfs4.git v0.0.0-20231012084234-c3e2d44b1033 h1:UmuE3KA7vwWLv
 gitlab.com/yawning/obfs4.git v0.0.0-20231012084234-c3e2d44b1033/go.mod h1:hWtv4VopVASgdVvnSbGB1EAC3zO+rHiauEnuNID9wT4=
 gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/goptlib v1.5.0 h1:rzdY78Ox2T+VlXcxGxELF+6VyUXlZBhmRqZu5etLm+c=
 gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/goptlib v1.5.0/go.mod h1:70bhd4JKW/+1HLfm+TMrgHJsUHG4coelMWwiVEJ2gAg=
-gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/webtunnel v0.0.4 h1:bnsNGlahzyXz4mcNvqNw7HDQgdn79Ly/sRjTMj/VEps=
-gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/webtunnel v0.0.4/go.mod h1:aEzSbkzOc38Cg7gLg0BmRDwQgxwjbbKSiAv052xTS7I=
 golang.org/x/crypto v0.0.0-20190308221718-c2843e01d9a2/go.mod h1:djNgcEr1/C05ACkg1iLfiJU5Ep61QUkGW8qpdssI0+w=
 golang.org/x/crypto v0.0.0-20210921155107-089bfa567519/go.mod h1:GvvjBRRGRdwPK5ydBHafDWAxML/pGHZbMvKqRZ5+Abc=
 golang.org/x/crypto v0.13.0/go.mod h1:y6Z2r+Rw4iayiXXAIxJIDAJ1zMW4yaTpebo8fPOliYc=

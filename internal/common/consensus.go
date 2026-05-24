@@ -1,7 +1,6 @@
 package common
 
 import (
-	"sync"
 	"time"
 )
 
@@ -61,8 +60,6 @@ func (p *Ports) turnOnAllPorts() {
 
 type Consensus struct {
 	NetowrkStatusVersion uint8
-
-	Mu sync.RWMutex
 
 	ValidAfter time.Time
 	FreshUntil time.Time

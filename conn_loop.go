@@ -5,7 +5,7 @@ import (
 	"encoding/binary"
 	"io"
 
-	cells "git.servidordomal.fun/robogg133/gonion/pkg/cells/base"
+	cells "github.com/robogg133/gonion/pkg/cells/base"
 )
 
 func (c *Conn) readLoop() {
@@ -72,6 +72,9 @@ func (c *Conn) writeLoop() {
 }
 
 func (c *Conn) closeError(s string) error {
-	c.closeCh <- s
+	select {
+	case c.closeCh <- s:
+	default:
+	}
 	return nil
 }

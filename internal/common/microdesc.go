@@ -9,8 +9,6 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/pem"
-	"errors"
-	"fmt"
 
 	"io"
 	"strings"
@@ -39,40 +37,34 @@ type FamilyIDs struct {
 	Value []byte
 }
 
-func ParseMicrodescFile(reader *bufio.Reader, digests [][]byte) (microdesc []*Microdesc, err error) {
+func ParseMicrodescFile(scanner *bufio.Scanner, digests []string) (microdesc []*Microdesc, err error) {
 	builder := &bytes.Buffer{}
 
 	microdesc = make([]*Microdesc, len(digests))
 
-	for {
-		fmt.Println("=> Read loop start")
-		text, err := reader.ReadBytes('\n')
-		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			return nil, err
-		}
+	for scanner.Scan() {
+		text := scanner.Text() + "\n"
 
-		builder.Write(text)
+		builder.WriteString(text)
 
 		if strings.HasPrefix(string(text), id_ed25519_microdesc_prefix) {
 
 			digNow := sha256.Sum256(builder.Bytes())
+			b64 := base64.RawStdEncoding.EncodeToString(digNow[:])
 
 			found := false
 			index := 0
 
 			// idk, this isn't used too many times so i think it can be that for now and later be changed for a map
 			for i, v := range digests {
-				if bytes.Equal(digNow[:], v) {
+				if b64 == v {
 					found = true
 					index = i
 				}
 			}
 
 			if !found {
-				return nil, errors.New("invalid dir")
+				continue
 			}
 
 			m, err := parseMicrodescBlock(builder.Bytes())
@@ -83,7 +75,6 @@ func ParseMicrodescFile(reader *bufio.Reader, digests [][]byte) (microdesc []*Mi
 			builder.Reset()
 		}
 
-		fmt.Println("=> loop END")
 	}
 
 	return microdesc, nil
@@ -107,7 +98,10 @@ func parseMicrodescBlock(data []byte) (*Microdesc, error) {
 
 		switch {
 		case txt == onion_key_microdesc_prefix:
-			m.OnionKey = parseOnionKey(r)
+			m.OnionKey, err = parseOnionKey(r)
+			if err != nil {
+				return nil, err
+			}
 
 		case strings.HasPrefix(txt, ntor_onion_key_microdesc_prefix):
 			txt = strings.TrimPrefix(txt, ntor_onion_key_microdesc_prefix)
@@ -164,7 +158,7 @@ func parseMicrodescBlock(data []byte) (*Microdesc, error) {
 	return m, nil
 }
 
-func parseOnionKey(r *bufio.Reader) []byte {
+func parseOnionKey(r *bufio.Reader) ([]byte, error) {
 
 	b := &bytes.Buffer{}
 
@@ -174,7 +168,7 @@ func parseOnionKey(r *bufio.Reader) []byte {
 			if err == io.EOF {
 				break
 			}
-			panic(err)
+			return nil, err
 		}
 
 		b.WriteString(txt)
@@ -186,7 +180,7 @@ func parseOnionKey(r *bufio.Reader) []byte {
 
 	p, _ := pem.Decode(b.Bytes())
 
-	return p.Bytes
+	return p.Bytes, nil
 }
 
 func parseFamilys(s string) (ids []*FamilyIDs, err error) {

@@ -2,18 +2,13 @@ package gonion
 
 import (
 	"bufio"
-	"bytes"
-	"crypto/sha256"
-	"encoding/base64"
-	"encoding/hex"
+	"context"
 	"fmt"
-	"io"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
+	"time"
 
-	"git.servidordomal.fun/robogg133/gonion/internal/common"
+	"github.com/robogg133/gonion/internal/common"
 )
 
 const (
@@ -27,10 +22,19 @@ func (c *Circuit) GetConsensus() (*common.Consensus, error) {
 		return nil, err
 	}
 
-	req, err := http.NewRequest("GET", HTTP_PATH_CONSENSUS_MICRODESC, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 240*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "GET", HTTP_PATH_CONSENSUS_MICRODESC, nil)
 	if err != nil {
 		return nil, err
 	}
+
+	go func() {
+		<-ctx.Done()
+		s.Free()
+	}()
+
 	if err := req.Write(s); err != nil {
 		return nil, err
 	}
@@ -39,6 +43,7 @@ func (c *Circuit) GetConsensus() (*common.Consensus, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	defer consensusResp.Body.Close()
 
 	consensus, err := common.ParseConsensus(bufio.NewScanner(consensusResp.Body))
@@ -52,33 +57,20 @@ func (c *Circuit) GetConsensus() (*common.Consensus, error) {
 // GetMicrodescriptors uses src with microdescriptorsDigset and return it's values
 func (c *Circuit) GetMicrodescriptors(src []string) ([]*common.Microdesc, error) {
 
-	if len(src) > 91 {
-		return nil, fmt.Errorf("max digests overflow (91): %d", len(src))
+	allDigests, err := buildURL(src)
+	if err != nil {
+		return nil, err
 	}
-
-	var builder strings.Builder
-
-	digests := make([][]byte, len(src))
-
-	for i, str := range src {
-		if _, err := builder.WriteString(str + "-"); err != nil {
-			return nil, err
-		}
-
-		b, err := base64.RawStdEncoding.DecodeString(str)
-		if err != nil {
-			return nil, err
-		}
-		digests[i] = b
-	}
-	allDigests := strings.TrimSuffix(builder.String(), "-")
 
 	s, err := c.NewStream("dir")
 	if err != nil {
 		return nil, err
 	}
 
-	req, err := http.NewRequest("GET", fmt.Sprintf(HTTP_PATH_MICRODESCRIPTOR_DIR_FORMAT, allDigests), nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 240*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf(HTTP_PATH_MICRODESCRIPTOR_DIR_FORMAT, allDigests), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -91,22 +83,22 @@ func (c *Circuit) GetMicrodescriptors(src []string) ([]*common.Microdesc, error)
 		return nil, err
 	}
 
-	content, err := io.ReadAll(microDescs.Body)
-	if err != nil {
-		return nil, err
+	defer microDescs.Body.Close()
+
+	defer fmt.Println("end GetMicrodescriptors")
+	fmt.Println("start parsing")
+	return common.ParseMicrodescFile(bufio.NewScanner(microDescs.Body), src)
+}
+
+func buildURL(digests []string) (string, error) {
+
+	var builder strings.Builder
+
+	for _, str := range digests {
+		if _, err := builder.WriteString(str + "-"); err != nil {
+			return "", err
+		}
+
 	}
-	microDescs.Body.Close()
-
-	if err := os.MkdirAll("microdescs", 0755); err != nil {
-		return nil, err
-	}
-
-	sum := sha256.Sum256(content)
-	if err := os.WriteFile(filepath.Join("microdescs", hex.EncodeToString(sum[:])), content, 0755); err != nil {
-		return nil, err
-	}
-
-	fmt.Println("=====THIS MICRODESC DIGEST IS=====\n" + hex.EncodeToString(sum[:]) + "\n=====") // debugging
-
-	return common.ParseMicrodescFile(bufio.NewReader(bytes.NewReader(content)), digests)
+	return strings.TrimSuffix(builder.String(), "-"), nil
 }

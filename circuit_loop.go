@@ -3,8 +3,8 @@ package gonion
 import (
 	"bytes"
 
-	cells "git.servidordomal.fun/robogg133/gonion/pkg/cells/base"
-	"git.servidordomal.fun/robogg133/gonion/pkg/cells/relay"
+	cells "github.com/robogg133/gonion/pkg/cells/base"
+	"github.com/robogg133/gonion/pkg/cells/relay"
 )
 
 func (c *Circuit) readloop() {
@@ -37,9 +37,11 @@ func (c *Circuit) readloop() {
 				return
 			}
 
+			// Check if is relay cell
 			if cell.ID() == cells.COMMAND_RELAY {
 				relaycell := cell.(*cells.RelayCell).Cell
 
+				// check if is SEND_ME for circuit
 				if relaycell.GetStreamID() == 0 && relaycell.ID() == relay.COMMAND_SENDME {
 					c.SendWindow.Add(100)
 					continue
@@ -49,8 +51,16 @@ func (c *Circuit) readloop() {
 				if stream == nil {
 					continue
 				}
+
+				if relaycell.ID() == relay.COMMAND_DATA {
+					if err := stream.writeDataCell(relaycell.(*relay.DataCell)); err != nil {
+						stream.Close()
+					}
+					continue
+				}
+
 				select {
-				case stream.Inbound <- relaycell:
+				case stream.InboundControl <- relaycell:
 				case <-stream.CloseCh:
 				}
 				continue

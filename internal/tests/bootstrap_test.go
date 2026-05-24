@@ -4,13 +4,13 @@ import (
 	"net"
 	"testing"
 
-	"git.servidordomal.fun/robogg133/gonion"
-	gonion2 "git.servidordomal.fun/robogg133/gonion"
+	"github.com/robogg133/gonion"
+	gonion2 "github.com/robogg133/gonion"
 )
 
 func TestMicrodesc(t *testing.T) {
 
-	c, err := net.Dial("tcp", "38.102.127.252:9004")
+	c, err := net.Dial("tcp", "109.70.100.245:443")
 	if err != nil {
 		t.Fatal(err)
 	}

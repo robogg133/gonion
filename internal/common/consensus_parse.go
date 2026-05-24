@@ -152,7 +152,7 @@ func (c *Consensus) parseRouterState(s string) error {
 		// router lines may be malformed and contain too few tokens.
 		// Avoid panics; return an error so callers can retry/abort.
 		if len(separated) < 7 {
-			return fmt.Errorf("malformed router line: %q", s)
+			return fmt.Errorf("consensus: router_state: malformed router line: %q", s)
 		}
 
 		c.routerStatusTmp.Nickname = separated[0]
@@ -212,7 +212,7 @@ func (c *Consensus) parseRouterState(s string) error {
 		for v := range separated {
 			sep := strings.Split(v, "=")
 			if len(sep) < 2 {
-				return fmt.Errorf("malformed pr line: %q", s)
+				return fmt.Errorf("consensus: router_state: malformed pr line: %q", s)
 			}
 
 			var versionByte VersionValue
@@ -314,12 +314,12 @@ func (c *Consensus) parseFooterState(s string) error {
 		for _, p := range parts {
 			kv := strings.SplitN(p, "=", 2)
 			if len(kv) != 2 {
-				return fmt.Errorf("invalid bandwidth weight token: %q", p)
+				return fmt.Errorf("consensus: footer_state: invalid bandwidth weight token: %q", p)
 			}
 
 			val, err := strconv.ParseUint(kv[1], 10, 32)
 			if err != nil {
-				return fmt.Errorf("invalid bandwidth weight value %q: %w", kv[1], err)
+				return fmt.Errorf("consensus: footer_state: invalid bandwidth weight value %q: %w", kv[1], err)
 			}
 
 			v := int32(val)
@@ -364,7 +364,7 @@ func (c *Consensus) parseFooterState(s string) error {
 			case "Wmm":
 				band.Wmm = v
 			default:
-				return fmt.Errorf("unknown bandwidth weight key: %s", kv[0])
+				return fmt.Errorf("consensus: footer_state: unknown bandwidth weight key: %s", kv[0])
 			}
 		}
 

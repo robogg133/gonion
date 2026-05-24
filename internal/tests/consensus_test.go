@@ -10,7 +10,7 @@ import (
 	"os"
 	"testing"
 
-	gonion2 "git.servidordomal.fun/robogg133/gonion"
+	gonion2 "github.com/robogg133/gonion"
 )
 
 func TestConsensus(t *testing.T) {
