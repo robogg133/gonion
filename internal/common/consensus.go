@@ -99,7 +99,7 @@ type RouterStatus struct {
 	NTorOnionKey []byte
 	IdEd25519    []byte
 
-	Family  [][]byte
+	Family  []Family
 	Familys []*FamilyIDs
 }
 

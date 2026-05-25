@@ -26,10 +26,15 @@ type Microdesc struct {
 	OnionKey     []byte
 	NTorOnionKey []byte
 	IdEd25519    []byte
-	Family       [][]byte
+	Family       []Family
 	Familys      []*FamilyIDs
 
 	ExitRules *Ports
+}
+
+type Family struct {
+	Digest   []byte
+	Nickname string
 }
 
 type FamilyIDs struct {
@@ -205,18 +210,25 @@ func parseFamilys(s string) (ids []*FamilyIDs, err error) {
 	return nil, nil
 }
 
-func parseFamily(s string) (family [][]byte, err error) {
+func parseFamily(s string) (family []Family, err error) {
 	split := strings.SplitSeq(s, " ")
 
 	for str := range split {
-		str = strings.TrimPrefix(str, "$")
+		var f Family
+
+		str, ok := strings.CutPrefix(str, "$")
+		if !ok {
+			f.Nickname = str
+			continue
+		}
 
 		b, err := hex.DecodeString(str)
 		if err != nil {
 			return nil, err
 		}
+		f.Digest = b
 
-		family = append(family, b)
+		family = append(family, f)
 	}
 
 	return family, nil
