@@ -2,11 +2,23 @@ package gonion
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"sync"
 
 	"github.com/robogg133/gonion/pkg/cells/relay"
 	"github.com/smallnest/ringbuffer"
+)
+
+const (
+	STREAM_OPENING uint8 = iota
+	STREAM_OPEN
+	STREAM_CLOSED
+)
+
+const (
+	STREAM_BUFFER_SIZE            = 256 << 10 // 256KB
+	STREAM_SENDME_AMMOUNT_TRIGGER = 5 << 10   // 5KB
 )
 
 type Stream struct {
@@ -33,17 +45,10 @@ type Stream struct {
 	receiveSendMe chan struct{}
 }
 
-const (
-	STREAM_OPENING uint8 = iota
-	STREAM_OPEN
-	STREAM_CLOSED
-)
-
 func (c *Circuit) NewStream(kind string) (*Stream, error) {
 	var suc bool
 
-	// 128KB buffer
-	buffer := ringbuffer.New(128 << 10).SetBlocking(true)
+	buffer := ringbuffer.New(STREAM_BUFFER_SIZE).SetBlocking(true)
 
 	stream := &Stream{
 		ID:             c.nextStreamID,
@@ -54,16 +59,23 @@ func (c *Circuit) NewStream(kind string) (*Stream, error) {
 		receiveSendMe:  make(chan struct{}, 1),
 
 		SendWindow: &window{
-			v: 500,
+			v:          500,
+			startValue: 500,
+			addValue:   50,
 		},
 		ReceiveWindow: &window{
-			v: 500,
+			v:          500,
+			startValue: 500,
+			addValue:   50,
 		},
 
 		State: STREAM_OPENING,
 
 		buffer: buffer,
-		Reader: buffer.ReadCloser(),
+	}
+	stream.Reader = &readCloserWrapper{
+		buff:   buffer,
+		stream: stream,
 	}
 
 	defer func() {
@@ -104,6 +116,7 @@ func (s *Stream) controlLoop() {
 			case relay.COMMAND_SENDME:
 				s.receiveSendMe <- struct{}{}
 			case relay.COMMAND_RELAY_END:
+				fmt.Println("RELAY END")
 				s.Close()
 			}
 
@@ -123,14 +136,12 @@ func (s *Stream) sendController() {
 			}
 
 			if cell.ID() == relay.COMMAND_DATA {
-				s.SendWindow.mu.RLock()
-				needwait := s.SendWindow.v%50 == 0 && s.SendWindow.v != 500
-				s.SendWindow.mu.RUnlock()
+				s.SendWindow.Subtract(1)
 
-				if needwait {
+				if s.SendWindow.Check() {
 					select {
 					case <-s.receiveSendMe:
-						s.SendWindow.Add(50)
+						s.SendWindow.Increase()
 					case <-s.CloseCh:
 						return
 					}
@@ -208,6 +219,7 @@ func (s *Stream) Close() error {
 		s.State = STREAM_CLOSED
 		s.mu.Unlock()
 
+		s.CloseCh <- struct{}{}
 		close(s.CloseCh)
 		// Drain and close receiveSendMe so any blocked SendCell unblocks.
 		close(s.receiveSendMe)
@@ -224,13 +236,12 @@ func (s *Stream) writeDataCell(cell *relay.DataCell) error {
 		return err
 	}
 
-	if s.ReceiveWindow.Get()%50 == 0 {
+	if s.ReceiveWindow.IncreaseWindowChecking() {
 		s.SendCell(&relay.SendMeCell{
 			StreamID:        s.ID,
 			Version:         s.circuit.SendMeVersion,
 			Sha1ForLastCell: s.circuit.Backwards.GetLastSumDataCell(),
 		})
-		s.ReceiveWindow.Add(50)
 	}
 
 	return nil

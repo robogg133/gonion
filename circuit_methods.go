@@ -16,13 +16,17 @@ const (
 	HTTP_PATH_MICRODESCRIPTOR_DIR_FORMAT string = "/tor/micro/d/%s"
 )
 
+const (
+	TIMEOUT_DOWNLOADS time.Duration = 10 * time.Minute
+)
+
 func (c *Circuit) GetConsensus() (*common.Consensus, error) {
 	s, err := c.NewStream("dir")
 	if err != nil {
 		return nil, err
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), TIMEOUT_DOWNLOADS)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, "GET", HTTP_PATH_CONSENSUS_MICRODESC, nil)
@@ -67,7 +71,7 @@ func (c *Circuit) GetMicrodescriptors(src []string) ([]*common.Microdesc, error)
 		return nil, err
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 240*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), TIMEOUT_DOWNLOADS)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf(HTTP_PATH_MICRODESCRIPTOR_DIR_FORMAT, allDigests), nil)

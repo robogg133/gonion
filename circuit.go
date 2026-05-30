@@ -60,10 +60,14 @@ func (c *Conn) NewFastCircuit(id uint32) (*Circuit, error) {
 		},
 
 		ReceiveWindow: &window{
-			v: 1000,
+			v:          1000,
+			startValue: 1000,
+			addValue:   100,
 		},
 		SendWindow: &window{
-			v: 1000,
+			v:          1000,
+			startValue: 1000,
+			addValue:   100,
 		},
 		SendMeVersion: 0,
 
@@ -166,19 +170,7 @@ func (c *Circuit) teardown() {
 }
 
 func (c *Circuit) SendCell(cell cells.Cell) error {
-	c.SendWindow.mu.Lock()
-	defer c.SendWindow.mu.Unlock()
-
 	cell.SetCircuitID(c.ID)
-
-	if c.SendWindow.v%100 == 0 && c.SendWindow.v != 1000 {
-		select {
-		case <-c.sendMeReceived:
-			c.SendWindow.v += 100
-		case <-c.CloseCh:
-			return errors.New("circuit closed")
-		}
-	}
 
 	b, err := c.Coder.MarshalCell(cell)
 	if err != nil {

@@ -188,6 +188,12 @@ func flagStringToNumber(s string) uint8 {
 	}
 }
 
+var flagNumberToString = []string{
+	"Authority",
+	"BadExit",
+	"Exit",
+}
+
 func (v *VersionValue) CheckIsTrue(n uint8) bool {
 	b := byte(*v)
 

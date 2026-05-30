@@ -10,8 +10,7 @@ import (
 func (c *Circuit) readloop() {
 	for {
 		// Check circuit receive window and send SENDME if needed
-		c.ReceiveWindow.mu.Lock()
-		if c.ReceiveWindow.v%100 == 0 && c.ReceiveWindow.v != 1000 {
+		if c.ReceiveWindow.Check() {
 			cell := &cells.RelayCell{
 				RelayCoder: c.Coder.RelayCoder,
 				Cell: &relay.SendMeCell{
@@ -21,13 +20,11 @@ func (c *Circuit) readloop() {
 				},
 			}
 			if err := c.SendCell(cell); err != nil {
-				c.ReceiveWindow.mu.Unlock()
 				c.Close()
 				return
 			}
-			c.ReceiveWindow.v += 100
+			c.ReceiveWindow.Add(100)
 		}
-		c.ReceiveWindow.mu.Unlock()
 
 		select {
 		case rawCell := <-c.Inbound:
@@ -43,7 +40,7 @@ func (c *Circuit) readloop() {
 
 				// check if is SEND_ME for circuit
 				if relaycell.GetStreamID() == 0 && relaycell.ID() == relay.COMMAND_SENDME {
-					c.SendWindow.Add(100)
+					c.sendMeReceived <- struct{}{}
 					continue
 				}
 
@@ -79,6 +76,18 @@ func (c *Circuit) writeLoop() {
 	for {
 		select {
 		case relayCell := <-c.WriteRelayCell:
+			if relayCell.ID() == relay.COMMAND_DATA {
+				c.SendWindow.Subtract(1)
+
+				if c.SendWindow.Check() {
+					select {
+					case <-c.sendMeReceived:
+						c.SendWindow.Increase()
+					case <-c.CloseCh:
+						return
+					}
+				}
+			}
 			cell := &cells.RelayCell{
 				RelayCoder: c.Coder.RelayCoder,
 				Cell:       relayCell,

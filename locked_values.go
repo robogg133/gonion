@@ -17,9 +17,11 @@ func (m *circuits) Set(id uint32, value *Circuit) {
 func (m *circuits) Get(id uint32) *Circuit {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	defer recover()
 
-	circ := m.circs[id]
+	circ, ok := m.circs[id]
+	if !ok {
+		return nil
+	}
 
 	return circ
 }
@@ -49,9 +51,11 @@ func (m *streams) Set(id uint16, value *Stream) {
 func (m *streams) Get(id uint16) *Stream {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	defer recover()
 
-	circ := m.streams[id]
+	circ, ok := m.streams[id]
+	if !ok {
+		return nil
+	}
 
 	return circ
 }
@@ -68,7 +72,38 @@ func (m *streams) Delete(id uint16) {
 type window struct {
 	v uint16
 
+	startValue uint16
+	addValue   uint16
+
 	mu sync.RWMutex
+}
+
+// Increase window.v += window.addValue
+func (w *window) Increase() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	w.v += w.addValue
+}
+
+// Check if window need a SENDME
+func (w *window) Check() bool {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return w.v != w.startValue && w.v%w.addValue == 0
+}
+
+// Check if window need a SENDME if need return true and add window.startValue to value
+func (w *window) IncreaseWindowChecking() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if w.v != w.startValue && w.v%w.addValue == 0 {
+		w.v += w.addValue
+		return true
+	}
+
+	return false
 }
 
 func (w *window) Set(n uint16) {
