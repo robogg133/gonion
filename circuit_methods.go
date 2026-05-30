@@ -78,6 +78,7 @@ func (c *Circuit) GetMicrodescriptors(src []string) ([]*common.Microdesc, error)
 	if err != nil {
 		return nil, err
 	}
+
 	if err := req.Write(s); err != nil {
 		return nil, err
 	}
@@ -89,8 +90,6 @@ func (c *Circuit) GetMicrodescriptors(src []string) ([]*common.Microdesc, error)
 
 	defer microDescs.Body.Close()
 
-	defer fmt.Println("end GetMicrodescriptors")
-	fmt.Println("start parsing")
 	return common.ParseMicrodescFile(bufio.NewScanner(microDescs.Body), src)
 }
 

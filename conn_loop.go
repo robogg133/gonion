@@ -62,7 +62,6 @@ func (c *Conn) writeLoop() {
 		select {
 		case cell := <-c.writeCall:
 			if _, err := c.socket.Write(cell); err != nil {
-
 				return
 			}
 		case <-c.closeCh:

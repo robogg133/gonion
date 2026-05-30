@@ -88,12 +88,10 @@ func BootstrapOneConn(conn *Conn) error {
 
 func (circuit *Circuit) fetchAndApplyMicrodescriptors(cons *common.Consensus, digestsSlice []string, offest int) error {
 
-	fmt.Println("sending get microdescriptor order")
 	desc, err := circuit.GetMicrodescriptors(digestsSlice)
 	if err != nil {
 		return err
 	}
-	fmt.Println("sent")
 
 	for i, v := range desc {
 		if v == nil {

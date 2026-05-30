@@ -114,7 +114,10 @@ func (s *Stream) controlLoop() {
 			// SWITCH for controll cells
 			switch cell.ID() {
 			case relay.COMMAND_SENDME:
-				s.receiveSendMe <- struct{}{}
+				select {
+				case s.receiveSendMe <- struct{}{}:
+				default:
+				}
 			case relay.COMMAND_RELAY_END:
 				fmt.Println("RELAY END")
 				s.Close()
@@ -138,7 +141,7 @@ func (s *Stream) sendController() {
 			if cell.ID() == relay.COMMAND_DATA {
 				s.SendWindow.Subtract(1)
 
-				if s.SendWindow.Check() {
+				if s.SendWindow.Get() == 0 {
 					select {
 					case <-s.receiveSendMe:
 						s.SendWindow.Increase()
@@ -230,18 +233,9 @@ func (s *Stream) Close() error {
 
 func (s *Stream) writeDataCell(cell *relay.DataCell) error {
 	s.ReceiveWindow.Subtract(1)
-	s.circuit.ReceiveWindow.Subtract(1)
 
 	if _, err := s.buffer.Write(cell.Payload); err != nil {
 		return err
-	}
-
-	if s.ReceiveWindow.IncreaseWindowChecking() {
-		s.SendCell(&relay.SendMeCell{
-			StreamID:        s.ID,
-			Version:         s.circuit.SendMeVersion,
-			Sha1ForLastCell: s.circuit.Backwards.GetLastSumDataCell(),
-		})
 	}
 
 	return nil

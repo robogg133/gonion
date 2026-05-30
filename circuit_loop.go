@@ -40,7 +40,10 @@ func (c *Circuit) readloop() {
 
 				// check if is SEND_ME for circuit
 				if relaycell.GetStreamID() == 0 && relaycell.ID() == relay.COMMAND_SENDME {
-					c.sendMeReceived <- struct{}{}
+					select {
+					case c.sendMeReceived <- struct{}{}:
+					default:
+					}
 					continue
 				}
 
@@ -50,6 +53,7 @@ func (c *Circuit) readloop() {
 				}
 
 				if relaycell.ID() == relay.COMMAND_DATA {
+					c.ReceiveWindow.Subtract(1)
 					if err := stream.writeDataCell(relaycell.(*relay.DataCell)); err != nil {
 						stream.Close()
 					}
@@ -79,7 +83,7 @@ func (c *Circuit) writeLoop() {
 			if relayCell.ID() == relay.COMMAND_DATA {
 				c.SendWindow.Subtract(1)
 
-				if c.SendWindow.Check() {
+				if c.SendWindow.Get() == 0 {
 					select {
 					case <-c.sendMeReceived:
 						c.SendWindow.Increase()
