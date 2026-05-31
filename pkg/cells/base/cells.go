@@ -35,12 +35,16 @@ type CellCoder struct {
 }
 
 var AllKnownCells = map[uint8]func() Cell{
-	COMMAND_CERTS:        func() Cell { return &CertsCell{} },
+	COMMAND_RELAY:        func() Cell { return &RelayCell{} },
+	COMMAND_DESTROY:      func() Cell { return &DestroyCell{} },
 	COMMAND_CREATE_FAST:  func() Cell { return &CreateFastCell{} },
 	COMMAND_CREATED_FAST: func() Cell { return &CreatedFastCell{} },
-	COMMAND_DESTROY:      func() Cell { return &DestroyCell{} },
 	COMMAND_NETINFO:      func() Cell { return &NetInfoCell{} },
-	COMMAND_RELAY:        func() Cell { return &RelayCell{} },
+
+	COMMAND_CREATE2:  func() Cell { return &Create2Cell{} },
+	COMMAND_CREATED2: func() Cell { return &Created2Cell{} },
+
+	COMMAND_CERTS: func() Cell { return &CertsCell{} },
 }
 
 // NewCellCoder can encode and decode cells
