@@ -7,7 +7,7 @@ import (
 	"github.com/robogg133/gonion/pkg/handshakes/message"
 )
 
-const HTYPE_NTOR3 byte = 0x0003
+const HTYPE_NTOR3 uint16 = 0x0003
 
 type Client_NTor3Handshake struct {
 	NodeID ed25519.PublicKey

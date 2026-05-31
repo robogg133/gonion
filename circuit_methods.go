@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/robogg133/gonion/internal/common"
+	"github.com/robogg133/gonion/pkg/common"
 )
 
 const (
