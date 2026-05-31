@@ -55,7 +55,7 @@ verify = H(secret_input, t_verify)
 auth_input = verify | ID | B | Y | X | PROTOID | "Server"
 */
 
-func (c *Client_NTorHandshake) DeriveNTor(s *Server_NTorHandshake, NTorOnionKey []byte) (*crypto.CircuitKeys, error) {
+func (c *Client_NTorHandshake) Derive(s *Server_NTorHandshake, NTorOnionKey []byte) (*crypto.CircuitKeys, error) {
 
 	// Calc secret_input
 	var secretInput bytes.Buffer

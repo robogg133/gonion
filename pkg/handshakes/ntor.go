@@ -5,12 +5,12 @@ import (
 	"io"
 )
 
-const HTYPE_NTOR byte = 0x0002
+const HTYPE_NTOR uint16 = 0x0002
 
 type Client_NTorHandshake struct {
 	NodeID [20]byte
 
-	KeyID     ed25519.PublicKey
+	KeyID     []byte // ntor-onion-key
 	PublicKey ed25519.PublicKey
 }
 
@@ -29,6 +29,7 @@ func (ntor *Client_NTorHandshake) Encode(w io.Writer) error {
 	_, err := w.Write(ntor.PublicKey)
 	return err
 }
+func (ntor *Client_NTorHandshake) Decode(r io.Reader) error { return nil }
 
 func (ntor *Server_NTorHandshake) Encode(w io.Writer) error { return nil }
 

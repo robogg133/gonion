@@ -135,7 +135,7 @@ func NewConn(c net.Conn) (*Conn, error) {
 }
 
 func (conn *Conn) Close() error {
-	return nil
+	return conn.socket.Close()
 }
 
 func setupTls(c net.Conn) (net.Conn, *x509.Certificate, error) {

@@ -12,7 +12,7 @@ const HTYPE_NTOR3 uint16 = 0x0003
 type Client_NTor3Handshake struct {
 	NodeID ed25519.PublicKey
 
-	KeyID     []byte
+	KeyID     []byte // ntor-onion-key
 	PublicKey ed25519.PublicKey
 	Message   *message.Messages
 	MAC       []byte

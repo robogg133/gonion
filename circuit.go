@@ -48,7 +48,7 @@ type Circuit struct {
 	sendMeReceived chan struct{}
 }
 
-func (c *Conn) NewCircuit(id uint32, htype uint16, hs handshakes.Handshake, pk, sk ed25519.PublicKey) (*Circuit, error) {
+func (c *Conn) NewCircuit(id uint32, htype uint16, hs handshakes.Handshake, pk ed25519.PublicKey, sk ed25519.PrivateKey) (*Circuit, error) {
 	suc := false
 	circuit := &Circuit{
 		conn:           c,
@@ -116,6 +116,26 @@ func (c *Conn) NewCircuit(id uint32, htype uint16, hs handshakes.Handshake, pk, 
 		return circuit, err
 	}
 
+	keys := &crypto.CircuitKeys{}
+	switch htype {
+	case handshakes.HTYPE_NTOR:
+		nths := hs.(*handshakes.Client_NTorHandshake)
+		keys, err = nths.Derive(created2.Handshake.(*handshakes.Server_NTorHandshake), nths.KeyID)
+	}
+
+	circuit.Backwards, err = crypto.NewRunningValues(keys.Kb, keys.Db)
+	if err != nil {
+		return circuit, err
+	}
+	circuit.Forwards, err = crypto.NewRunningValues(keys.Kf, keys.Db)
+	if err != nil {
+		return circuit, err
+	}
+
+	circuit.Coder.RelayCoder = relay.NewDataCellCoder(circuit.Backwards, circuit.Forwards)
+
+	go circuit.writeLoop()
+	go circuit.readloop()
 	suc = true
 	return circuit, nil
 }
