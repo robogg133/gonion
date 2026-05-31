@@ -62,6 +62,8 @@ func BootstrapOneConn(conn *Conn) error {
 		return err
 	}
 
+	common.SetGlobalConsensus(cns)
+
 	var AlldigestsString []string
 	for _, relay := range cns.RelayInformation {
 		AlldigestsString = append(AlldigestsString, relay.MicrodescriptorDigest)
@@ -70,9 +72,7 @@ func BootstrapOneConn(conn *Conn) error {
 	for i := 0; i < len(AlldigestsString); i += 91 {
 		end := i + 91
 
-		if end > len(AlldigestsString) {
-			end = len(AlldigestsString)
-		}
+		end = min(end, len(AlldigestsString))
 
 		chunk := AlldigestsString[i:end]
 		if err := circuit.fetchAndApplyMicrodescriptors(cns, chunk, i); err != nil {
