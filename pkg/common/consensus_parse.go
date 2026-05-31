@@ -514,7 +514,7 @@ func IPLevel(ipStr string, asn uint32) (uint32, error) {
 	}
 
 	var v uint32
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		v = (v << 8) | uint32(ip[i])
 	}
 
