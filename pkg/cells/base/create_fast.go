@@ -4,10 +4,7 @@ import (
 	"io"
 )
 
-const (
-	COMMAND_CREATE_FAST  uint8 = 5
-	COMMAND_CREATED_FAST uint8 = 6
-)
+const COMMAND_CREATE_FAST uint8 = 5
 
 type CreateFastCell struct {
 	CircuitID uint32
@@ -23,4 +20,9 @@ func (c *CreateFastCell) Encode(w io.Writer) error {
 	return err
 }
 
-func (*CreateFastCell) Decode(io.Reader) error { return nil }
+func (c *CreateFastCell) Decode(r io.Reader) error {
+	x := make([]byte, 20)
+	_, err := io.ReadFull(r, x)
+	c.X = [20]byte(x)
+	return err
+}

@@ -4,6 +4,8 @@ import (
 	"io"
 )
 
+const COMMAND_CREATED_FAST uint8 = 6
+
 type CreatedFastCell struct {
 	CircuitID uint32
 
