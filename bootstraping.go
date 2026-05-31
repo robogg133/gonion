@@ -2,7 +2,6 @@ package gonion
 
 import (
 	"context"
-	"encoding/hex"
 	"fmt"
 	"math/rand"
 	"time"
@@ -57,14 +56,11 @@ func BootstrapOneConn(conn *Conn) error {
 	if err != nil {
 		return err
 	}
-	fmt.Println("created circuit")
 
 	cns, err := circuit.GetConsensus()
 	if err != nil {
 		return err
 	}
-	fmt.Println(hex.EncodeToString(cns.SharedCurrentValue[:]))
-	fmt.Println("got consensus")
 
 	var AlldigestsString []string
 	for _, relay := range cns.RelayInformation {
