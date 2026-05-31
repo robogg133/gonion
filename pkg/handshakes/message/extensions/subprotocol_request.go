@@ -19,7 +19,7 @@ func (sub *SubprotocolRequest) Marshal() []byte {
 }
 
 func (sub *SubprotocolRequest) Unmarshal(r *bytes.Reader) error {
-	valuesN := r.Size() << 1
+	valuesN := r.Size() >> 1
 	sub.ValuesPair = make(map[byte]byte, valuesN)
 
 	for range valuesN {

@@ -8,6 +8,7 @@ import (
 	gonion2 "github.com/robogg133/gonion"
 	"github.com/robogg133/gonion/internal/fallback"
 	"github.com/robogg133/gonion/internal/shared"
+	"github.com/robogg133/gonion/pkg/common"
 )
 
 func TestMicrodesc(t *testing.T) {
@@ -30,5 +31,16 @@ func TestMicrodesc(t *testing.T) {
 	if err := gonion.BootstrapOneConn(conn); err != nil {
 		t.Fatal(err)
 	}
+	fmt.Println("nigger")
+
+	for _, v := range common.GetGlobalConsensus().RelayInformation {
+		if v.StatusFlags[common.FLAG_GUARD] {
+			fmt.Printf("%s:%d\n", v.Ipv4Addr, v.ORPort)
+			fmt.Println(v.NTorOnionKey)
+			fmt.Println(v.NodeID)
+		}
+	}
+
+	conn.Close()
 
 }
