@@ -5,6 +5,7 @@ package common
 import (
 	"bufio"
 	"bytes"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -24,8 +25,8 @@ const (
 
 type Microdesc struct {
 	OnionKey     []byte
-	NTorOnionKey []byte
-	IdEd25519    []byte
+	NTorOnionKey []byte            // curve25519
+	IdEd25519    ed25519.PublicKey // ed25519
 	Family       []Family
 	Familys      []*FamilyIDs
 
