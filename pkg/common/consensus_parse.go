@@ -501,9 +501,8 @@ func IPLevel(ipStr string, asn uint32) (uint32, error) {
 			return uint32(LEVEL_ASN<<28) | (asn & 0x0FFFFFFF), nil
 		}
 
-		p24 := uint32(ip4[0])<<16 |
-			uint32(ip4[1])<<8 |
-			uint32(ip4[2])
+		p24 := uint32(ip4[0])<<8 |
+			uint32(ip4[1])
 
 		return uint32(LEVEL_P24<<28) | p24, nil
 	}
