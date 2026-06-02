@@ -2,6 +2,7 @@
 package path
 
 import (
+	"bytes"
 	"fmt"
 	"math/rand/v2"
 
@@ -112,18 +113,28 @@ func (sl *Selector) selectRelay(fn validateFunc, wfn weightFunc, desiredPort uin
 			return nil, err
 		}
 
-		if sl.guard != nil && sl.guard.IPLevel == random.IPLevel {
+		if (sl.guard != nil && sl.guard.IPLevel == random.IPLevel) || (cmpFamily(sl.guard.Familys, random.Familys)) {
 			continue
 		}
-		if sl.exit != nil && sl.exit.IPLevel == random.IPLevel {
+		if (sl.exit != nil && sl.exit.IPLevel == random.IPLevel) || (cmpFamily(sl.guard.Familys, random.Familys)) {
 			continue
 		}
 
 		if sl.middles != nil {
+			valid := true
 			for _, m := range sl.middles {
 				if m.IPLevel == random.IPLevel {
-					continue
+					valid = false
+					break
 				}
+
+				if cmpFamily(m.Familys, random.Familys) {
+					valid = false
+					break
+				}
+			}
+			if !valid {
+				continue
 			}
 		}
 		return random, nil
@@ -131,10 +142,23 @@ func (sl *Selector) selectRelay(fn validateFunc, wfn weightFunc, desiredPort uin
 
 }
 
+func cmpFamily(b, o []*common.FamilyIDs) (matched bool) {
+	for _, v := range b {
+		for _, r := range o {
+			if r.Kind != v.Kind {
+				continue
+			}
+			if bytes.Equal(v.Value, r.Value) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func selectRandom(totalBw int64, values []value) (*common.RouterStatus, error) {
 
 	sum := int64(0)
-	// :skull:
 	for {
 		randonN := rand.Int64N(totalBw)
 
