@@ -2,7 +2,6 @@
 package path
 
 import (
-	"errors"
 	"fmt"
 	"math/rand/v2"
 
@@ -107,25 +106,43 @@ func (sl *Selector) selectRelay(fn validateFunc, wfn weightFunc, desiredPort uin
 		values = append(values, value{wb: w, ptr: &v})
 	}
 
-	return selectRandom(totalBw, values)
+	for {
+		random, err := selectRandom(totalBw, values)
+		if err != nil {
+			return nil, err
+		}
+
+		if sl.guard != nil && sl.guard.IPLevel == random.IPLevel {
+			continue
+		}
+		if sl.exit != nil && sl.exit.IPLevel == random.IPLevel {
+			continue
+		}
+
+		if sl.middles != nil {
+			for _, m := range sl.middles {
+				if m.IPLevel == random.IPLevel {
+					continue
+				}
+			}
+		}
+		return random, nil
+	}
+
 }
 
 func selectRandom(totalBw int64, values []value) (*common.RouterStatus, error) {
 
-	alrTry := false
-retry:
-	randonN := rand.Int64N(totalBw)
+	sum := int64(0)
+	// :skull:
+	for {
+		randonN := rand.Int64N(totalBw)
 
-	for _, v := range values {
-		if v.wb >= randonN {
-			return v.ptr, nil
+		for _, v := range values {
+			sum += v.wb
+			if sum >= randonN {
+				return v.ptr, nil
+			}
 		}
 	}
-
-	if alrTry {
-		return nil, errors.New("selectExit: can not select exit node")
-	}
-
-	alrTry = true
-	goto retry
 }
