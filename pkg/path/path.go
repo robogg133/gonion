@@ -113,11 +113,15 @@ func (sl *Selector) selectRelay(fn validateFunc, wfn weightFunc, desiredPort uin
 			return nil, err
 		}
 
-		if (sl.guard != nil && sl.guard.IPLevel == random.IPLevel) || (cmpFamily(sl.guard.Familys, random.Familys)) {
-			continue
+		if sl.guard != nil {
+			if sl.guard.IPLevel == random.IPLevel || cmpFamily(sl.guard.Familys, random.Familys) {
+				continue
+			}
 		}
-		if (sl.exit != nil && sl.exit.IPLevel == random.IPLevel) || (cmpFamily(sl.guard.Familys, random.Familys)) {
-			continue
+		if sl.exit != nil {
+			if sl.exit.IPLevel == random.IPLevel || cmpFamily(sl.exit.Familys, random.Familys) {
+				continue
+			}
 		}
 
 		if sl.middles != nil {
@@ -144,7 +148,13 @@ func (sl *Selector) selectRelay(fn validateFunc, wfn weightFunc, desiredPort uin
 
 func cmpFamily(b, o []*common.FamilyIDs) (matched bool) {
 	for _, v := range b {
+		if v == nil {
+			continue
+		}
 		for _, r := range o {
+			if r == nil {
+				continue
+			}
 			if r.Kind != v.Kind {
 				continue
 			}
