@@ -1,5 +1,5 @@
 package cells
 
-const COMMAND_RELAY_EARLY = 9
+const COMMAND_RELAY_EARLY uint8 = 9
 
 type RelayEarlyCell RelayCell
