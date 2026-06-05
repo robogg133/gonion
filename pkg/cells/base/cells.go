@@ -74,6 +74,9 @@ func (r *CellCoder) ReadCell(reader io.Reader) (Cell, error) {
 	if cell.ID() == COMMAND_RELAY {
 		cell.(*RelayCell).RelayCoder = r.RelayCoder
 	}
+	if cell.ID() == COMMAND_RELAY_EARLY {
+		cell.(*RelayEarlyCell).c.RelayCoder = r.RelayCoder
+	}
 
 	if err := cell.Decode(reader); err != nil {
 		return nil, err
