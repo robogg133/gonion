@@ -107,6 +107,7 @@ func (sl *Selector) selectRelay(fn validateFunc, wfn weightFunc, desiredPort uin
 		values = append(values, value{wb: w, ptr: &v})
 	}
 
+	// TODO: old family checks
 	for {
 		random, err := selectRandom(totalBw, values)
 		if err != nil {
