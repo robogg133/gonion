@@ -43,6 +43,17 @@ func Server_HandshakeType(htype uint16) Handshake {
 	}
 }
 
+func Client_HandshakeType(htype uint16) Handshake {
+	switch htype {
+	case HTYPE_NTOR:
+		return &Client_NTorHandshake{}
+	case HTYPE_NTOR3:
+		return &Client_NTor3Handshake{}
+	default:
+		return nil
+	}
+}
+
 /*
 X = Client PublicKey
 Y = Server PublicKey
