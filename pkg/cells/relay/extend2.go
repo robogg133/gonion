@@ -12,6 +12,8 @@ import (
 const COMMAND_EXTEND2 uint8 = 14
 
 type Extend2Cell struct {
+	StreamID uint16
+
 	CircuitID uint32
 	Lspecs    []lspec.Lspec
 
@@ -19,9 +21,9 @@ type Extend2Cell struct {
 	Handshake handshakes.Handshake
 }
 
-func (*Extend2Cell) ID() uint8           { return COMMAND_EXTEND2 }
-func (*Extend2Cell) GetStreamID() uint16 { return 0 }
-func (*Extend2Cell) SetStreamID(uint16)  {}
+func (*Extend2Cell) ID() uint8              { return COMMAND_EXTEND2 }
+func (c *Extend2Cell) GetStreamID() uint16  { return c.StreamID }
+func (c *Extend2Cell) SetStreamID(n uint16) { c.StreamID = n }
 
 func (c *Extend2Cell) Encode(w io.Writer) error {
 	if err := binary.Write(w, binary.BigEndian, c.CircuitID); err != nil {
