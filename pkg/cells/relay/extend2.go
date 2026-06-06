@@ -17,7 +17,7 @@ type Extend2Cell struct {
 	CircuitID uint32
 	Lspecs    []lspec.Lspec
 
-	HType     uint8
+	HType     uint16
 	Handshake handshakes.Handshake
 }
 
@@ -42,8 +42,7 @@ func (c *Extend2Cell) Encode(w io.Writer) error {
 	var buffer bytes.Buffer
 	c.Handshake.Encode(&buffer)
 
-	w.Write([]byte{c.HType})
-
+	binary.Write(w, binary.BigEndian, c.HType)
 	binary.Write(w, binary.BigEndian, uint16(buffer.Len()))
 
 	_, err := w.Write(buffer.Bytes())
