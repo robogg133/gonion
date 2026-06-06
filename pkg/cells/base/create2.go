@@ -34,4 +34,17 @@ func (c *Create2Cell) Encode(w io.Writer) error {
 	return err
 }
 
-func (c *Create2Cell) Decode(io.Reader) error { return nil }
+func (c *Create2Cell) Decode(r io.Reader) error {
+	if err := binary.Read(r, binary.BigEndian, &c.HandshakeType); err != nil {
+		return err
+	}
+
+	length := uint16(0)
+	if err := binary.Read(r, binary.BigEndian, &length); err != nil {
+		return err
+	}
+
+	c.Handshake = handshakes.Client_HandshakeType(c.HandshakeType)
+	err := c.Handshake.Decode(io.LimitReader(r, int64(length)))
+	return err
+}
