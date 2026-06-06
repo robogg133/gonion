@@ -17,6 +17,7 @@ var AllKnownRellayCells = map[uint8]func() Cell{
 	COMMAND_DATA:      func() Cell { return &DataCell{} },
 	COMMAND_CONNECTED: func() Cell { return &ConnectedCell{} },
 	COMMAND_EXTEND2:   func() Cell { return &Extend2Cell{} },
+	COMMAND_EXTENDED2: func() Cell { return &Extended2Cell{} },
 	COMMAND_SENDME:    func() Cell { return &SendMeCell{} },
 	COMMAND_RELAY_END: func() Cell { return &RelayEndCell{} },
 	COMMAND_BEGIN_DIR: func() Cell { return &BeginDirCell{} },
