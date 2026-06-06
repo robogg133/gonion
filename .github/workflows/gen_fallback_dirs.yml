@@ -1,4 +1,4 @@
-name: Update Directory Authorities
+name: Update Fallback Directory
 
 on:
   workflow_dispatch:
