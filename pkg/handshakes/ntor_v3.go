@@ -37,6 +37,7 @@ func (ntor *Client_NTor3Handshake) Encode(w io.Writer) error {
 	w.Write(ntor.MAC)
 	return nil
 }
+func (ntor *Client_NTor3Handshake) Decode(r io.Reader) error { return nil }
 
 func (ntor *Server_NTor3Handshake) Encode(io.Writer) error { return nil }
 func (ntor *Server_NTor3Handshake) Decode(r io.Reader) error {
