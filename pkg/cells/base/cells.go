@@ -41,8 +41,9 @@ var AllKnownCells = map[uint8]func() Cell{
 	COMMAND_CREATED_FAST: func() Cell { return &CreatedFastCell{} },
 	COMMAND_NETINFO:      func() Cell { return &NetInfoCell{} },
 
-	COMMAND_CREATE2:  func() Cell { return &Create2Cell{} },
-	COMMAND_CREATED2: func() Cell { return &Created2Cell{} },
+	COMMAND_RELAY_EARLY: func() Cell { return &RelayEarlyCell{} },
+	COMMAND_CREATE2:     func() Cell { return &Create2Cell{} },
+	COMMAND_CREATED2:    func() Cell { return &Created2Cell{} },
 
 	COMMAND_CERTS: func() Cell { return &CertsCell{} },
 }
