@@ -38,12 +38,8 @@ func (c *Circuit) readloop() {
 			if cell.ID() == cells.COMMAND_RELAY {
 				relaycell := cell.(*cells.RelayCell).Cell
 
-				// check if is SEND_ME for circuit
-				if relaycell.GetStreamID() == 0 && relaycell.ID() == relay.COMMAND_SENDME {
-					select {
-					case c.sendMeReceived <- struct{}{}:
-					default:
-					}
+				if relaycell.GetStreamID() == 0 {
+					c.relayControlFunc(relaycell)
 					continue
 				}
 
@@ -103,4 +99,21 @@ func (c *Circuit) writeLoop() {
 			return
 		}
 	}
+}
+
+func (c *Circuit) relayControlFunc(rc relay.Cell) {
+	switch rc.ID() {
+	case relay.COMMAND_SENDME:
+		select {
+		case c.sendMeReceived <- struct{}{}:
+		default:
+		}
+	case relay.COMMAND_EXTENDED2:
+		select {
+		case c.extended2Received <- rc.(*relay.Extended2Cell):
+		default:
+			// why no one is listening??
+		}
+	}
+
 }

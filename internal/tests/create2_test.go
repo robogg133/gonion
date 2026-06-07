@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"net"
 	"testing"
+	"time"
 
 	"github.com/robogg133/gonion"
 	"github.com/robogg133/gonion/pkg/handshakes"
@@ -29,7 +30,7 @@ func TestCreate2Circuit(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	pk, sk, err := ed25519.GenerateKey(rand.Reader)
+	pk, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,9 +41,11 @@ func TestCreate2Circuit(t *testing.T) {
 		PublicKey: pk,
 	}
 
-	_, err = conn.NewCircuit(1, handshakes.HTYPE_NTOR, ntorHs, pk, sk)
+	_, err = conn.NewCircuit(1, handshakes.HTYPE_NTOR, ntorHs)
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	time.Sleep(5 * time.Second)
 
 }
