@@ -1,4 +1,4 @@
-package cells
+package shared
 
 func MSB(n uint32) uint32 {
 	n |= 0x80000000

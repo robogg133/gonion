@@ -10,6 +10,7 @@ import (
 	"io"
 	"sync"
 
+	"github.com/robogg133/gonion/internal/shared"
 	cells "github.com/robogg133/gonion/pkg/cells/base"
 	"github.com/robogg133/gonion/pkg/cells/relay"
 	"github.com/robogg133/gonion/pkg/common"
@@ -56,7 +57,7 @@ func (c *Conn) NewCircuit(id uint32, htype uint16, hs handshakes.Handshake) (*Ci
 	suc := false
 	circuit := &Circuit{
 		conn:           c,
-		ID:             cells.MSB(id),
+		ID:             shared.MSB(id),
 		CloseCh:        make(chan struct{}),
 		Inbound:        make(chan []byte, 512),
 		WriteRelayCell: make(chan relay.Cell, 512),
@@ -148,7 +149,7 @@ func (c *Conn) NewCircuit(id uint32, htype uint16, hs handshakes.Handshake) (*Ci
 
 func (c *Conn) NewFastCircuit(id uint32) (*Circuit, error) {
 	var suc bool
-	circID := cells.MSB(id)
+	circID := shared.MSB(id)
 
 	circuit := &Circuit{
 		conn:           c,
@@ -276,7 +277,7 @@ func (c *Circuit) Extend(id uint32, lspec []lspec.Lspec, htype uint16, handshake
 
 	circ := &Circuit{
 		conn:           c.conn,
-		ID:             cells.MSB(id),
+		ID:             shared.MSB(id),
 		CloseCh:        make(chan struct{}),
 		Inbound:        make(chan []byte, 512),
 		WriteRelayCell: make(chan relay.Cell, 512),
