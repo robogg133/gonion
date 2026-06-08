@@ -249,11 +249,10 @@ func (c *Conn) NewFastCircuit(id uint32) (*Circuit, error) {
 	return circuit, nil
 }
 
-func (c *Circuit) Extend(id uint32, lspec []lspec.Lspec, htype uint16, handshake handshakes.Handshake) (*Circuit, error) {
+func (c *Circuit) Extend(lspec []lspec.Lspec, htype uint16, handshake handshakes.Handshake) (*relay.RelayCellCoder, error) {
 
 	extend2 := &relay.Extend2Cell{
-		StreamID:  0,
-		CircuitID: id,
+		StreamID: 0,
 
 		Lspecs:    lspec,
 		HType:     htype,
@@ -275,45 +274,6 @@ func (c *Circuit) Extend(id uint32, lspec []lspec.Lspec, htype uint16, handshake
 		return nil, err
 	}
 
-	circ := &Circuit{
-		conn:           c.conn,
-		ID:             shared.MSB(id),
-		CloseCh:        make(chan struct{}),
-		Inbound:        make(chan []byte, 512),
-		WriteRelayCell: make(chan relay.Cell, 512),
-
-		extended2Received: make(chan *relay.Extended2Cell, 1),
-		sendMeReceived:    make(chan struct{}, 1),
-
-		streams: &streams{
-			streams: make(map[uint16]*Stream),
-		},
-
-		ReceiveWindow: &window{
-			v:          1000,
-			startValue: 1000,
-			addValue:   100,
-		},
-		SendWindow: &window{
-			v:          1000,
-			startValue: 1000,
-			addValue:   100,
-		},
-		SendMeVersion: 1,
-		nextStreamID:  1,
-		isUp:          true,
-
-		Coder: cells.NewCellCoder(cells.AllKnownCells, &relay.RelayCellCoder{}),
-	}
-	suc := false
-	c.conn.circuits.Set(circ.ID, circ)
-	defer func() {
-		if !suc {
-			c.conn.circuits.Delete(circ.ID)
-			close(circ.CloseCh)
-		}
-	}()
-
 	keys := &crypto.CircuitKeys{}
 	var err error
 	switch htype {
@@ -325,21 +285,18 @@ func (c *Circuit) Extend(id uint32, lspec []lspec.Lspec, htype uint16, handshake
 		return nil, err
 	}
 
-	circ.Backwards, err = crypto.NewRunningValues(keys.Kb, keys.Db)
+	backwards, err := crypto.NewRunningValues(keys.Kb, keys.Db)
 	if err != nil {
-		return circ, err
+		return nil, err
 	}
-	circ.Forwards, err = crypto.NewRunningValues(keys.Kf, keys.Db)
+	forwards, err := crypto.NewRunningValues(keys.Kf, keys.Db)
 	if err != nil {
-		return circ, err
+		return nil, err
 	}
 
-	circ.Coder.RelayCoder = relay.NewDataCellCoder(circ.Backwards, circ.Forwards)
+	coder := relay.NewDataCellCoder(backwards, forwards)
 
-	go circ.readloop()
-	go circ.writeLoop()
-	suc = true
-	return circ, nil
+	return coder, nil
 }
 
 func (c *Circuit) Close() error {
