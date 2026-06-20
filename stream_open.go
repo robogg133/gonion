@@ -8,7 +8,10 @@ import (
 
 func (s *Stream) beginDir() error {
 
-	s.circuit.WriteRelayCell <- &relay.BeginDirCell{StreamID: s.ID}
+	s.circuit.WriteRelayCell <- struct {
+		relay.Cell
+		uint8
+	}{Cell: &relay.BeginDirCell{StreamID: s.ID}, uint8: s.myHopDestination}
 
 	relayCell := <-s.InboundControl
 	if relayCell.ID() != relay.COMMAND_CONNECTED {

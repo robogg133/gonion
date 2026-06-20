@@ -2,6 +2,7 @@ package gonion
 
 import (
 	"bytes"
+	"fmt"
 
 	cells "github.com/robogg133/gonion/pkg/cells/base"
 	"github.com/robogg133/gonion/pkg/cells/relay"
@@ -10,54 +11,59 @@ import (
 func (c *Circuit) readloop() {
 	for {
 		// Check circuit receive window and send SENDME if needed
-		if c.ReceiveWindow.Check() {
-			cell := &cells.RelayCell{
-				RelayCoder: c.Coder.RelayCoder,
-				Cell: &relay.SendMeCell{
-					StreamID:        0,
-					Version:         c.SendMeVersion,
-					Sha1ForLastCell: c.Backwards.GetLastSumDataCell(),
-				},
+		for i, window := range c.hopsWindows {
+			if window.receive.Check() {
+				cell := &cells.RelayCell{
+					CircuitID: c.ID,
+					Hops:      c.hops[0 : i+1],
+					Cell: &relay.SendMeCell{
+						StreamID:        0,
+						Version:         c.SendMeVersion,
+						Sha1ForLastCell: c.hops[i].Backwards.GetLastSumDataCell(),
+					},
+				}
+				if err := c.SendCell(cell); err != nil {
+					fmt.Println(err)
+					c.Close()
+					return
+				}
+				window.receive.Increase()
 			}
-			if err := c.SendCell(cell); err != nil {
-				c.Close()
-				return
-			}
-			c.ReceiveWindow.Add(100)
 		}
-
 		select {
 		case rawCell := <-c.Inbound:
 			cell, err := c.Coder.ReadCell(bytes.NewReader(rawCell))
 			if err != nil {
+				fmt.Println(err)
 				c.Close()
 				return
 			}
 
 			// Check if is relay cell
 			if cell.ID() == cells.COMMAND_RELAY {
-				relaycell := cell.(*cells.RelayCell).Cell
+				relaycell := cell.(*cells.RelayCell)
+				rcCell := relaycell.Cell
 
-				if relaycell.GetStreamID() == 0 {
-					c.relayControlFunc(relaycell)
+				if rcCell.GetStreamID() == 0 {
+					c.relayControlFunc(rcCell, relaycell.HopDestination())
 					continue
 				}
 
-				stream := c.streams.Get(relaycell.GetStreamID())
+				stream := c.streams.Get(rcCell.GetStreamID())
 				if stream == nil {
 					continue
 				}
 
-				if relaycell.ID() == relay.COMMAND_DATA {
-					c.ReceiveWindow.Subtract(1)
-					if err := stream.writeDataCell(relaycell.(*relay.DataCell)); err != nil {
+				if rcCell.ID() == relay.COMMAND_DATA {
+					c.hopsWindows[relaycell.HopDestination()].receive.Subtract(1) // Subtract from receive window
+					if err := stream.writeDataCell(rcCell.(*relay.DataCell)); err != nil {
 						stream.Close()
 					}
 					continue
 				}
 
 				select {
-				case stream.InboundControl <- relaycell:
+				case stream.InboundControl <- rcCell:
 				case <-stream.CloseCh:
 				}
 				continue
@@ -75,22 +81,23 @@ func (c *Circuit) readloop() {
 func (c *Circuit) writeLoop() {
 	for {
 		select {
-		case relayCell := <-c.WriteRelayCell:
-			if relayCell.ID() == relay.COMMAND_DATA {
-				c.SendWindow.Subtract(1)
+		case cll := <-c.WriteRelayCell:
+			if cll.Cell.ID() == relay.COMMAND_DATA {
+				sendWindow := c.hopsWindows[cll.uint8].send
+				sendWindow.Subtract(1)
 
-				if c.SendWindow.Get() == 0 {
+				if sendWindow.Get() == 0 {
 					select {
 					case <-c.sendMeReceived:
-						c.SendWindow.Increase()
+						sendWindow.Increase()
 					case <-c.CloseCh:
 						return
 					}
 				}
 			}
 			cell := &cells.RelayCell{
-				RelayCoder: c.Coder.RelayCoder,
-				Cell:       relayCell,
+				Hops: c.hops[0 : cll.uint8+1],
+				Cell: cll.Cell,
 			}
 			c.SendCell(cell)
 
@@ -101,7 +108,7 @@ func (c *Circuit) writeLoop() {
 	}
 }
 
-func (c *Circuit) relayControlFunc(rc relay.Cell) {
+func (c *Circuit) relayControlFunc(rc relay.Cell, _ uint8) {
 	switch rc.ID() {
 	case relay.COMMAND_SENDME:
 		select {

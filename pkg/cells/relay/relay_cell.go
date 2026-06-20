@@ -49,6 +49,10 @@ func NewDataCellCoder(backwards, forward *crypto.RunningValues) *RelayCellCoder 
 	}
 }
 
+func IsDecrypted(data []byte) bool {
+	return bytes.Equal(data[1:3], []byte{0, 0})
+}
+
 // Marshal Encodes the given cell, aply all relay headers, apply digest to the header and returns []byte with encrypted data
 func (d *RelayCellCoder) Marshal(c Cell) ([]byte, error) {
 	var buffer bytes.Buffer
@@ -126,6 +130,29 @@ func (d *RelayCellCoder) Unmarshal(b []byte) (Cell, error) {
 	d.Backwards.XORKeyStream(plain, b)
 	b = nil
 
+	// [1:3] Recognized, must be 0
+	// If the recognized is not 0, something is wrong, the data is still encrypted
+	if !bytes.Equal(plain[1:3], []byte{0, 0}) {
+		return nil, fmt.Errorf("recognized is not 0")
+	}
+
+	c := AllKnownRellayCells[plain[0]]()
+
+	// StreamID [3:5]
+	c.SetStreamID(binary.BigEndian.Uint16(plain[3:5]))
+
+	if err := d.backwardCheck(plain); err != nil {
+		return nil, err
+	}
+
+	payloadLen := binary.BigEndian.Uint16(plain[9:11])
+
+	reader := bytes.NewReader(plain[11 : payloadLen+11])
+
+	return c, c.Decode(reader)
+}
+
+func (d *RelayCellCoder) UnmarshalPlain(plain []byte) (Cell, error) {
 	// [1:3] Recognized, must be 0
 	// If the recognized is not 0, something is wrong, the data is still encrypted
 	if !bytes.Equal(plain[1:3], []byte{0, 0}) {

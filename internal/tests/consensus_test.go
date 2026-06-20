@@ -31,7 +31,7 @@ func TestConsensus(t *testing.T) {
 	}
 	t.Log("Created circuit")
 
-	stream, err := circuit.NewStream("dir")
+	stream, err := circuit.NewStream("dir", 0)
 	if err != nil {
 		t.Fatal(err)
 	}

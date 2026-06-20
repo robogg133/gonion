@@ -67,7 +67,7 @@ func TestConnect(t *testing.T) {
 		PublicKey: pk,
 	}
 
-	lastCirc, err := conn.NewCircuit(1, handshakes.HTYPE_NTOR, ntorHS)
+	circ, err := conn.NewCircuit(1, handshakes.HTYPE_NTOR, ntorHS)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,8 +97,7 @@ func TestConnect(t *testing.T) {
 		}
 
 		t.Log("extending")
-		lastCirc, err = lastCirc.Extend(uint32(i+2), lspecs, handshakes.HTYPE_NTOR, hs)
-		if err != nil {
+		if err := circ.Extend(lspecs, handshakes.HTYPE_NTOR, hs); err != nil {
 			t.Fatal(err)
 		}
 		t.Log("extended")

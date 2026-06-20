@@ -24,7 +24,8 @@ const (
 type Stream struct {
 	ID uint16
 
-	circuit *Circuit
+	myHopDestination uint8
+	circuit          *Circuit
 
 	InboundControl chan relay.Cell
 	CloseCh        chan struct{}
@@ -45,7 +46,7 @@ type Stream struct {
 	receiveSendMe chan struct{}
 }
 
-func (c *Circuit) NewStream(kind string) (*Stream, error) {
+func (c *Circuit) NewStream(kind string, hopDest uint8) (*Stream, error) {
 	var suc bool
 
 	buffer := ringbuffer.New(STREAM_BUFFER_SIZE).SetBlocking(true)
@@ -68,6 +69,7 @@ func (c *Circuit) NewStream(kind string) (*Stream, error) {
 			startValue: 500,
 			addValue:   50,
 		},
+		myHopDestination: hopDest,
 
 		State: STREAM_OPENING,
 
@@ -151,7 +153,10 @@ func (s *Stream) sendController() {
 				}
 			}
 			select {
-			case s.circuit.WriteRelayCell <- cell:
+			case s.circuit.WriteRelayCell <- struct {
+				relay.Cell
+				uint8
+			}{Cell: cell, uint8: s.myHopDestination}:
 			case <-s.CloseCh:
 				return
 			}

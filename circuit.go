@@ -2,7 +2,6 @@ package gonion
 
 import (
 	"bytes"
-	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -30,24 +29,25 @@ type Circuit struct {
 	Coder *cells.CellCoder
 
 	SendMeVersion uint8
-	ReceiveWindow *window
-	SendWindow    *window
 
 	streams      *streams
 	nextStreamID uint16
 
 	// Crypto
-	Backwards *crypto.RunningValues
-	Forwards  *crypto.RunningValues
-
-	PublicKey  ed25519.PublicKey
-	PrivateKey ed25519.PrivateKey
+	hops        []*relay.RelayCellCoder
+	hopsWindows []struct {
+		receive *window
+		send    *window
+	}
 
 	// Channels
-	WriteRelayCell chan relay.Cell
-	Inbound        chan []byte
-	CloseCh        chan struct{}
-	closeOnce      sync.Once
+	WriteRelayCell chan struct {
+		relay.Cell
+		uint8
+	}
+	Inbound   chan []byte
+	CloseCh   chan struct{}
+	closeOnce sync.Once
 
 	extended2Received chan *relay.Extended2Cell
 	sendMeReceived    chan struct{}
@@ -56,11 +56,14 @@ type Circuit struct {
 func (c *Conn) NewCircuit(id uint32, htype uint16, hs handshakes.Handshake) (*Circuit, error) {
 	suc := false
 	circuit := &Circuit{
-		conn:           c,
-		ID:             shared.MSB(id),
-		CloseCh:        make(chan struct{}),
-		Inbound:        make(chan []byte, 512),
-		WriteRelayCell: make(chan relay.Cell, 512),
+		conn:    c,
+		ID:      shared.MSB(id),
+		CloseCh: make(chan struct{}),
+		Inbound: make(chan []byte, 512),
+		WriteRelayCell: make(chan struct {
+			relay.Cell
+			uint8
+		}, 512),
 
 		extended2Received: make(chan *relay.Extended2Cell, 1),
 		sendMeReceived:    make(chan struct{}, 1),
@@ -69,16 +72,6 @@ func (c *Conn) NewCircuit(id uint32, htype uint16, hs handshakes.Handshake) (*Ci
 			streams: make(map[uint16]*Stream),
 		},
 
-		ReceiveWindow: &window{
-			v:          1000,
-			startValue: 1000,
-			addValue:   100,
-		},
-		SendWindow: &window{
-			v:          1000,
-			startValue: 1000,
-			addValue:   100,
-		},
 		SendMeVersion: 1,
 		nextStreamID:  1,
 		isUp:          true,
@@ -130,16 +123,34 @@ func (c *Conn) NewCircuit(id uint32, htype uint16, hs handshakes.Handshake) (*Ci
 		keys, err = nths.Derive(created2.Handshake.(*handshakes.Server_NTorHandshake), nths.KeyID)
 	}
 
-	circuit.Backwards, err = crypto.NewRunningValues(keys.Kb, keys.Db)
+	back, err := crypto.NewRunningValues(keys.Kb, keys.Db)
 	if err != nil {
 		return circuit, err
 	}
-	circuit.Forwards, err = crypto.NewRunningValues(keys.Kf, keys.Db)
+	forwards, err := crypto.NewRunningValues(keys.Kf, keys.Df)
 	if err != nil {
 		return circuit, err
 	}
 
-	circuit.Coder.RelayCoder = relay.NewDataCellCoder(circuit.Backwards, circuit.Forwards)
+	circuit.hops = []*relay.RelayCellCoder{relay.NewDataCellCoder(back, forwards)}
+	circuit.hopsWindows = []struct {
+		receive *window
+		send    *window
+	}{
+		{
+			receive: &window{
+				v:          1000,
+				startValue: 1000,
+				addValue:   100,
+			},
+			send: &window{
+				v:          1000,
+				startValue: 1000,
+				addValue:   100,
+			},
+		},
+	}
+	circuit.Coder.Hops = circuit.hops
 
 	go circuit.writeLoop()
 	go circuit.readloop()
@@ -152,27 +163,25 @@ func (c *Conn) NewFastCircuit(id uint32) (*Circuit, error) {
 	circID := shared.MSB(id)
 
 	circuit := &Circuit{
-		conn:           c,
-		ID:             circID,
-		CloseCh:        make(chan struct{}),
-		Inbound:        make(chan []byte, 512),
-		WriteRelayCell: make(chan relay.Cell, 128),
+		conn:    c,
+		ID:      circID,
+		CloseCh: make(chan struct{}),
+		Inbound: make(chan []byte, 512),
+		WriteRelayCell: make(chan struct {
+			relay.Cell
+			uint8
+		}, 128),
 		sendMeReceived: make(chan struct{}, 1),
 
 		streams: &streams{
 			streams: make(map[uint16]*Stream),
 		},
+		hops: make([]*relay.RelayCellCoder, 0),
+		hopsWindows: make([]struct {
+			receive *window
+			send    *window
+		}, 0),
 
-		ReceiveWindow: &window{
-			v:          1000,
-			startValue: 1000,
-			addValue:   100,
-		},
-		SendWindow: &window{
-			v:          1000,
-			startValue: 1000,
-			addValue:   100,
-		},
 		SendMeVersion: 0,
 
 		nextStreamID: 1,
@@ -230,18 +239,34 @@ func (c *Conn) NewFastCircuit(id uint32) (*Circuit, error) {
 		return nil, fmt.Errorf("KH key don't match")
 	}
 
-	circuit.Backwards, err = crypto.NewRunningValues(keys.Kb, keys.Db)
+	back, err := crypto.NewRunningValues(keys.Kb, keys.Db)
 	if err != nil {
 		return nil, err
 	}
-	circuit.Forwards, err = crypto.NewRunningValues(keys.Kf, keys.Df)
+	forwards, err := crypto.NewRunningValues(keys.Kf, keys.Df)
 	if err != nil {
 		return nil, err
 	}
 
-	circuit.Coder = cells.NewCellCoder(cells.AllKnownCells,
-		relay.NewDataCellCoder(circuit.Backwards, circuit.Forwards),
-	)
+	circuit.hops = []*relay.RelayCellCoder{relay.NewDataCellCoder(back, forwards)}
+	circuit.hopsWindows = []struct {
+		receive *window
+		send    *window
+	}{
+		{
+			receive: &window{
+				v:          1000,
+				startValue: 1000,
+				addValue:   100,
+			},
+			send: &window{
+				v:          1000,
+				startValue: 1000,
+				addValue:   100,
+			},
+		},
+	}
+	circuit.Coder.Hops = circuit.hops
 
 	suc = true
 	go circuit.readloop()
@@ -249,7 +274,7 @@ func (c *Conn) NewFastCircuit(id uint32) (*Circuit, error) {
 	return circuit, nil
 }
 
-func (c *Circuit) Extend(lspec []lspec.Lspec, htype uint16, handshake handshakes.Handshake) (*relay.RelayCellCoder, error) {
+func (c *Circuit) Extend(lspec []lspec.Lspec, htype uint16, handshake handshakes.Handshake) error {
 
 	extend2 := &relay.Extend2Cell{
 		StreamID: 0,
@@ -261,17 +286,17 @@ func (c *Circuit) Extend(lspec []lspec.Lspec, htype uint16, handshake handshakes
 
 	if err := c.SendCell(&cells.RelayEarlyCell{
 		C: &cells.RelayCell{
-			CircuitID:  c.ID,
-			RelayCoder: c.Coder.RelayCoder,
-			Cell:       extend2,
+			CircuitID: c.ID,
+			Hops:      c.hops,
+			Cell:      extend2,
 		},
 	}); err != nil {
-		return nil, err
+		return err
 	}
 
 	extended := <-c.extended2Received
 	if err := extended.DecodeHandshake(htype); err != nil {
-		return nil, err
+		return err
 	}
 
 	keys := &crypto.CircuitKeys{}
@@ -282,21 +307,21 @@ func (c *Circuit) Extend(lspec []lspec.Lspec, htype uint16, handshake handshakes
 		keys, err = nths.Derive(extended.Handshake.(*handshakes.Server_NTorHandshake), nths.KeyID)
 	}
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	backwards, err := crypto.NewRunningValues(keys.Kb, keys.Db)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	forwards, err := crypto.NewRunningValues(keys.Kf, keys.Db)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	coder := relay.NewDataCellCoder(backwards, forwards)
+	c.hops = append(c.hops, relay.NewDataCellCoder(backwards, forwards))
 
-	return coder, nil
+	return nil
 }
 
 func (c *Circuit) Close() error {

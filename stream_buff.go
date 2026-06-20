@@ -20,8 +20,9 @@ func (r *readCloserWrapper) Read(p []byte) (int, error) {
 			r.stream.SendCell(&relay.SendMeCell{
 				StreamID:        r.stream.ID,
 				Version:         r.stream.circuit.SendMeVersion,
-				Sha1ForLastCell: r.stream.circuit.Backwards.GetLastSumDataCell(),
+				Sha1ForLastCell: r.stream.circuit.hops[r.stream.myHopDestination].Backwards.GetLastSumDataCell(),
 			})
+
 			sent = true
 		}
 	}
@@ -33,7 +34,7 @@ func (r *readCloserWrapper) Read(p []byte) (int, error) {
 			r.stream.SendCell(&relay.SendMeCell{
 				StreamID:        r.stream.ID,
 				Version:         r.stream.circuit.SendMeVersion,
-				Sha1ForLastCell: r.stream.circuit.Backwards.GetLastSumDataCell(),
+				Sha1ForLastCell: r.stream.circuit.hops[r.stream.myHopDestination].Backwards.GetLastSumDataCell(),
 			})
 		}
 	}

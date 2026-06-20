@@ -14,3 +14,7 @@ func (c *RelayEarlyCell) SetCircuitID(n uint32) { c.C.CircuitID = n }
 
 func (c *RelayEarlyCell) Encode(w io.Writer) error { return c.C.Encode(w) }
 func (c *RelayEarlyCell) Decode(r io.Reader) error { return c.C.Decode(r) }
+
+func (c *RelayEarlyCell) HopDestination() uint8 {
+	return c.C.HopDestination()
+}

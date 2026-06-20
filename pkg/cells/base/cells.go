@@ -31,7 +31,7 @@ type CellCoder struct {
 
 	cellBodyLen int
 
-	RelayCoder *relay.RelayCellCoder
+	Hops []*relay.RelayCellCoder
 }
 
 var AllKnownCells = map[uint8]func() Cell{
@@ -52,7 +52,7 @@ var AllKnownCells = map[uint8]func() Cell{
 func NewCellCoder(knwonCells map[uint8]func() Cell, relayCoder *relay.RelayCellCoder) *CellCoder {
 	return &CellCoder{
 		knownCells:  knwonCells,
-		RelayCoder:  relayCoder,
+		Hops:        []*relay.RelayCellCoder{relayCoder},
 		cellBodyLen: CELL_BODY_LEN,
 	}
 }
@@ -72,11 +72,11 @@ func (r *CellCoder) ReadCell(reader io.Reader) (Cell, error) {
 
 	cell := r.knownCells[cmd[0]]()
 
-	if cell.ID() == COMMAND_RELAY {
-		cell.(*RelayCell).RelayCoder = r.RelayCoder
+	if rc, ok := cell.(*RelayCell); ok {
+		rc.Hops = r.Hops
 	}
-	if cell.ID() == COMMAND_RELAY_EARLY {
-		cell.(*RelayEarlyCell).C.RelayCoder = r.RelayCoder
+	if rc, ok := cell.(*RelayEarlyCell); ok {
+		rc.C.Hops = r.Hops
 	}
 
 	if err := cell.Decode(reader); err != nil {

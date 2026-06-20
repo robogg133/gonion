@@ -21,7 +21,7 @@ const (
 )
 
 func (c *Circuit) GetConsensus() (*common.Consensus, error) {
-	s, err := c.NewStream("dir")
+	s, err := c.NewStream("dir", 0)
 	if err != nil {
 		return nil, err
 	}
@@ -66,7 +66,7 @@ func (c *Circuit) GetMicrodescriptors(src []string) ([]*common.Microdesc, error)
 		return nil, err
 	}
 
-	s, err := c.NewStream("dir")
+	s, err := c.NewStream("dir", 0)
 	if err != nil {
 		return nil, err
 	}
