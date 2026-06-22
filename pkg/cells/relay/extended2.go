@@ -27,7 +27,7 @@ func (c *Extended2Cell) Encode(w io.Writer) error { return nil }
 func (c *Extended2Cell) Decode(r io.Reader) error {
 
 	length := uint16(0)
-	if err := binary.Read(r, binary.BigEndian, length); err != nil {
+	if err := binary.Read(r, binary.BigEndian, &length); err != nil {
 		return err
 	}
 
