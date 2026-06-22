@@ -227,7 +227,10 @@ func (s *Stream) Close() error {
 		s.State = STREAM_CLOSED
 		s.mu.Unlock()
 
-		s.CloseCh <- struct{}{}
+		select {
+		case s.CloseCh <- struct{}{}:
+		default:
+		}
 		close(s.CloseCh)
 		// Drain and close receiveSendMe so any blocked SendCell unblocks.
 		close(s.receiveSendMe)
