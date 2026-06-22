@@ -181,3 +181,17 @@ func selectRandom(totalBw int64, values []value) (*common.RouterStatus, error) {
 		}
 	}
 }
+
+func haveAllKeys(r *common.RouterStatus) bool {
+	if r.NTorOnionKey == nil {
+		return false
+	}
+	if r.NodeID == [20]byte{} {
+		return false
+	}
+	if r.IdEd25519 == nil {
+		return false
+	}
+
+	return true
+}

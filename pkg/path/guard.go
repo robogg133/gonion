@@ -11,7 +11,7 @@ func guardWeightFunc(flags [15]bool, weights common.BandWidthWeight) int64 {
 }
 
 func guardValideFunc(r common.RouterStatus) bool {
-	if r.NTorOnionKey == nil {
+	if !haveAllKeys(&r) {
 		return false
 	}
 

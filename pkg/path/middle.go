@@ -19,5 +19,5 @@ func middleWeightFunc(flags [15]bool, weights common.BandWidthWeight) int64 {
 }
 
 func middleValideFunc(r common.RouterStatus) bool {
-	return r.NTorOnionKey != nil
+	return haveAllKeys(&r)
 }

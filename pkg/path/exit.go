@@ -13,7 +13,7 @@ func exitWeightFunc(flags [15]bool, weights common.BandWidthWeight) int64 {
 }
 
 func exitValidateFunc(r common.RouterStatus) bool {
-	if r.NTorOnionKey == nil {
+	if !haveAllKeys(&r) {
 		return false
 	}
 	if !r.StatusFlags[common.FLAG_EXIT] || r.StatusFlags[common.FLAG_BAD_EXIT] {
