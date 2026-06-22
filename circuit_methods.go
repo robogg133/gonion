@@ -73,6 +73,10 @@ func (c *Circuit) GetMicrodescriptors(src []string) ([]*common.Microdesc, error)
 
 	ctx, cancel := context.WithTimeout(context.Background(), TIMEOUT_DOWNLOADS)
 	defer cancel()
+	go func() {
+		<-ctx.Done()
+		s.Free()
+	}()
 
 	req, err := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf(HTTP_PATH_MICRODESCRIPTOR_DIR_FORMAT, allDigests), nil)
 	if err != nil {
