@@ -320,6 +320,21 @@ func (c *Circuit) Extend(lspec []lspec.Lspec, htype uint16, handshake handshakes
 	}
 
 	c.hops = append(c.hops, relay.NewDataCellCoder(backwards, forwards))
+	c.hopsWindows = append(c.hopsWindows, struct {
+		receive *window
+		send    *window
+	}{
+		receive: &window{
+			v:          1000,
+			startValue: 1000,
+			addValue:   100,
+		},
+		send: &window{
+			v:          1000,
+			startValue: 1000,
+			addValue:   100,
+		},
+	})
 
 	return nil
 }
@@ -333,7 +348,7 @@ func (c *Circuit) handleCell(cell cells.Cell) {
 	switch cell.ID() {
 	case cells.COMMAND_DESTROY:
 		// #debug
-		fmt.Printf("RECEIVED DESTROY: (%d) %s\n", cell.(*cells.DestroyCell).Reason, common.DestroyGetReasonS(cell.(*cells.DestroyCell).Reason))
+		panic(fmt.Sprintf("RECEIVED DESTROY: (%d) %s\n", cell.(*cells.DestroyCell).Reason, common.DestroyGetReasonS(cell.(*cells.DestroyCell).Reason)))
 		// #debug
 		c.Close()
 		return
@@ -372,18 +387,4 @@ func (c *Circuit) SendCell(cell cells.Cell) error {
 	}
 
 	return nil
-}
-
-func canContinue(r *common.RouterStatus) bool {
-	if r.NTorOnionKey == nil {
-		return false
-	}
-	if r.NodeID == [20]byte{} {
-		return false
-	}
-	if r.IdEd25519 == nil {
-		return false
-	}
-
-	return true
 }
