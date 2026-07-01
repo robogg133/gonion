@@ -35,7 +35,8 @@ type Conn struct {
 	mu sync.RWMutex
 
 	writeCall chan []byte
-	closeCh   chan string
+	ctx       context.Context
+	ctxCancel context.CancelCauseFunc
 
 	guardID uint32
 	exitID  uint32
@@ -45,9 +46,11 @@ type Conn struct {
 
 func NewConn(c net.Conn) (*Conn, error) {
 
+	ctx, cancel := context.WithCancelCause(context.Background())
 	conn := &Conn{
 		writeCall: make(chan []byte, 256),
-		closeCh:   make(chan string),
+		ctx:       ctx,
+		ctxCancel: cancel,
 		circuits: &circuits{
 			circs: make(map[uint32]*Circuit),
 		},

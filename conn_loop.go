@@ -13,7 +13,7 @@ func (c *Conn) readLoop() {
 
 		header := make([]byte, 5)
 		if _, err := io.ReadFull(c.socket, header); err != nil {
-			c.closeError(err.Error())
+			c.ctxCancel(err)
 			return
 		}
 		circuitID := binary.BigEndian.Uint32(header[:4])
@@ -24,19 +24,19 @@ func (c *Conn) readLoop() {
 
 			// Writing header to the buffer
 			if _, err := buffer.Write(header); err != nil {
-				c.closeError(err.Error())
+				c.ctxCancel(err)
 				return
 			}
 
 			// Writing cell body
 			buf := make([]byte, cells.CELL_BODY_LEN)
 			if _, err := io.ReadFull(c.socket, buf); err != nil {
-				c.closeError(err.Error())
+				c.ctxCancel(err)
 				return
 			}
 
 			if _, err := buffer.Write(buf); err != nil {
-				c.closeError(err.Error())
+				c.ctxCancel(err)
 				return
 			}
 		}
@@ -49,9 +49,9 @@ func (c *Conn) readLoop() {
 
 		select {
 		case circuit.Inbound <- buffer.Bytes():
-		case <-circuit.CloseCh:
+		case <-circuit.Ctx.Done():
 			continue
-		case <-c.closeCh:
+		case <-c.ctx.Done():
 			return
 		}
 	}
@@ -64,16 +64,8 @@ func (c *Conn) writeLoop() {
 			if _, err := c.socket.Write(cell); err != nil {
 				return
 			}
-		case <-c.closeCh:
+		case <-c.ctx.Done():
 			return
 		}
 	}
-}
-
-func (c *Conn) closeError(s string) error {
-	select {
-	case c.closeCh <- s:
-	default:
-	}
-	return nil
 }

@@ -2,9 +2,9 @@ package gonion
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"io"
 	"sync"
@@ -46,7 +46,8 @@ type Circuit struct {
 		uint8
 	}
 	Inbound   chan []byte
-	CloseCh   chan struct{}
+	Ctx       context.Context
+	ctxCancel context.CancelCauseFunc
 	closeOnce sync.Once
 
 	extended2Received chan *relay.Extended2Cell
@@ -55,16 +56,18 @@ type Circuit struct {
 
 func (c *Conn) NewCircuit(id uint32, htype uint16, hs handshakes.Handshake) (*Circuit, error) {
 	suc := false
+	ctx, cancel := context.WithCancelCause(c.ctx)
 	circuit := &Circuit{
 		conn:    c,
 		ID:      shared.MSB(id),
-		CloseCh: make(chan struct{}),
 		Inbound: make(chan []byte, 512),
 		WriteRelayCell: make(chan struct {
 			relay.Cell
 			uint8
 		}, 512),
 
+		Ctx:               ctx,
+		ctxCancel:         cancel,
 		extended2Received: make(chan *relay.Extended2Cell, 1),
 		sendMeReceived:    make(chan struct{}, 1),
 
@@ -82,7 +85,7 @@ func (c *Conn) NewCircuit(id uint32, htype uint16, hs handshakes.Handshake) (*Ci
 	defer func() {
 		if !suc {
 			c.circuits.Delete(circuit.ID)
-			close(circuit.CloseCh)
+			circuit.ctxCancel(fmt.Errorf("error starting circuit"))
 		}
 	}()
 
@@ -99,8 +102,8 @@ func (c *Conn) NewCircuit(id uint32, htype uint16, hs handshakes.Handshake) (*Ci
 	var rawCell []byte
 	select {
 	case rawCell = <-circuit.Inbound:
-	case <-c.closeCh:
-		return nil, errors.New("connection closed")
+	case <-circuit.Ctx.Done():
+		return nil, circuit.Ctx.Err()
 	}
 
 	cell, err := circuit.Coder.ReadCell(bytes.NewReader(rawCell))
@@ -161,17 +164,19 @@ func (c *Conn) NewCircuit(id uint32, htype uint16, hs handshakes.Handshake) (*Ci
 func (c *Conn) NewFastCircuit(id uint32) (*Circuit, error) {
 	var suc bool
 	circID := shared.MSB(id)
+	ctx, cancel := context.WithCancelCause(c.ctx)
 
 	circuit := &Circuit{
 		conn:    c,
 		ID:      circID,
-		CloseCh: make(chan struct{}),
 		Inbound: make(chan []byte, 512),
 		WriteRelayCell: make(chan struct {
 			relay.Cell
 			uint8
 		}, 128),
 		sendMeReceived: make(chan struct{}, 1),
+		Ctx:            ctx,
+		ctxCancel:      cancel,
 
 		streams: &streams{
 			streams: make(map[uint16]*Stream),
@@ -203,7 +208,7 @@ func (c *Conn) NewFastCircuit(id uint32) (*Circuit, error) {
 	defer func() {
 		if !suc {
 			c.circuits.Delete(circID)
-			close(circuit.CloseCh)
+			circuit.ctxCancel(fmt.Errorf("error starting circuit"))
 		}
 	}()
 
@@ -216,8 +221,8 @@ func (c *Conn) NewFastCircuit(id uint32) (*Circuit, error) {
 	var rawCell []byte
 	select {
 	case rawCell = <-circuit.Inbound:
-	case <-c.closeCh:
-		return nil, errors.New("connection closed")
+	case <-circuit.Ctx.Done():
+		return nil, circuit.Ctx.Err()
 	}
 	cell, err := circuit.Coder.ReadCell(bytes.NewReader(rawCell))
 	if err != nil {
@@ -287,8 +292,7 @@ func (c *Circuit) Extend(lspec []lspec.Lspec, htype uint16, handshake handshakes
 	if err := c.SendCell(&cells.RelayEarlyCell{
 		C: &cells.RelayCell{
 			CircuitID: c.ID,
-			Hops:      c.hops,
-			Cell:      extend2,
+			Hops:      c.hops, Cell: extend2,
 		},
 	}); err != nil {
 		return err
@@ -348,9 +352,9 @@ func (c *Circuit) handleCell(cell cells.Cell) {
 	switch cell.ID() {
 	case cells.COMMAND_DESTROY:
 		// #debug
-		panic(fmt.Sprintf("RECEIVED DESTROY: (%d) %s\n", cell.(*cells.DestroyCell).Reason, common.DestroyGetReasonS(cell.(*cells.DestroyCell).Reason)))
+		fmt.Printf("RECEIVED DESTROY: (%d) %s\n", cell.(*cells.DestroyCell).Reason, common.DestroyGetReasonS(cell.(*cells.DestroyCell).Reason))
+		c.ctxCancel(fmt.Errorf("destroyed: reason=%d (%s)", cell.(*cells.DestroyCell).Reason, common.DestroyGetReasonS(cell.(*cells.DestroyCell).Reason)))
 		// #debug
-		c.Close()
 		return
 	}
 }
@@ -381,9 +385,9 @@ func (c *Circuit) SendCell(cell cells.Cell) error {
 
 	select {
 	case c.conn.writeCall <- b:
-	case <-c.CloseCh:
+	case <-c.Ctx.Done():
 		c.Close()
-		return errors.New("circuit close")
+		return c.Ctx.Err()
 	}
 
 	return nil

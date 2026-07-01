@@ -1,6 +1,7 @@
 package gonion
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -28,7 +29,8 @@ type Stream struct {
 	circuit          *Circuit
 
 	InboundControl chan relay.Cell
-	CloseCh        chan struct{}
+	Ctx            context.Context
+	ctxCancel      context.CancelCauseFunc
 
 	outbound chan relay.Cell
 
@@ -48,6 +50,7 @@ type Stream struct {
 
 func (c *Circuit) NewStream(kind string, hopDest uint8) (*Stream, error) {
 	var suc bool
+	ctx, ctxCancel := context.WithCancelCause(c.Ctx)
 
 	buffer := ringbuffer.New(STREAM_BUFFER_SIZE).SetBlocking(true)
 
@@ -56,7 +59,8 @@ func (c *Circuit) NewStream(kind string, hopDest uint8) (*Stream, error) {
 		circuit:        c,
 		InboundControl: make(chan relay.Cell, 512),
 		outbound:       make(chan relay.Cell, 512),
-		CloseCh:        make(chan struct{}),
+		Ctx:            ctx,
+		ctxCancel:      ctxCancel,
 		receiveSendMe:  make(chan struct{}, 1),
 
 		SendWindow: &window{
@@ -125,7 +129,7 @@ func (s *Stream) controlLoop() {
 				s.Close()
 			}
 
-		case <-s.CloseCh:
+		case <-s.Ctx.Done():
 			return
 		}
 	}
@@ -147,7 +151,7 @@ func (s *Stream) sendController() {
 					select {
 					case <-s.receiveSendMe:
 						s.SendWindow.Increase()
-					case <-s.CloseCh:
+					case <-s.Ctx.Done():
 						return
 					}
 				}
@@ -157,10 +161,10 @@ func (s *Stream) sendController() {
 				relay.Cell
 				uint8
 			}{Cell: cell, uint8: s.myHopDestination}:
-			case <-s.CloseCh:
+			case <-s.Ctx.Done():
 				return
 			}
-		case <-s.CloseCh:
+		case <-s.Ctx.Done():
 			return
 		}
 	}
@@ -201,8 +205,8 @@ func (s *Stream) SendCell(cell relay.Cell) error {
 	select {
 	case s.outbound <- cell:
 		return nil
-	case <-s.CloseCh:
-		return errors.New("stream closed")
+	case <-s.Ctx.Done():
+		return s.Ctx.Err()
 	}
 }
 
@@ -227,7 +231,7 @@ func (s *Stream) Close() error {
 		s.State = STREAM_CLOSED
 		s.mu.Unlock()
 
-		close(s.CloseCh)
+		s.ctxCancel(errors.New("requested close"))
 		// Drain and close receiveSendMe so any blocked SendCell unblocks.
 		close(s.receiveSendMe)
 		s.buffer.CloseWriter()

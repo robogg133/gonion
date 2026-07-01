@@ -64,14 +64,14 @@ func (c *Circuit) readloop() {
 
 				select {
 				case stream.InboundControl <- rcCell:
-				case <-stream.CloseCh:
+				case <-stream.Ctx.Done():
 				}
 				continue
 			}
 
 			// Non-relay cells (DESTROY, etc.)
 			go c.handleCell(cell)
-		case <-c.CloseCh:
+		case <-c.Ctx.Done():
 			c.Close()
 			return
 		}
@@ -90,7 +90,7 @@ func (c *Circuit) writeLoop() {
 					select {
 					case <-c.sendMeReceived:
 						sendWindow.Increase()
-					case <-c.CloseCh:
+					case <-c.Ctx.Done():
 						return
 					}
 				}
@@ -101,7 +101,7 @@ func (c *Circuit) writeLoop() {
 			}
 			c.SendCell(cell)
 
-		case <-c.CloseCh:
+		case <-c.Ctx.Done():
 			c.Close()
 			return
 		}

@@ -21,12 +21,13 @@ const (
 )
 
 func (c *Circuit) GetConsensus() (*common.Consensus, error) {
+
 	s, err := c.NewStream("dir", 0)
 	if err != nil {
 		return nil, err
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), TIMEOUT_DOWNLOADS)
+	ctx, cancel := context.WithTimeout(s.Ctx, TIMEOUT_DOWNLOADS)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, "GET", HTTP_PATH_CONSENSUS_MICRODESC, nil)
@@ -35,7 +36,7 @@ func (c *Circuit) GetConsensus() (*common.Consensus, error) {
 	}
 
 	go func() {
-		<-ctx.Done()
+		<-s.Ctx.Done()
 		s.Free()
 	}()
 
@@ -73,15 +74,16 @@ func (c *Circuit) GetMicrodescriptors(src []string) ([]*common.Microdesc, error)
 
 	ctx, cancel := context.WithTimeout(context.Background(), TIMEOUT_DOWNLOADS)
 	defer cancel()
-	go func() {
-		<-ctx.Done()
-		s.Free()
-	}()
 
 	req, err := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf(HTTP_PATH_MICRODESCRIPTOR_DIR_FORMAT, allDigests), nil)
 	if err != nil {
 		return nil, err
 	}
+
+	go func() {
+		<-ctx.Done()
+		s.Free()
+	}()
 
 	if err := req.Write(s); err != nil {
 		return nil, err
