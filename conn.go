@@ -48,7 +48,7 @@ func NewConn(c net.Conn) (*Conn, error) {
 
 	ctx, cancel := context.WithCancelCause(context.Background())
 	conn := &Conn{
-		writeCall: make(chan []byte, 256),
+		writeCall: make(chan []byte, 4096),
 		ctx:       ctx,
 		ctxCancel: cancel,
 		circuits: &circuits{

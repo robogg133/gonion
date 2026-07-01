@@ -60,7 +60,7 @@ func (c *Conn) NewCircuit(id uint32, htype uint16, hs handshakes.Handshake) (*Ci
 	circuit := &Circuit{
 		conn:    c,
 		ID:      shared.MSB(id),
-		Inbound: make(chan []byte, 512),
+		Inbound: make(chan []byte, 2048),
 		WriteRelayCell: make(chan struct {
 			relay.Cell
 			uint8

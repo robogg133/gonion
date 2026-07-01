@@ -58,7 +58,7 @@ func (c *Circuit) NewStream(kind string, hopDest uint8) (*Stream, error) {
 		ID:             c.nextStreamID,
 		circuit:        c,
 		InboundControl: make(chan relay.Cell, 512),
-		outbound:       make(chan relay.Cell, 512),
+		outbound:       make(chan relay.Cell, 2048),
 		Ctx:            ctx,
 		ctxCancel:      ctxCancel,
 		receiveSendMe:  make(chan struct{}, 1),
