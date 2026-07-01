@@ -124,6 +124,9 @@ func NewNodeID(nodeID [20]byte) Lspec {
 	return Lspec{spec: id}
 }
 func NewEd25519ID(ed25519id ed25519.PublicKey) Lspec {
+	if len(ed25519id) != 32 {
+		panic(fmt.Errorf("ed25519id not 32 bytes length got %d", len(ed25519id)))
+	}
 	id := new(Ed25519ID)
 	*id = Ed25519ID(ed25519id)
 	return Lspec{spec: id}
