@@ -4,12 +4,12 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"io"
 	"sync"
 
 	"github.com/robogg133/gonion/internal/shared"
+	"github.com/robogg133/gonion/internal/window"
 	cells "github.com/robogg133/gonion/pkg/cells/base"
 	"github.com/robogg133/gonion/pkg/cells/relay"
 	"github.com/robogg133/gonion/pkg/common"
@@ -36,8 +36,8 @@ type Circuit struct {
 	// Crypto
 	hops        []*relay.RelayCellCoder
 	hopsWindows []struct {
-		receive *window
-		send    *window
+		receive *window.Window
+		send    *window.Window
 	}
 
 	// Channels
@@ -125,6 +125,8 @@ func (c *Conn) NewCircuit(id uint32, htype uint16, hs handshakes.Handshake) (*Ci
 		nths := hs.(*handshakes.Client_NTorHandshake)
 		keys, err = nths.Derive(created2.Handshake.(*handshakes.Server_NTorHandshake), nths.KeyID)
 	}
+	rcvWindow := window.NewWindow(1000, 100)
+	sndWindow := window.NewWindow(1000, 100)
 
 	back, err := crypto.NewRunningValues(keys.Kb, keys.Db)
 	if err != nil {
@@ -137,20 +139,12 @@ func (c *Conn) NewCircuit(id uint32, htype uint16, hs handshakes.Handshake) (*Ci
 
 	circuit.hops = []*relay.RelayCellCoder{relay.NewDataCellCoder(back, forwards)}
 	circuit.hopsWindows = []struct {
-		receive *window
-		send    *window
+		receive *window.Window
+		send    *window.Window
 	}{
 		{
-			receive: &window{
-				v:          1000,
-				startValue: 1000,
-				addValue:   100,
-			},
-			send: &window{
-				v:          1000,
-				startValue: 1000,
-				addValue:   100,
-			},
+			receive: rcvWindow,
+			send:    sndWindow,
 		},
 	}
 	circuit.Coder.Hops = circuit.hops
@@ -183,8 +177,8 @@ func (c *Conn) NewFastCircuit(id uint32) (*Circuit, error) {
 		},
 		hops: make([]*relay.RelayCellCoder, 0),
 		hopsWindows: make([]struct {
-			receive *window
-			send    *window
+			receive *window.Window
+			send    *window.Window
 		}, 0),
 
 		SendMeVersion: 0,
@@ -244,6 +238,9 @@ func (c *Conn) NewFastCircuit(id uint32) (*Circuit, error) {
 		return nil, fmt.Errorf("KH key don't match")
 	}
 
+	rcvWindow := window.NewWindow(1000, 100)
+	sndWindow := window.NewWindow(1000, 100)
+
 	back, err := crypto.NewRunningValues(keys.Kb, keys.Db)
 	if err != nil {
 		return nil, err
@@ -255,20 +252,12 @@ func (c *Conn) NewFastCircuit(id uint32) (*Circuit, error) {
 
 	circuit.hops = []*relay.RelayCellCoder{relay.NewDataCellCoder(back, forwards)}
 	circuit.hopsWindows = []struct {
-		receive *window
-		send    *window
+		receive *window.Window
+		send    *window.Window
 	}{
 		{
-			receive: &window{
-				v:          1000,
-				startValue: 1000,
-				addValue:   100,
-			},
-			send: &window{
-				v:          1000,
-				startValue: 1000,
-				addValue:   100,
-			},
+			receive: rcvWindow,
+			send:    sndWindow,
 		},
 	}
 	circuit.Coder.Hops = circuit.hops
@@ -314,30 +303,25 @@ func (c *Circuit) Extend(lspec []lspec.Lspec, htype uint16, handshake handshakes
 		return err
 	}
 
+	rcvWindow := window.NewWindow(1000, 100)
+	sndWindow := window.NewWindow(1000, 100)
+
 	backwards, err := crypto.NewRunningValues(keys.Kb, keys.Db)
 	if err != nil {
 		return err
 	}
-	forwards, err := crypto.NewRunningValues(keys.Kf, keys.Db)
+	forwards, err := crypto.NewRunningValues(keys.Kf, keys.Df)
 	if err != nil {
 		return err
 	}
 
 	c.hops = append(c.hops, relay.NewDataCellCoder(backwards, forwards))
 	c.hopsWindows = append(c.hopsWindows, struct {
-		receive *window
-		send    *window
+		receive *window.Window
+		send    *window.Window
 	}{
-		receive: &window{
-			v:          1000,
-			startValue: 1000,
-			addValue:   100,
-		},
-		send: &window{
-			v:          1000,
-			startValue: 1000,
-			addValue:   100,
-		},
+		receive: rcvWindow,
+		send:    sndWindow,
 	})
 
 	return nil
@@ -374,13 +358,6 @@ func (c *Circuit) SendCell(cell cells.Cell) error {
 	if err != nil {
 		c.Close()
 		return err
-	}
-
-	if cell.ID() == cells.COMMAND_RELAY_EARLY {
-		fmt.Println("RELAY_EARLY Len:", len(b))
-		fmt.Println(hex.Dump(b))
-		fmt.Println("//")
-		fmt.Println(b)
 	}
 
 	select {

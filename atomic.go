@@ -1,6 +1,8 @@
 package gonion
 
-import "sync"
+import (
+	"sync"
+)
 
 type circuits struct {
 	circs map[uint32]*Circuit
@@ -68,70 +70,5 @@ func (m *streams) Delete(id uint16) {
 }
 
 /////////////////////////////////////////////////
-
-type window struct {
-	v uint16
-
-	startValue uint16
-	addValue   uint16
-
-	mu sync.RWMutex
-}
-
-// Increase window.v += window.addValue
-func (w *window) Increase() {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	w.v += w.addValue
-}
-
-// Check if window need a SENDME
-func (w *window) Check() bool {
-	w.mu.RLock()
-	defer w.mu.RUnlock()
-	return w.v != w.startValue && w.v%w.addValue == 0
-}
-
-// Check if window need a SENDME if need return true and add window.startValue to value
-func (w *window) IncreaseWindowChecking() bool {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	if w.v != w.startValue && w.v%w.addValue == 0 {
-		w.v += w.addValue
-		return true
-	}
-
-	return false
-}
-
-func (w *window) Set(n uint16) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	w.v = n
-}
-
-func (w *window) Add(n uint16) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	w.v += n
-}
-
-func (w *window) Subtract(n uint16) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	w.v -= n
-}
-
-func (w *window) Get() uint16 {
-	w.mu.RLock()
-	defer w.mu.RUnlock()
-
-	return w.v
-}
 
 /////////////////////////////////////////////////

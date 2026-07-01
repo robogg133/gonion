@@ -9,7 +9,8 @@ const COMMAND_DATA uint8 = 2
 type DataCell struct {
 	StreamID uint16
 
-	Payload []byte
+	thisCellDigest [20]byte
+	Payload        []byte
 }
 
 func (*DataCell) ID() uint8              { return COMMAND_DATA }
@@ -35,4 +36,8 @@ func (c *DataCell) Decode(r io.Reader) error {
 		}
 	}
 	return nil
+}
+
+func (c *DataCell) Digest() [20]byte {
+	return c.thisCellDigest
 }

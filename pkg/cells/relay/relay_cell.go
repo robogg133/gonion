@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"io"
+	"os"
+	"time"
 
 	"github.com/robogg133/gonion/pkg/crypto"
 )
@@ -39,13 +42,29 @@ type RelayCellCoder struct {
 	Forwards *crypto.RunningValues
 
 	relayBodyLen int
+
+	in  int32
+	out int32
+
+	__debug_file_marshal   *os.File
+	__debug_file_unmarshal *os.File
 }
 
 func NewDataCellCoder(backwards, forward *crypto.RunningValues) *RelayCellCoder {
+	marshal, err := os.OpenFile(fmt.Sprintf("relay_marshaller_%d", time.Now().Unix()), os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return nil
+	}
+	unmarshal, err := os.OpenFile(fmt.Sprintf("relay_unmarshaller_%d", time.Now().Unix()), os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return nil
+	}
 	return &RelayCellCoder{
-		Backwards:    backwards,
-		Forwards:     forward,
-		relayBodyLen: RELAY_BODY_LEN,
+		Backwards:              backwards,
+		Forwards:               forward,
+		relayBodyLen:           RELAY_BODY_LEN,
+		__debug_file_marshal:   marshal,
+		__debug_file_unmarshal: unmarshal,
 	}
 }
 
@@ -110,13 +129,16 @@ func (d *RelayCellCoder) Marshal(c Cell) ([]byte, error) {
 	}
 
 	digest := d.Forwards.Sum()
-	if c.ID() == COMMAND_DATA {
-		d.Forwards.SetLastSumDataCell([20]byte(digest))
+	if c, ok := c.(*DataCell); ok {
+		c.thisCellDigest = [20]byte(digest)
 	}
 
 	copy(b[5:9], digest[0:4]) // Copy the firsts 4 bytes from the sum, to the Digest
 
 	dst := make([]byte, 509) // 509 = 498 (Payload length) + 11 (Headers length)
+
+	fmt.Fprintf(d.__debug_file_marshal, "----- BEGIN PACKET -----\nLEN=%d TIME=%s\n<Decimal representation>\n%v\n</Decimal representation>\n<Hexdump representation>\n%s\n</Hexdump representation>\n----- END PACKET -----\n", len(b), time.Now(), b, hex.Dump(b))
+
 	d.Forwards.XORKeyStream(dst, b)
 	b = nil
 
@@ -130,26 +152,7 @@ func (d *RelayCellCoder) Unmarshal(b []byte) (Cell, error) {
 	d.Backwards.XORKeyStream(plain, b)
 	b = nil
 
-	// [1:3] Recognized, must be 0
-	// If the recognized is not 0, something is wrong, the data is still encrypted
-	if !bytes.Equal(plain[1:3], []byte{0, 0}) {
-		return nil, fmt.Errorf("recognized is not 0")
-	}
-
-	c := AllKnownRellayCells[plain[0]]()
-
-	// StreamID [3:5]
-	c.SetStreamID(binary.BigEndian.Uint16(plain[3:5]))
-
-	if err := d.backwardCheck(plain); err != nil {
-		return nil, err
-	}
-
-	payloadLen := binary.BigEndian.Uint16(plain[9:11])
-
-	reader := bytes.NewReader(plain[11 : payloadLen+11])
-
-	return c, c.Decode(reader)
+	return d.UnmarshalPlain(plain)
 }
 
 func (d *RelayCellCoder) UnmarshalPlain(plain []byte) (Cell, error) {
@@ -164,14 +167,19 @@ func (d *RelayCellCoder) UnmarshalPlain(plain []byte) (Cell, error) {
 	// StreamID [3:5]
 	c.SetStreamID(binary.BigEndian.Uint16(plain[3:5]))
 
-	if err := d.backwardCheck(plain); err != nil {
+	digest, err := d.backwardCheck(plain)
+	if err != nil {
 		return nil, err
 	}
 
 	payloadLen := binary.BigEndian.Uint16(plain[9:11])
 
 	reader := bytes.NewReader(plain[11 : payloadLen+11])
+	if c, ok := c.(*DataCell); ok {
+		c.thisCellDigest = digest
+	}
 
+	fmt.Fprintf(d.__debug_file_unmarshal, "----- BEGIN PACKET -----\nLEN=%d TIME=%s\n<Decimal representation>\n%v\n</Decimal representation>\n<Hexdump representation>\n%s\n</Hexdump representation>\n----- END PACKET -----\n", len(plain), time.Now(), plain, hex.Dump(plain))
 	return c, c.Decode(reader)
 }
 
@@ -204,7 +212,7 @@ func (d *RelayCellCoder) applyPadding(buffer *bytes.Buffer) error {
 	return err
 }
 
-func (d *RelayCellCoder) backwardCheck(b []byte) error {
+func (d *RelayCellCoder) backwardCheck(b []byte) ([20]byte, error) {
 	// [5:9] Digest position (4 bytes)
 
 	// Saving the original value
@@ -215,16 +223,13 @@ func (d *RelayCellCoder) backwardCheck(b []byte) error {
 	copy(b[5:9], []byte{0, 0, 0, 0})
 
 	if err := d.Backwards.Write(b); err != nil {
-		return err
+		return [20]byte{}, err
 	}
 	sum := d.Backwards.Sum()
-	if b[0] == COMMAND_DATA {
-		d.Backwards.SetLastSumDataCell([20]byte(sum))
-	}
 
 	if !bytes.Equal(originalD[:], sum[0:4]) {
-		return fmt.Errorf("error doing backward check, expected result: (%x), but got: (%x)", originalD, sum[0:4])
+		return [20]byte{}, fmt.Errorf("error doing backward check, expected result: (%x), but got: (%x)", originalD, sum[0:4])
 	}
 
-	return nil
+	return [20]byte(sum), nil
 }

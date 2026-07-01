@@ -7,6 +7,7 @@ import (
 	"io"
 	"sync"
 
+	"github.com/robogg133/gonion/internal/window"
 	"github.com/robogg133/gonion/pkg/cells/relay"
 	"github.com/smallnest/ringbuffer"
 )
@@ -37,8 +38,8 @@ type Stream struct {
 	Reader io.ReadCloser
 	buffer *ringbuffer.RingBuffer
 
-	SendWindow    *window
-	ReceiveWindow *window
+	SendWindow    *window.Window
+	ReceiveWindow *window.Window
 
 	State uint8
 
@@ -63,16 +64,8 @@ func (c *Circuit) NewStream(kind string, hopDest uint8) (*Stream, error) {
 		ctxCancel:      ctxCancel,
 		receiveSendMe:  make(chan struct{}, 1),
 
-		SendWindow: &window{
-			v:          500,
-			startValue: 500,
-			addValue:   50,
-		},
-		ReceiveWindow: &window{
-			v:          500,
-			startValue: 500,
-			addValue:   50,
-		},
+		SendWindow:       window.NewWindow(500, 50),
+		ReceiveWindow:    window.NewWindow(500, 50),
 		myHopDestination: hopDest,
 
 		State: STREAM_OPENING,
@@ -146,6 +139,9 @@ func (s *Stream) sendController() {
 
 			if cell.ID() == relay.COMMAND_DATA {
 				s.SendWindow.Subtract(1)
+				if s.SendWindow.Check() {
+					s.SendWindow.SetDigest(cell.(*relay.DataCell).Digest())
+				}
 
 				if s.SendWindow.Get() == 0 {
 					select {
@@ -241,6 +237,9 @@ func (s *Stream) Close() error {
 
 func (s *Stream) writeDataCell(cell *relay.DataCell) error {
 	s.ReceiveWindow.Subtract(1)
+	if s.ReceiveWindow.Check() {
+		s.ReceiveWindow.SetDigest(cell.Digest())
+	}
 
 	if _, err := s.buffer.Write(cell.Payload); err != nil {
 		return err

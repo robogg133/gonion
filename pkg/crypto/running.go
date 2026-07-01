@@ -12,8 +12,6 @@ type RunningValues struct {
 	digest    hash.Hash
 	aes128Ctr cipher.Stream
 
-	lastDataCellSum [20]byte
-
 	mu sync.RWMutex
 }
 
@@ -36,19 +34,6 @@ func NewRunningValues(EncryptionKey []byte, DigestStarter []byte) (*RunningValue
 	rv.aes128Ctr = cipher.NewCTR(block, tmp)
 
 	return rv, nil
-}
-
-func (rv *RunningValues) SetLastSumDataCell(sum [20]byte) {
-	rv.mu.Lock()
-	defer rv.mu.Unlock()
-
-	rv.lastDataCellSum = sum
-}
-func (rv *RunningValues) GetLastSumDataCell() [20]byte {
-	rv.mu.RLock()
-	defer rv.mu.RUnlock()
-
-	return rv.lastDataCellSum
 }
 
 func (rv *RunningValues) Sum() []byte {
