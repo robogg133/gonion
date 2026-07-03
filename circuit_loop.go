@@ -14,22 +14,21 @@ func (c *Circuit) readloop() {
 		for i, window := range c.hopsWindows {
 			select {
 			case digest := <-window.receive.Get():
-				cell := &cells.RelayCell{
-					CircuitID: c.ID,
-					Hops:      c.hops[0 : i+1],
-					Cell: &relay.SendMeCell{
-						StreamID:        0,
-						Version:         c.SendMeVersion,
-						Sha1ForLastCell: digest,
-					},
+
+				sendMeCell := &relay.SendMeCell{
+					StreamID:        0,
+					Version:         c.SendMeVersion,
+					Sha1ForLastCell: digest,
 				}
 
-				if err := c.SendCell(cell); err != nil {
-					fmt.Println(err)
-					c.Close()
-					return
+				select {
+				case c.WriteRelayCell <- struct {
+					relay.Cell
+					uint8
+				}{Cell: sendMeCell, uint8: uint8(i)}:
+					window.receive.Increase()
+				case <-c.Ctx.Done():
 				}
-				window.receive.Increase()
 			default:
 			}
 		}
