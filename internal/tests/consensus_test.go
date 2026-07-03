@@ -14,6 +14,7 @@ import (
 )
 
 func TestConsensus(t *testing.T) {
+	t.Parallel()
 
 	c, err := net.Dial("tcp", "38.102.127.252:9004")
 	if err != nil {

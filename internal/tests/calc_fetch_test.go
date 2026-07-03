@@ -8,6 +8,7 @@ import (
 )
 
 func TestCalc(t *testing.T) {
+	t.Parallel()
 
 	validAfter := time.Date(2026, 05, 23, 12, 0, 0, 0, time.UTC)
 	freshUntil := time.Date(2026, 05, 23, 13, 0, 0, 0, time.UTC)

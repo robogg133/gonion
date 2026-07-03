@@ -18,6 +18,7 @@ var (
 )
 
 func TestCreate2Circuit(t *testing.T) {
+	t.Parallel()
 
 	c, err := net.Dial("tcp", addr)
 	if err != nil {

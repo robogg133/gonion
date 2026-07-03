@@ -13,6 +13,7 @@ import (
 )
 
 func TestMicrodesc(t *testing.T) {
+	t.Parallel()
 
 	dialer := fallback.New(shared.Fallbacks)
 
