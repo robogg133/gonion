@@ -15,12 +15,15 @@ func (r *readCloserWrapper) Read(p []byte) (int, error) {
 	n, err := r.buff.Read(p)
 
 	if r.buff.Length() < STREAM_SENDME_AMMOUNT_TRIGGER {
-		if r.stream.ReceiveWindow.IncreaseWindowChecking() {
+		select {
+		case digest := <-r.stream.ReceiveWindow.Get():
 			r.stream.SendCell(&relay.SendMeCell{
 				StreamID:        r.stream.ID,
 				Version:         r.stream.circuit.SendMeVersion,
-				Sha1ForLastCell: r.stream.ReceiveWindow.GetDigest(),
+				Sha1ForLastCell: digest,
 			})
+			r.stream.ReceiveWindow.Increase()
+		default:
 		}
 	}
 

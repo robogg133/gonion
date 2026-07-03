@@ -31,7 +31,9 @@ type Stream struct {
 
 	InboundControl chan relay.Cell
 	Ctx            context.Context
+	freeCtx        context.Context
 	ctxCancel      context.CancelCauseFunc
+	freeCtxCancel  context.CancelCauseFunc
 
 	outbound chan relay.Cell
 
@@ -51,7 +53,8 @@ type Stream struct {
 
 func (c *Circuit) NewStream(kind string, hopDest uint8) (*Stream, error) {
 	var suc bool
-	ctx, ctxCancel := context.WithCancelCause(c.Ctx)
+	freeCtx, freeCtxCancel := context.WithCancelCause(c.Ctx)
+	ctx, ctxCancel := context.WithCancelCause(freeCtx)
 
 	buffer := ringbuffer.New(STREAM_BUFFER_SIZE).SetBlocking(true)
 
@@ -62,6 +65,8 @@ func (c *Circuit) NewStream(kind string, hopDest uint8) (*Stream, error) {
 		outbound:       make(chan relay.Cell, 2048),
 		Ctx:            ctx,
 		ctxCancel:      ctxCancel,
+		freeCtx:        freeCtx,
+		freeCtxCancel:  freeCtxCancel,
 		receiveSendMe:  make(chan struct{}, 1),
 
 		SendWindow:       window.NewWindow(500, 50),
@@ -138,12 +143,10 @@ func (s *Stream) sendController() {
 			}
 
 			if cell.ID() == relay.COMMAND_DATA {
+				s.SendWindow.SetDigest(cell.(*relay.DataCell).Digest())
 				s.SendWindow.Subtract(1)
-				if s.SendWindow.Check() {
-					s.SendWindow.SetDigest(cell.(*relay.DataCell).Digest())
-				}
 
-				if s.SendWindow.Get() == 0 {
+				if s.SendWindow.IsZero() {
 					select {
 					case <-s.receiveSendMe:
 						s.SendWindow.Increase()
@@ -151,6 +154,7 @@ func (s *Stream) sendController() {
 						return
 					}
 				}
+
 			}
 			select {
 			case s.circuit.WriteRelayCell <- struct {
@@ -212,6 +216,7 @@ func (s *Stream) Free() error {
 			return err
 		}
 	}
+	s.freeCtxCancel(errors.New("requested free"))
 
 	if err := s.Reader.Close(); err != nil {
 		return err
@@ -236,10 +241,8 @@ func (s *Stream) Close() error {
 }
 
 func (s *Stream) writeDataCell(cell *relay.DataCell) error {
+	s.ReceiveWindow.SetDigest(cell.Digest())
 	s.ReceiveWindow.Subtract(1)
-	if s.ReceiveWindow.Check() {
-		s.ReceiveWindow.SetDigest(cell.Digest())
-	}
 
 	if _, err := s.buffer.Write(cell.Payload); err != nil {
 		return err

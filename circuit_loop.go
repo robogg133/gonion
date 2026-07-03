@@ -12,22 +12,25 @@ func (c *Circuit) readloop() {
 	for {
 		// Check circuit receive window and send SENDME if needed
 		for i, window := range c.hopsWindows {
-			if window.receive.Check() {
+			select {
+			case digest := <-window.receive.Get():
 				cell := &cells.RelayCell{
 					CircuitID: c.ID,
 					Hops:      c.hops[0 : i+1],
 					Cell: &relay.SendMeCell{
 						StreamID:        0,
 						Version:         c.SendMeVersion,
-						Sha1ForLastCell: c.hops[i].Backwards.GetLastSumDataCell(),
+						Sha1ForLastCell: digest,
 					},
 				}
+
 				if err := c.SendCell(cell); err != nil {
 					fmt.Println(err)
 					c.Close()
 					return
 				}
 				window.receive.Increase()
+			default:
 			}
 		}
 		select {
@@ -55,8 +58,11 @@ func (c *Circuit) readloop() {
 				}
 
 				if rcCell.ID() == relay.COMMAND_DATA {
+					dataCell := rcCell.(*relay.DataCell)
+					c.hopsWindows[relaycell.HopDestination()].receive.SetDigest(dataCell.Digest())
 					c.hopsWindows[relaycell.HopDestination()].receive.Subtract(1) // Subtract from receive window
-					if err := stream.writeDataCell(rcCell.(*relay.DataCell)); err != nil {
+
+					if err := stream.writeDataCell(dataCell); err != nil {
 						stream.Close()
 					}
 					continue
@@ -79,14 +85,15 @@ func (c *Circuit) readloop() {
 }
 
 func (c *Circuit) writeLoop() {
+
 	for {
 		select {
 		case cll := <-c.WriteRelayCell:
 			if cll.Cell.ID() == relay.COMMAND_DATA {
 				sendWindow := c.hopsWindows[cll.uint8].send
+				sendWindow.SetDigest(cll.Cell.(*relay.DataCell).Digest())
 				sendWindow.Subtract(1)
-
-				if sendWindow.Get() == 0 {
+				if sendWindow.IsZero() {
 					select {
 					case <-c.sendMeReceived:
 						sendWindow.Increase()
@@ -119,6 +126,7 @@ func (c *Circuit) relayControlFunc(rc relay.Cell, _ uint8) {
 		select {
 		case c.extended2Received <- rc.(*relay.Extended2Cell):
 		default:
+			fmt.Println("sended extended2received signal but no one was listening")
 			// why no one is listening??
 		}
 	}
