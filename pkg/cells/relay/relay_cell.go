@@ -4,11 +4,8 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/binary"
-	"encoding/hex"
 	"fmt"
 	"io"
-	"os"
-	"time"
 
 	"github.com/robogg133/gonion/pkg/crypto"
 )
@@ -45,26 +42,13 @@ type RelayCellCoder struct {
 
 	in  int32
 	out int32
-
-	__debug_file_marshal   *os.File
-	__debug_file_unmarshal *os.File
 }
 
 func NewDataCellCoder(backwards, forward *crypto.RunningValues) *RelayCellCoder {
-	marshal, err := os.OpenFile(fmt.Sprintf("relay_marshaller_%d", time.Now().Unix()), os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		return nil
-	}
-	unmarshal, err := os.OpenFile(fmt.Sprintf("relay_unmarshaller_%d", time.Now().Unix()), os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		return nil
-	}
 	return &RelayCellCoder{
-		Backwards:              backwards,
-		Forwards:               forward,
-		relayBodyLen:           RELAY_BODY_LEN,
-		__debug_file_marshal:   marshal,
-		__debug_file_unmarshal: unmarshal,
+		Backwards:    backwards,
+		Forwards:     forward,
+		relayBodyLen: RELAY_BODY_LEN,
 	}
 }
 
@@ -137,8 +121,6 @@ func (d *RelayCellCoder) Marshal(c Cell) ([]byte, error) {
 
 	dst := make([]byte, 509) // 509 = 498 (Payload length) + 11 (Headers length)
 
-	fmt.Fprintf(d.__debug_file_marshal, "----- BEGIN PACKET -----\nLEN=%d TIME=%s\n<Decimal representation>\n%v\n</Decimal representation>\n<Hexdump representation>\n%s\n</Hexdump representation>\n----- END PACKET -----\n", len(b), time.Now(), b, hex.Dump(b))
-
 	d.Forwards.XORKeyStream(dst, b)
 	b = nil
 
@@ -179,7 +161,6 @@ func (d *RelayCellCoder) UnmarshalPlain(plain []byte) (Cell, error) {
 		c.thisCellDigest = digest
 	}
 
-	fmt.Fprintf(d.__debug_file_unmarshal, "----- BEGIN PACKET -----\nLEN=%d TIME=%s\n<Decimal representation>\n%v\n</Decimal representation>\n<Hexdump representation>\n%s\n</Hexdump representation>\n----- END PACKET -----\n", len(plain), time.Now(), plain, hex.Dump(plain))
 	return c, c.Decode(reader)
 }
 
