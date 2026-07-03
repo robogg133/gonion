@@ -167,9 +167,11 @@ func (s *Stream) sendController() {
 				uint8
 			}{Cell: cell, uint8: s.myHopDestination}:
 			case <-s.Ctx.Done():
+				s.Close()
 				return
 			}
 		case <-s.Ctx.Done():
+			s.Close()
 			return
 		}
 	}
@@ -211,6 +213,7 @@ func (s *Stream) SendCell(cell relay.Cell) error {
 	case s.outbound <- cell:
 		return nil
 	case <-s.Ctx.Done():
+		s.Close()
 		return context.Cause(s.Ctx)
 	}
 }
