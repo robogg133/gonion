@@ -53,6 +53,10 @@ func (c *SendMeCell) Decode(r io.Reader) error {
 	lenght := binary.BigEndian.Uint16(lengthB)
 	lengthB = nil
 
+	if c.Version == 0 {
+		io.CopyN(io.Discard, r, int64(lenght))
+		return nil
+	}
 	sum := make([]byte, lenght)
 	if _, err := io.ReadFull(r, sum); err != nil {
 		return err
