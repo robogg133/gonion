@@ -104,7 +104,7 @@ func (c *Conn) NewCircuit(id uint32, htype uint16, hs handshakes.Handshake) (*Ci
 	select {
 	case rawCell = <-circuit.Inbound:
 	case <-circuit.Ctx.Done():
-		return nil, circuit.Ctx.Err()
+		return nil, context.Cause(circuit.Ctx)
 	}
 
 	cell, err := circuit.Coder.ReadCell(bytes.NewReader(rawCell))
@@ -182,7 +182,7 @@ func (c *Conn) NewFastCircuit(id uint32) (*Circuit, error) {
 			send    *window.Window
 		}, 0),
 
-		SendMeVersion: 1,
+		SendMeVersion: 0,
 
 		nextStreamID: 1,
 		isUp:         true,
@@ -217,7 +217,7 @@ func (c *Conn) NewFastCircuit(id uint32) (*Circuit, error) {
 	select {
 	case rawCell = <-circuit.Inbound:
 	case <-circuit.Ctx.Done():
-		return nil, circuit.Ctx.Err()
+		return nil, context.Cause(circuit.Ctx)
 	}
 	cell, err := circuit.Coder.ReadCell(bytes.NewReader(rawCell))
 	if err != nil {
@@ -279,16 +279,24 @@ func (c *Circuit) Extend(lspec []lspec.Lspec, htype uint16, handshake handshakes
 		Handshake: handshake,
 	}
 
-	if err := c.SendCell(&cells.RelayEarlyCell{
-		C: &cells.RelayCell{
-			CircuitID: c.ID,
-			Hops:      c.hops, Cell: extend2,
-		},
-	}); err != nil {
-		return err
+	select {
+	case c.WriteRelayCell <- struct {
+		relay.Cell
+		uint8
+	}{
+		Cell:  extend2,
+		uint8: uint8(len(c.hops) - 1),
+	}:
+	default:
+		return errors.New("can't deliver extend2 message to writeRelayCell channel")
 	}
 
-	extended := <-c.extended2Received
+	var extended *relay.Extended2Cell
+	select {
+	case extended = <-c.extended2Received:
+	case <-c.Ctx.Done():
+		return context.Cause(c.Ctx)
+	}
 	if err := extended.DecodeHandshake(htype); err != nil {
 		return err
 	}
@@ -337,9 +345,7 @@ func (c *Circuit) handleCell(cell cells.Cell) {
 	switch cell.ID() {
 	case cells.COMMAND_DESTROY:
 		// #debug
-		fmt.Printf("RECEIVED DESTROY: (%d) %s\n", cell.(*cells.DestroyCell).Reason, common.DestroyGetReasonS(cell.(*cells.DestroyCell).Reason))
-		c.ctxCancel(fmt.Errorf("destroyed: reason=%d (%s)", cell.(*cells.DestroyCell).Reason, common.DestroyGetReasonS(cell.(*cells.DestroyCell).Reason)))
-		c.Close()
+		c.ctxCancel(fmt.Errorf("received circuit destroy: reason=%d (%s)", cell.(*cells.DestroyCell).Reason, common.DestroyGetReasonS(cell.(*cells.DestroyCell).Reason)))
 		// #debug
 		return
 	}
@@ -350,15 +356,14 @@ func (c *Circuit) SendCell(cell cells.Cell) error {
 
 	b, err := c.Coder.MarshalCell(cell)
 	if err != nil {
-		c.Close()
+		c.ctxCancel(err)
 		return err
 	}
 
 	select {
 	case c.conn.writeCall <- b:
 	case <-c.Ctx.Done():
-		c.Close()
-		return c.Ctx.Err()
+		return context.Cause(c.Ctx)
 	}
 
 	return nil
