@@ -85,7 +85,7 @@ func (c *Circuit) NewStream(kind string, hopDest uint8) (*Stream, error) {
 	defer func() {
 		if !suc {
 			c.streams.Delete(stream.ID)
-			stream.Close()
+			stream.Free()
 		}
 	}()
 
@@ -118,12 +118,17 @@ func (s *Stream) controlLoop() {
 			// SWITCH for controll cells
 			switch cell.ID() {
 			case relay.COMMAND_SENDME:
+				sendme := cell.(*relay.SendMeCell)
+				if err := verifySendMe(sendme, s.circuit.SendMeVersion, s.SendWindow); err != nil {
+					s.circuit.ctxCancel(fmt.Errorf("(stream %d): %s", s.ID, err.Error()))
+					s.Free()
+				}
+
 				select {
 				case s.receiveSendMe <- struct{}{}:
 				default:
 				}
 			case relay.COMMAND_RELAY_END:
-				fmt.Println("RELAY END")
 				s.Close()
 			}
 
@@ -206,7 +211,7 @@ func (s *Stream) SendCell(cell relay.Cell) error {
 	case s.outbound <- cell:
 		return nil
 	case <-s.Ctx.Done():
-		return s.Ctx.Err()
+		return context.Cause(s.Ctx)
 	}
 }
 
@@ -216,7 +221,9 @@ func (s *Stream) Free() error {
 			return err
 		}
 	}
-	s.freeCtxCancel(errors.New("requested free"))
+	if s.freeCtx.Err() == nil {
+		s.freeCtxCancel(errors.New("requested free"))
+	}
 
 	if err := s.Reader.Close(); err != nil {
 		return err
@@ -232,8 +239,15 @@ func (s *Stream) Close() error {
 		s.State = STREAM_CLOSED
 		s.mu.Unlock()
 
-		s.ctxCancel(errors.New("requested close"))
-		// Drain and close receiveSendMe so any blocked SendCell unblocks.
+		if s.Ctx.Err() == nil {
+			s.ctxCancel(errors.New("requested close"))
+		}
+		if s.freeCtx.Err() != nil {
+			defer s.Free()
+		}
+
+		close(s.ReceiveWindow.Trigged)
+		close(s.SendWindow.Trigged)
 		close(s.receiveSendMe)
 		s.buffer.CloseWriter()
 	})

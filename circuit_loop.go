@@ -36,8 +36,7 @@ func (c *Circuit) readloop() {
 		case rawCell := <-c.Inbound:
 			cell, err := c.Coder.ReadCell(bytes.NewReader(rawCell))
 			if err != nil {
-				fmt.Println(err)
-				c.Close()
+				c.ctxCancel(err)
 				return
 			}
 
@@ -77,14 +76,12 @@ func (c *Circuit) readloop() {
 			// Non-relay cells (DESTROY, etc.)
 			go c.handleCell(cell)
 		case <-c.Ctx.Done():
-			c.Close()
 			return
 		}
 	}
 }
 
 func (c *Circuit) writeLoop() {
-
 	for {
 		select {
 		case cll := <-c.WriteRelayCell:
@@ -108,15 +105,18 @@ func (c *Circuit) writeLoop() {
 			c.SendCell(cell)
 
 		case <-c.Ctx.Done():
-			c.Close()
 			return
 		}
 	}
 }
 
-func (c *Circuit) relayControlFunc(rc relay.Cell, _ uint8) {
+func (c *Circuit) relayControlFunc(rc relay.Cell, dst uint8) {
 	switch rc.ID() {
 	case relay.COMMAND_SENDME:
+		if err := verifySendMe(rc.(*relay.SendMeCell), c.SendMeVersion, c.hopsWindows[dst].send); err != nil {
+			c.ctxCancel(err)
+			return
+		}
 		select {
 		case c.sendMeReceived <- struct{}{}:
 		default:
