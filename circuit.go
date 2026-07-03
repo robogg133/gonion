@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"io"
 	"sync"
@@ -181,7 +182,7 @@ func (c *Conn) NewFastCircuit(id uint32) (*Circuit, error) {
 			send    *window.Window
 		}, 0),
 
-		SendMeVersion: 0,
+		SendMeVersion: 1,
 
 		nextStreamID: 1,
 		isUp:         true,
@@ -328,7 +329,7 @@ func (c *Circuit) Extend(lspec []lspec.Lspec, htype uint16, handshake handshakes
 }
 
 func (c *Circuit) Close() error {
-	c.teardown()
+	c.ctxCancel(errors.New("requested close"))
 	return nil
 }
 
@@ -338,16 +339,9 @@ func (c *Circuit) handleCell(cell cells.Cell) {
 		// #debug
 		fmt.Printf("RECEIVED DESTROY: (%d) %s\n", cell.(*cells.DestroyCell).Reason, common.DestroyGetReasonS(cell.(*cells.DestroyCell).Reason))
 		c.ctxCancel(fmt.Errorf("destroyed: reason=%d (%s)", cell.(*cells.DestroyCell).Reason, common.DestroyGetReasonS(cell.(*cells.DestroyCell).Reason)))
+		c.Close()
 		// #debug
 		return
-	}
-}
-
-func (c *Circuit) teardown() {
-	c.streams.mu.Lock()
-	defer c.streams.mu.Unlock()
-	for _, s := range c.streams.streams {
-		s.Close()
 	}
 }
 
