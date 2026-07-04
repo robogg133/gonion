@@ -5,6 +5,7 @@ import (
 	"crypto/hkdf"
 	"crypto/hmac"
 	"crypto/sha256"
+	"fmt"
 	"io"
 
 	"github.com/robogg133/gonion/pkg/crypto"
@@ -12,15 +13,15 @@ import (
 )
 
 const (
-	PROTOID_NTOR  = "ntor-curve25519-sha256-1"
-	PROTOID_NTOR3 = "ntor3-curve25519-sha3_256-1"
+	PROTOID_NTOR  string = "ntor-curve25519-sha256-1"
+	PROTOID_NTOR3 string = "ntor3-curve25519-sha3_256-1"
 )
 
 const (
-	t_mac    = ":mac"
-	t_key    = ":key_extract"
-	t_verify = ":verify"
-	m_expand = ":key_expand"
+	t_mac    string = ":mac"
+	t_key    string = ":key_extract"
+	t_verify string = ":verify"
+	m_expand string = ":key_expand"
 )
 
 type values struct {
@@ -55,6 +56,8 @@ func Client_HandshakeType(htype uint16) Handshake {
 }
 
 /*
+ALL FUNCTIONS MUST IMPLEMENT EVERYTHING IN THAT WAY
+
 X = Client PublicKey
 Y = Server PublicKey
 B = Server ntor-onion-key
@@ -66,9 +69,14 @@ verify = H(secret_input, t_verify)
 auth_input = verify | ID | B | Y | X | PROTOID | "Server"
 */
 
-func (c *Client_NTorHandshake) Derive(s *Server_NTorHandshake, NTorOnionKey []byte) (*crypto.CircuitKeys, error) {
+func hNtor(data []byte, tag string) []byte {
+	h := hmac.New(sha256.New, []byte(PROTOID_NTOR+tag))
+	h.Write(data)
+	return h.Sum(nil)
+}
 
-	// Calc secret_input
+func (c *Client_NTorHandshake) secretInput(s *Server_NTorHandshake, NTorOnionKey []byte) ([]byte, error) {
+
 	var secretInput bytes.Buffer
 
 	expYx, err := curve25519.X25519(s.PublicKey, c.PublicKey)
@@ -89,11 +97,23 @@ func (c *Client_NTorHandshake) Derive(s *Server_NTorHandshake, NTorOnionKey []by
 	secretInput.Write(s.PublicKey)        // Y
 	secretInput.WriteString(PROTOID_NTOR) // PROTOID
 
+	return secretInput.Bytes(), nil
+}
+
+func (c *Client_NTorHandshake) Derive(s *Server_NTorHandshake, NTorOnionKey []byte) (*crypto.CircuitKeys, error) {
+
 	// Calc KEY_SEED
+	secretInput, err := c.secretInput(s, NTorOnionKey)
+	if err != nil {
+		return nil, err
+	}
+	keySeed := hNtor(secretInput, t_key)
 
-	hash := hmac.New(sha256.New, []byte(PROTOID_NTOR+t_key))
-
-	keySeed := hash.Sum(secretInput.Bytes())
+	// Verify
+	verify := hNtor(secretInput, t_verify)
+	if err := authVerify(verify, NTorOnionKey, c.PublicKey, s.PublicKey, c.NodeID[:], s.Auth, PROTOID_NTOR); err != nil {
+		return nil, err
+	}
 
 	keyStream, err := hkdf.Expand(sha256.New, keySeed, PROTOID_NTOR+m_expand, 92)
 	if err != nil {
@@ -108,4 +128,22 @@ func (c *Client_NTorHandshake) Derive(s *Server_NTorHandshake, NTorOnionKey []by
 		KH: keyStream[72:92],
 	}
 	return keys, nil
+}
+
+func authVerify(verify, ntorOnionKey, X, Y, ID, compareAuth []byte, protoid string) error {
+
+	verifyHash := hmac.New(sha256.New, []byte(protoid+t_mac))
+	verifyHash.Write(verify)
+	verifyHash.Write(ID)               // ID
+	verifyHash.Write(ntorOnionKey)     // B
+	verifyHash.Write(Y)                // Y
+	verifyHash.Write(X)                // X
+	verifyHash.Write([]byte(protoid))  // PROTOID
+	verifyHash.Write([]byte("Server")) // "Server"
+
+	authInput := verifyHash.Sum(nil)
+	if !bytes.Equal(authInput, compareAuth) {
+		return fmt.Errorf("ntor_handshake: invalid auth field")
+	}
+	return nil
 }
