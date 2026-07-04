@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"net"
 	"testing"
-	"time"
 
 	"github.com/robogg133/gonion"
 	"github.com/robogg133/gonion/pkg/handshakes"
@@ -42,11 +41,17 @@ func TestCreate2Circuit(t *testing.T) {
 		PublicKey: pk,
 	}
 
-	_, err = conn.NewCircuit(1, handshakes.HTYPE_NTOR, ntorHs)
+	circuit, err := conn.NewCircuit(1, handshakes.HTYPE_NTOR, ntorHs)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	time.Sleep(5 * time.Second)
+	// test if circuit is working
+	t.Log("testing if sucessifully created")
+	t.Run("GetConsensus", func(t *testing.T) {
+		if _, err := circuit.GetConsensus(); err != nil {
+			t.Fatal(err)
+		}
+	})
 
 }
