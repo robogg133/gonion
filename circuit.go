@@ -125,6 +125,9 @@ func (c *Conn) NewCircuit(id uint32, htype uint16, hs handshakes.Handshake) (*Ci
 	case handshakes.HTYPE_NTOR:
 		nths := hs.(*handshakes.Client_NTorHandshake)
 		keys, err = nths.Derive(created2.Handshake.(*handshakes.Server_NTorHandshake), nths.KeyID)
+		if err != nil {
+			return circuit, err
+		}
 	}
 	rcvWindow := window.NewWindow(1000, 100)
 	sndWindow := window.NewWindow(1000, 100)
@@ -307,9 +310,9 @@ func (c *Circuit) Extend(lspec []lspec.Lspec, htype uint16, handshake handshakes
 	case handshakes.HTYPE_NTOR:
 		nths := handshake.(*handshakes.Client_NTorHandshake)
 		keys, err = nths.Derive(extended.Handshake.(*handshakes.Server_NTorHandshake), nths.KeyID)
-	}
-	if err != nil {
-		return err
+		if err != nil {
+			return err
+		}
 	}
 
 	rcvWindow := window.NewWindow(1000, 100)
