@@ -2,7 +2,6 @@ package gonion
 
 import (
 	"bytes"
-	"fmt"
 
 	cells "github.com/robogg133/gonion/pkg/cells/base"
 	"github.com/robogg133/gonion/pkg/cells/relay"
@@ -105,7 +104,6 @@ func (c *Circuit) relayControlFunc(rc relay.Cell, dst uint8) {
 		default:
 		}
 	case relay.COMMAND_EXTENDED2:
-		fmt.Println("oops receveid extended2")
 		select {
 		case c.extended2Received <- rc.(*relay.Extended2Cell):
 		case <-c.Ctx.Done():
