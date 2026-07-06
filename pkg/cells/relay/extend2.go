@@ -29,6 +29,7 @@ func (c *Extend2Cell) Encode(w io.Writer) error {
 		return err
 	}
 
+	rearrangeList(c.Lspecs)
 	for _, v := range c.Lspecs {
 		if err := v.Write(w); err != nil {
 			return err
@@ -43,6 +44,45 @@ func (c *Extend2Cell) Encode(w io.Writer) error {
 
 	_, err := w.Write(buffer.Bytes())
 	return err
+}
+
+func rearrangeList(specs []lspec.Lspec) {
+	for _, v := range specs {
+		rearrangeLspec(specs, v)
+	}
+}
+func rearrangeLspec(specs []lspec.Lspec, spec lspec.Lspec) {
+	switch spec.Type() {
+	case lspec.LSTYPE_IPV4:
+		v := specs[0]
+		if v.Type() != spec.Type() {
+			specs[0] = spec
+			rearrangeLspec(specs, v)
+		}
+
+	case lspec.LSTYPE_IPV6:
+		v := specs[3]
+		if v.Type() != spec.Type() {
+			specs[3] = spec
+			rearrangeLspec(specs, v)
+		}
+
+	case lspec.LSTYPE_LEGACY_ID:
+		v := specs[1]
+		if v.Type() != spec.Type() {
+			specs[1] = spec
+			rearrangeLspec(specs, v)
+		}
+
+	case lspec.LSTYPE_ED25519_ID:
+		v := specs[2]
+		if v.Type() != spec.Type() {
+			specs[2] = spec
+			rearrangeLspec(specs, v)
+		}
+	default:
+		panic("invalid lstype")
+	}
 }
 
 func (*Extend2Cell) Decode(r io.Reader) error {

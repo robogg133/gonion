@@ -59,6 +59,9 @@ func (lspec *Lspec) Write(w io.Writer) error {
 	_, err = w.Write(b)
 	return err
 }
+func (lspec *Lspec) Type() uint8 {
+	return lspec.spec.Type()
+}
 
 func Read(r io.Reader) (Lspec, error) {
 	header := make([]byte, 2)
