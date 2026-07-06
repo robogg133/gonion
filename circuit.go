@@ -308,16 +308,13 @@ func (c *Circuit) Extend(lspec []lspec.Lspec, htype uint16, handshake handshakes
 		Handshake: handshake,
 	}
 
-	select {
-	case c.WriteRelayCell <- struct {
-		relay.Cell
-		uint8
-	}{
-		Cell:  extend2,
-		uint8: uint8(len(c.hops) - 1),
-	}:
-	default:
-		return errors.New("can't deliver extend2 message to writeRelayCell channel")
+	if err := c.SendCell(&cells.RelayEarlyCell{
+		C: &cells.RelayCell{
+			Hops: c.hops,
+			Cell: extend2,
+		},
+	}); err != nil {
+		return err
 	}
 
 	var extended *relay.Extended2Cell
