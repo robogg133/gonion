@@ -368,6 +368,7 @@ func (c *Circuit) Extend(lspec []lspec.Lspec, htype uint16, handshake handshakes
 		CancelCauseFunc: hopCancelFn,
 	})
 	go c.sendmeManage(len(c.hops)-1, rcvWindow, hopCtx)
+	c.Coder.Hops = c.hops
 	return nil
 }
 
