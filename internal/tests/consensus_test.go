@@ -5,21 +5,23 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"io"
-	"net"
 	"net/http"
 	"os"
 	"testing"
 
 	gonion2 "github.com/robogg133/gonion"
+	"github.com/robogg133/gonion/internal/fallback"
 )
 
 func TestConsensus(t *testing.T) {
 	t.Parallel()
 
-	c, err := net.Dial("tcp", "38.102.127.252:9004")
+	c, err := fallback.Dial(true)
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Log("selected address from fallback", c.RemoteAddr().String())
+
 	conn, err := gonion2.NewConn(c)
 	if err != nil {
 		t.Fatal(err)
