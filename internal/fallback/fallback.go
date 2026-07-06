@@ -19,6 +19,11 @@ func New(list []shared.FallbackDir) *FallBackDialer {
 	}
 }
 
+// Dial creates a new fallbackdialer with default fallback dirs list and dial
+func Dial(ipv6Enabled bool) (net.Conn, error) {
+	return New(shared.Fallbacks).Dial(ipv6Enabled)
+}
+
 func (fb *FallBackDialer) Dial(tryipv6 bool) (net.Conn, error) {
 
 	var allErrors string
@@ -34,7 +39,7 @@ func (fb *FallBackDialer) Dial(tryipv6 bool) (net.Conn, error) {
 		}
 		allErrors = allErrors + addr + " ->" + err.Error() + "\n"
 
-		if !tryipv6 || stop || v.IPv6 == "" {
+		if !tryipv6 || stop || v.IPv6 == "" || v.IPv6Port == 0 {
 			continue
 		}
 
