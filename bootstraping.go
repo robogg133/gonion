@@ -2,6 +2,7 @@ package gonion
 
 import (
 	"context"
+	"crypto/ecdh"
 	"fmt"
 	"math/rand"
 	"time"
@@ -89,6 +90,7 @@ func (circuit *Circuit) fetchAndApplyMicrodescriptors(cons *common.Consensus, di
 		return err
 	}
 
+	curve := ecdh.X25519()
 	for i, v := range desc {
 		if v == nil {
 			continue
@@ -99,7 +101,11 @@ func (circuit *Circuit) fetchAndApplyMicrodescriptors(cons *common.Consensus, di
 		}
 
 		cons.RelayInformation[idx].OnionKey = v.OnionKey
-		cons.RelayInformation[idx].NTorOnionKey = v.NTorOnionKey
+		ntor, err := curve.NewPublicKey(v.NTorOnionKey)
+		if err != nil {
+			return err
+		}
+		cons.RelayInformation[idx].NTorOnionKey = ntor
 		if v.ExitRules != nil {
 			cons.RelayInformation[idx].Ports = *v.ExitRules
 		}

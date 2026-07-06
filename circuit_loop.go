@@ -9,29 +9,11 @@ import (
 )
 
 func (c *Circuit) readloop() {
+	for i, win := range c.hopsWindows {
+		go c.sendmeManage(i, win.receive, c.hopsCtx[i].Context)
+	}
+
 	for {
-		// Check circuit receive window and send SENDME if needed
-		for i, window := range c.hopsWindows {
-			select {
-			case digest := <-window.receive.Get():
-
-				sendMeCell := &relay.SendMeCell{
-					StreamID:        0,
-					Version:         c.SendMeVersion,
-					Sha1ForLastCell: digest,
-				}
-
-				select {
-				case c.WriteRelayCell <- struct {
-					relay.Cell
-					uint8
-				}{Cell: sendMeCell, uint8: uint8(i)}:
-					window.receive.Increase()
-				case <-c.Ctx.Done():
-				}
-			default:
-			}
-		}
 		select {
 		case rawCell := <-c.Inbound:
 			cell, err := c.Coder.ReadCell(bytes.NewReader(rawCell))
@@ -118,15 +100,16 @@ func (c *Circuit) relayControlFunc(rc relay.Cell, dst uint8) {
 			return
 		}
 		select {
+		case <-c.Ctx.Done():
 		case c.sendMeReceived <- struct{}{}:
 		default:
 		}
 	case relay.COMMAND_EXTENDED2:
+		fmt.Println("oops receveid extended2")
 		select {
 		case c.extended2Received <- rc.(*relay.Extended2Cell):
+		case <-c.Ctx.Done():
 		default:
-			fmt.Println("sended extended2received signal but no one was listening")
-			// why no one is listening??
 		}
 	}
 

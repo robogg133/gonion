@@ -1,6 +1,7 @@
 package common
 
 import (
+	"crypto/ecdh"
 	"time"
 )
 
@@ -96,7 +97,7 @@ type RouterStatus struct {
 	Ports Ports
 
 	OnionKey     []byte
-	NTorOnionKey []byte
+	NTorOnionKey *ecdh.PublicKey
 	IdEd25519    []byte
 
 	Family  []Family

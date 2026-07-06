@@ -40,6 +40,10 @@ type Circuit struct {
 		receive *window.Window
 		send    *window.Window
 	}
+	hopsCtx []struct {
+		context.Context
+		context.CancelCauseFunc
+	}
 
 	// Channels
 	WriteRelayCell chan struct {
@@ -151,6 +155,17 @@ func (c *Conn) NewCircuit(id uint32, htype uint16, hs handshakes.Handshake) (*Ci
 			send:    sndWindow,
 		},
 	}
+	hopCtx, hopCancelFn := context.WithCancelCause(ctx)
+	circuit.hopsCtx = []struct {
+		context.Context
+		context.CancelCauseFunc
+	}{
+		{
+			Context:         hopCtx,
+			CancelCauseFunc: hopCancelFn,
+		},
+	}
+
 	circuit.Coder.Hops = circuit.hops
 
 	go circuit.writeLoop()
@@ -264,8 +279,19 @@ func (c *Conn) NewFastCircuit(id uint32) (*Circuit, error) {
 			send:    sndWindow,
 		},
 	}
+
 	circuit.Coder.Hops = circuit.hops
 
+	hopCtx, hopCancelFn := context.WithCancelCause(ctx)
+	circuit.hopsCtx = []struct {
+		context.Context
+		context.CancelCauseFunc
+	}{
+		{
+			Context:         hopCtx,
+			CancelCauseFunc: hopCancelFn,
+		},
+	}
 	suc = true
 	go circuit.readloop()
 	go circuit.writeLoop()
@@ -336,6 +362,15 @@ func (c *Circuit) Extend(lspec []lspec.Lspec, htype uint16, handshake handshakes
 		send:    sndWindow,
 	})
 
+	hopCtx, hopCancelFn := context.WithCancelCause(c.Ctx)
+	c.hopsCtx = append(c.hopsCtx, struct {
+		context.Context
+		context.CancelCauseFunc
+	}{
+		Context:         hopCtx,
+		CancelCauseFunc: hopCancelFn,
+	})
+	go c.sendmeManage(len(c.hops)-1, rcvWindow, hopCtx)
 	return nil
 }
 
