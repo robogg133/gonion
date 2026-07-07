@@ -3,7 +3,7 @@ module github.com/robogg133/gonion
 go 1.25.0
 
 require (
-	github.com/smallnest/ringbuffer v0.1.1
+	github.com/smallnest/ringbuffer v0.1.2-0.20260703033355-9d1708966377
 	gitlab.com/yawning/obfs4.git v0.0.0-20231012084234-c3e2d44b1033
 	gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/goptlib v1.6.0
 	gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/snowflake/v2 v2.14.1

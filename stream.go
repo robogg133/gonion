@@ -5,8 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/netip"
 	"sync"
+	"time"
 
+	"github.com/robogg133/gonion/internal/shared"
 	"github.com/robogg133/gonion/internal/window"
 	"github.com/robogg133/gonion/pkg/cells/relay"
 	"github.com/smallnest/ringbuffer"
@@ -28,6 +32,7 @@ type Stream struct {
 
 	myHopDestination uint8
 	circuit          *Circuit
+	addr             net.Addr
 
 	InboundControl chan relay.Cell
 	Ctx            context.Context
@@ -51,12 +56,12 @@ type Stream struct {
 	receiveSendMe chan struct{}
 }
 
-func (c *Circuit) NewStream(kind string, hopDest uint8) (*Stream, error) {
+func (c *Circuit) NewStream(target string, hopDest uint8) (*Stream, error) {
 	var suc bool
 	freeCtx, freeCtxCancel := context.WithCancelCause(c.Ctx)
 	ctx, ctxCancel := context.WithCancelCause(freeCtx)
 
-	buffer := ringbuffer.New(STREAM_BUFFER_SIZE).SetBlocking(true)
+	buffer := ringbuffer.New(STREAM_BUFFER_SIZE).SetBlocking(true).WithNoCloseOnTimeout()
 
 	stream := &Stream{
 		ID:             c.nextStreamID,
@@ -93,9 +98,19 @@ func (c *Circuit) NewStream(kind string, hopDest uint8) (*Stream, error) {
 
 	c.streams.Set(stream.ID, stream)
 
-	switch kind {
+	switch target {
 	case "dir":
+		stream.addr = shared.NewAddr("tcp", "")
 		if err := stream.beginDir(); err != nil {
+			return nil, err
+		}
+	default:
+		addrport, err := netip.ParseAddrPort(target)
+		if err != nil {
+			return nil, err
+		}
+		stream.addr = shared.NewAddr("tcp", target)
+		if err := stream.begin(addrport); err != nil {
 			return nil, err
 		}
 	}
@@ -218,6 +233,12 @@ func (s *Stream) SendCell(cell relay.Cell) error {
 	}
 }
 
+func (s *Stream) End(reason uint8) error {
+	if err := s.SendCell(&relay.RelayEndCell{Reason: reason}); err != nil {
+		return err
+	}
+	return s.Free()
+}
 func (s *Stream) Free() error {
 	if s.State != STREAM_CLOSED {
 		if err := s.Close(); err != nil {
@@ -266,4 +287,46 @@ func (s *Stream) writeDataCell(cell *relay.DataCell) error {
 	}
 
 	return nil
+}
+
+func (s *Stream) Conn() net.Conn {
+	return &netWrapper{s: s}
+}
+
+type netWrapper struct {
+	s *Stream
+}
+
+func (w *netWrapper) Write(p []byte) (int, error) {
+	return w.s.Write(p)
+}
+
+func (w *netWrapper) Read(p []byte) (int, error) {
+	return w.s.Reader.Read(p)
+}
+
+func (w *netWrapper) SetWriteDeadline(t time.Time) error {
+	w.s.buffer.WithWriteTimeout(time.Until(t))
+	return nil
+}
+
+func (w *netWrapper) SetDeadline(t time.Time) error {
+	w.s.buffer.WithTimeout(time.Until(t))
+	return nil
+}
+
+func (w *netWrapper) SetReadDeadline(t time.Time) error {
+	w.s.buffer.WithReadTimeout(time.Until(t))
+	return nil
+}
+
+func (w *netWrapper) LocalAddr() net.Addr {
+	return w.s.circuit.conn.socket.LocalAddr()
+}
+func (w *netWrapper) RemoteAddr() net.Addr {
+	return w.s.addr
+}
+
+func (w *netWrapper) Close() error {
+	return w.s.End(relay.END_REASON_MISC)
 }
