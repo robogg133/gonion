@@ -1,6 +1,10 @@
 package relay
 
-import "io"
+import (
+	"bufio"
+	"io"
+	"net/netip"
+)
 
 const (
 	COMMAND_BEGIN uint8 = 1
@@ -9,12 +13,33 @@ const (
 type BeginCell struct {
 	StreamID uint16
 
-	Address string
+	Addrport netip.AddrPort
 }
 
 func (*BeginCell) ID() uint8              { return COMMAND_BEGIN }
 func (c *BeginCell) GetStreamID() uint16  { return c.StreamID }
 func (c *BeginCell) SetStreamID(n uint16) { c.StreamID = n }
 
-func (*BeginCell) Encode(io.Writer) error { return nil }
-func (*BeginCell) Decode(io.Reader) error { return nil }
+func (c *BeginCell) Encode(w io.Writer) error {
+	addrB := []byte(c.Addrport.String())
+	addrB = append(addrB, 0)
+
+	if _, err := w.Write(addrB); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (c *BeginCell) Decode(r io.Reader) error {
+	br := bufio.NewReader(r)
+	s, err := br.ReadString(0)
+	if err != nil {
+		return err
+	}
+	c.Addrport, err = netip.ParseAddrPort(s)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
