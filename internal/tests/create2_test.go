@@ -1,7 +1,7 @@
 package tests
 
 import (
-	"crypto/ed25519"
+	"crypto/ecdh"
 	"crypto/rand"
 	"net"
 	"testing"
@@ -30,15 +30,20 @@ func TestCreate2Circuit(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	pk, _, err := ed25519.GenerateKey(rand.Reader)
+	sk, err := ecdh.X25519().GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
 
+	ntorkey, err := ecdh.X25519().NewPublicKey(ntor_onion_key)
+	if err != nil {
+		t.Fatal(err)
+	}
 	ntorHs := &handshakes.Client_NTorHandshake{
-		NodeID:    nodeID,
-		KeyID:     ntor_onion_key,
-		PublicKey: pk,
+		NodeID:     nodeID,
+		KeyID:      ntorkey,
+		PrivateKey: sk,
+		PublicKey:  sk.PublicKey(),
 	}
 
 	circuit, err := conn.NewCircuit(1, handshakes.HTYPE_NTOR, ntorHs)
