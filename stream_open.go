@@ -3,7 +3,6 @@ package gonion
 import (
 	"context"
 	"errors"
-	"net/netip"
 
 	"github.com/robogg133/gonion/pkg/cells/relay"
 )
@@ -30,13 +29,13 @@ func (s *Stream) beginDir() error {
 	return nil
 }
 
-func (s *Stream) begin(addr netip.AddrPort) error {
+func (s *Stream) begin(addrport string) error {
 	select {
 	case s.circuit.WriteRelayCell <- struct {
 		relay.Cell
 		uint8
 	}{
-		Cell:  &relay.BeginCell{Addrport: addr, StreamID: s.ID},
+		Cell:  &relay.BeginCell{Addrport: addrport, StreamID: s.ID},
 		uint8: s.myHopDestination,
 	}:
 	case <-s.Ctx.Done():

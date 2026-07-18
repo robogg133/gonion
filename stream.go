@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"net/netip"
 	"sync"
 	"time"
 
@@ -105,12 +104,8 @@ func (c *Circuit) NewStream(target string, hopDest uint8) (*Stream, error) {
 			return nil, err
 		}
 	default:
-		addrport, err := netip.ParseAddrPort(target)
-		if err != nil {
-			return nil, err
-		}
 		stream.addr = shared.NewAddr("tcp", target)
-		if err := stream.begin(addrport); err != nil {
+		if err := stream.begin(target); err != nil {
 			return nil, err
 		}
 	}
