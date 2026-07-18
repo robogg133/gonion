@@ -3,7 +3,6 @@ package relay
 import (
 	"bufio"
 	"io"
-	"net/netip"
 )
 
 const (
@@ -13,7 +12,7 @@ const (
 type BeginCell struct {
 	StreamID uint16
 
-	Addrport netip.AddrPort
+	Addrport string
 }
 
 func (*BeginCell) ID() uint8              { return COMMAND_BEGIN }
@@ -21,7 +20,7 @@ func (c *BeginCell) GetStreamID() uint16  { return c.StreamID }
 func (c *BeginCell) SetStreamID(n uint16) { c.StreamID = n }
 
 func (c *BeginCell) Encode(w io.Writer) error {
-	addrB := []byte(c.Addrport.String())
+	addrB := []byte(c.Addrport)
 	addrB = append(addrB, 0)
 
 	if _, err := w.Write(addrB); err != nil {
@@ -36,10 +35,7 @@ func (c *BeginCell) Decode(r io.Reader) error {
 	if err != nil {
 		return err
 	}
-	c.Addrport, err = netip.ParseAddrPort(s)
-	if err != nil {
-		return err
-	}
+	c.Addrport = s
 
 	return nil
 }
