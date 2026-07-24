@@ -1,4 +1,4 @@
-package tests
+package window_test
 
 import (
 	"sync"
@@ -8,14 +8,14 @@ import (
 	"github.com/robogg133/gonion/internal/window"
 )
 
-func TestWindow_NewInitialValue(t *testing.T) {
+func TestNew_NotZero(t *testing.T) {
 	w := window.NewWindow(1000, 100)
 	if w.IsZero() {
 		t.Fatal("new window should not be zero")
 	}
 }
 
-func TestWindow_SubtractToZero(t *testing.T) {
+func TestSubtract_ToZero(t *testing.T) {
 	w := window.NewWindow(3, 1)
 	w.SetDigest([20]byte{9})
 	w.Subtract(1)
@@ -26,7 +26,7 @@ func TestWindow_SubtractToZero(t *testing.T) {
 	}
 }
 
-func TestWindow_Increase(t *testing.T) {
+func TestIncrease_FromZero(t *testing.T) {
 	w := window.NewWindow(0, 50)
 	if !w.IsZero() {
 		t.Fatal("start at 0")
@@ -37,17 +37,17 @@ func TestWindow_Increase(t *testing.T) {
 	}
 }
 
-func TestWindow_TriggerEveryAddValue(t *testing.T) {
+func TestTrigger_EveryAddValue(t *testing.T) {
 	w := window.NewWindow(100, 25)
 	dig := [20]byte{1, 2, 3, 4, 5}
 	w.SetDigest(dig)
 
-	// 100 -> 75, 50, 25, 0 : four triggers (each time value % 25 == 0)
 	for range 4 {
 		w.Subtract(25)
 	}
 
 	got := 0
+drain:
 	for {
 		select {
 		case d := <-w.Get():
@@ -56,16 +56,15 @@ func TestWindow_TriggerEveryAddValue(t *testing.T) {
 			}
 			got++
 		default:
-			goto done
+			break drain
 		}
 	}
-done:
 	if got != 4 {
 		t.Fatalf("triggers = %d, want 4", got)
 	}
 }
 
-func TestWindow_TriggerUsesLatestDigest(t *testing.T) {
+func TestTrigger_UsesLatestDigest(t *testing.T) {
 	w := window.NewWindow(50, 50)
 	w.SetDigest([20]byte{1})
 	w.SetDigest([20]byte{2})
@@ -81,7 +80,7 @@ func TestWindow_TriggerUsesLatestDigest(t *testing.T) {
 	}
 }
 
-func TestWindow_SubtractWithoutDigestDoesNotPanic(t *testing.T) {
+func TestSubtract_WithoutDigest_NoPanic(t *testing.T) {
 	w := window.NewWindow(10, 10)
 	defer func() {
 		if r := recover(); r != nil {
@@ -99,21 +98,19 @@ func TestWindow_SubtractWithoutDigestDoesNotPanic(t *testing.T) {
 	}
 }
 
-func TestWindow_ConcurrentSubtract(t *testing.T) {
+func TestConcurrent_Subtract(t *testing.T) {
 	w := window.NewWindow(1000, 100)
 	w.SetDigest([20]byte{7})
 
 	var wg sync.WaitGroup
 	for range 100 {
-		wg.Add(1)
-		go func() {
+		wg.Go(func() {
 			defer wg.Done()
 			w.Subtract(1)
-		}()
+		})
 	}
 	wg.Wait()
 
-	// 1000 - 100 = 900; one trigger at 900 (900%100==0)
 	if w.IsZero() {
 		t.Fatal("window should remain non-zero (900)")
 	}
@@ -124,7 +121,7 @@ func TestWindow_ConcurrentSubtract(t *testing.T) {
 	}
 }
 
-func TestWindow_GetDigestDefault(t *testing.T) {
+func TestGetDigest_DefaultAndSet(t *testing.T) {
 	w := window.NewWindow(1, 1)
 	if w.GetDigest() != [20]byte{} {
 		t.Fatal("unset digest should be zero value")
@@ -135,7 +132,7 @@ func TestWindow_GetDigestDefault(t *testing.T) {
 	}
 }
 
-func TestWindow_AddAndSet(t *testing.T) {
+func TestAddAndSet(t *testing.T) {
 	w := window.NewWindow(0, 1)
 	w.Set(5)
 	if w.IsZero() {
@@ -144,5 +141,24 @@ func TestWindow_AddAndSet(t *testing.T) {
 	w.Add(-5)
 	if !w.IsZero() {
 		t.Fatal("Add(-5) should zero")
+	}
+}
+
+func TestTrigger_ChannelDoesNotBlock(t *testing.T) {
+	// Buffer is start/add = 1; flooding triggers must not block Subtract.
+	w := window.NewWindow(10, 10)
+	w.SetDigest([20]byte{1})
+	done := make(chan struct{})
+	go func() {
+		for range 20 {
+			w.Set(10)
+			w.Subtract(10)
+		}
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Subtract blocked on full trigger channel")
 	}
 }

@@ -14,6 +14,7 @@ import (
 )
 
 func TestConsensus(t *testing.T) {
+	skipIfShort(t)
 	t.Parallel()
 
 	c, err := fallback.Dial(true)

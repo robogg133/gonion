@@ -20,6 +20,7 @@ import (
 )
 
 func TestConnect(t *testing.T) {
+	skipIfShort(t)
 
 	dialer := fallback.New(shared.Fallbacks)
 

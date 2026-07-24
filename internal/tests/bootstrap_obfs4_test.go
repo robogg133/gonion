@@ -11,6 +11,7 @@ import (
 
 // obfs4 93.177.73.226:24852 99ED350316AFC4ED1964CFE9EC84C201416D143D cert=KciXEUlkxmOHsVFLh6s3fAEWO7p0GHt6jhhTj/XaWM8/VmCYqbzPmRM+Q4PA1AcJ8JyWBA iat-mode=0
 func TestMicrodescObfs4(t *testing.T) {
+	skipIfShort(t)
 	t.Parallel()
 	c, err := obfs4.Dial("93.177.73.226:24852", "99ED350316AFC4ED1964CFE9EC84C201416D143D", "KciXEUlkxmOHsVFLh6s3fAEWO7p0GHt6jhhTj/XaWM8/VmCYqbzPmRM+Q4PA1AcJ8JyWBA", "0")
 	if err != nil {

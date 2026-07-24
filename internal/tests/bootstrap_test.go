@@ -14,6 +14,7 @@ import (
 )
 
 func TestMicrodesc(t *testing.T) {
+	skipIfShort(t)
 	t.Parallel()
 
 	dialer := fallback.New(shared.Fallbacks)

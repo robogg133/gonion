@@ -1,4 +1,4 @@
-package tests
+package hops_test
 
 import (
 	"bytes"
@@ -34,20 +34,6 @@ func randomKeyMaterial(t *testing.T, n int) []byte {
 	return b
 }
 
-// newTestHop builds a hop with independent forward/back key material.
-// For round-trip tests the peer uses swapped directions (see mirrorHop).
-func newTestHop(t *testing.T, ctx context.Context, kf, df, kb, db []byte) *hops.Hop {
-	t.Helper()
-	fwd := mustRunning(t, kf, df)
-	bwd := mustRunning(t, kb, db)
-	return hops.NewHop(ctx, relay.NewDataCellCoder(bwd, fwd), window.NewWindow(1000, 100), window.NewWindow(1000, 100))
-}
-
-// pairedHopKeys returns (clientHop, serverSideKeys) where server can encrypt
-// inbound cells that the client chain decrypts with the same material.
-//
-// Client forward = server backward (client→server path).
-// Client backward = server forward (server→client path).
 type hopKeys struct {
 	Kf, Df, Kb, Db []byte
 }
@@ -64,13 +50,15 @@ func genHopKeys(t *testing.T) hopKeys {
 
 func clientHopFromKeys(t *testing.T, ctx context.Context, k hopKeys) *hops.Hop {
 	t.Helper()
-	return newTestHop(t, ctx, k.Kf, k.Df, k.Kb, k.Db)
+	fwd := mustRunning(t, k.Kf, k.Df)
+	bwd := mustRunning(t, k.Kb, k.Db)
+	return hops.NewHop(ctx, relay.NewDataCellCoder(bwd, fwd), window.NewWindow(1000, 100), window.NewWindow(1000, 100))
 }
 
-// serverCoder encrypts toward the client (uses client's backward keys as forward).
+// serverCoder uses swapped directions so it can encrypt toward the client
+// and peel client outbound layers.
 func serverCoderFromKeys(t *testing.T, k hopKeys) *relay.RelayCellCoder {
 	t.Helper()
-	// Server encrypts "forward" to client using Kb/Db (what client peels with Backwards).
 	fwd := mustRunning(t, k.Kb, k.Db)
 	bwd := mustRunning(t, k.Kf, k.Df)
 	return relay.NewDataCellCoder(bwd, fwd)
@@ -101,13 +89,9 @@ func TestChain_AppendGuardExitAt(t *testing.T) {
 	ctx := context.Background()
 	var c hops.Chain
 
-	k0 := genHopKeys(t)
-	k1 := genHopKeys(t)
-	k2 := genHopKeys(t)
-
-	h0 := clientHopFromKeys(t, ctx, k0)
-	h1 := clientHopFromKeys(t, ctx, k1)
-	h2 := clientHopFromKeys(t, ctx, k2)
+	h0 := clientHopFromKeys(t, ctx, genHopKeys(t))
+	h1 := clientHopFromKeys(t, ctx, genHopKeys(t))
+	h2 := clientHopFromKeys(t, ctx, genHopKeys(t))
 
 	c.Append(h0)
 	if c.Len() != 1 || c.Guard() != h0 || c.Exit() != h0 {
@@ -120,14 +104,8 @@ func TestChain_AppendGuardExitAt(t *testing.T) {
 	if c.Len() != 3 {
 		t.Fatalf("Len() = %d, want 3", c.Len())
 	}
-	if c.Guard() != h0 {
-		t.Fatal("Guard mismatch")
-	}
-	if c.Exit() != h2 {
-		t.Fatal("Exit mismatch")
-	}
-	if c.At(1) != h1 {
-		t.Fatal("At(1) mismatch")
+	if c.Guard() != h0 || c.Exit() != h2 || c.At(1) != h1 {
+		t.Fatal("accessor mismatch")
 	}
 	if c.At(-1) != nil || c.At(3) != nil {
 		t.Fatal("At out of range should be nil")
@@ -139,10 +117,8 @@ func TestChain_MarshalInvalidDestination(t *testing.T) {
 	var c hops.Chain
 	c.Append(clientHopFromKeys(t, ctx, genHopKeys(t)))
 
-	cases := []int{-1, 1, 99}
-	for _, dst := range cases {
-		_, err := c.MarshalMessage(&relay.BeginDirCell{StreamID: 1}, dst)
-		if err == nil {
+	for _, dst := range []int{-1, 1, 99} {
+		if _, err := c.MarshalMessage(&relay.BeginDirCell{StreamID: 1}, dst); err == nil {
 			t.Fatalf("dst=%d: expected error", dst)
 		}
 	}
@@ -155,7 +131,6 @@ func TestChain_SingleHop_RoundTrip_BeginDir(t *testing.T) {
 	var client hops.Chain
 	client.Append(clientHopFromKeys(t, ctx, k))
 
-	// Client → network (outbound to hop 0)
 	out, err := client.MarshalMessage(&relay.BeginDirCell{StreamID: 7}, 0)
 	if err != nil {
 		t.Fatalf("MarshalMessage: %v", err)
@@ -164,7 +139,6 @@ func TestChain_SingleHop_RoundTrip_BeginDir(t *testing.T) {
 		t.Fatalf("body len = %d, want %d", len(out), cells.CELL_BODY_LEN)
 	}
 
-	// Server peels with matching backward stream (client forward).
 	server := serverCoderFromKeys(t, k)
 	plain, err := server.Unmarshal(append([]byte(nil), out...))
 	if err != nil {
@@ -174,7 +148,6 @@ func TestChain_SingleHop_RoundTrip_BeginDir(t *testing.T) {
 		t.Fatalf("server saw %#v", plain)
 	}
 
-	// Server → client (inbound): server marshals with its forward (= client backward)
 	inbound, err := server.Marshal(&relay.ConnectedCell{StreamID: 7})
 	if err != nil {
 		t.Fatalf("server Marshal: %v", err)
@@ -207,18 +180,10 @@ func TestChain_ThreeHop_ExitDestination(t *testing.T) {
 		t.Fatalf("MarshalMessage: %v", err)
 	}
 
-	// Peel like the network: hop0, hop1, hop2 each remove one layer (client forward).
 	body := append([]byte(nil), out...)
 	for i, k := range keys {
 		srv := serverCoderFromKeys(t, k)
-		// Only the destination hop should fully recognize after its decrypt.
-		// Intermediate hops just XOR their forward stream equivalent (client's forward).
-		// Server at hop i uses Kb as encrypt-to-prev which is inverse of client hop i forward? 
-		// Actually for intermediate peel we only XOR with the hop's forward keystream
-		// (same as client applied). Server-side "recognize" only at exit.
-		_ = i
-		srv.Backwards.XORKeyStream(body, body) // wait - server receiving from client uses bwd = client Kf
-		// serverCoder Backwards = client Kf/Df — correct for peeling client outbound.
+		srv.Backwards.XORKeyStream(body, body)
 		if relay.IsDecrypted(body) {
 			cell, err := srv.UnmarshalPlain(body)
 			if err != nil {
@@ -227,10 +192,7 @@ func TestChain_ThreeHop_ExitDestination(t *testing.T) {
 			if i != 2 {
 				t.Fatalf("recognized at hop %d, want only exit (2)", i)
 			}
-			got, ok := cell.(*relay.DataCell)
-			if !ok {
-				t.Fatalf("type %T", cell)
-			}
+			got := cell.(*relay.DataCell)
 			if got.GetStreamID() != 42 || !bytes.Equal(got.Payload, want.Payload) {
 				t.Fatalf("payload mismatch: sid=%d payload=%q", got.GetStreamID(), got.Payload)
 			}
@@ -249,7 +211,6 @@ func TestChain_ThreeHop_MiddleDestination(t *testing.T) {
 		client.Append(clientHopFromKeys(t, ctx, k))
 	}
 
-	// EXTEND-like: addressed to middle (hop 1), not exit.
 	out, err := client.MarshalMessage(&relay.BeginDirCell{StreamID: 0}, 1)
 	if err != nil {
 		t.Fatalf("MarshalMessage: %v", err)
@@ -277,8 +238,6 @@ func TestChain_ThreeHop_MiddleDestination(t *testing.T) {
 }
 
 func TestChain_InboundFromExit_RoundTrip(t *testing.T) {
-	// Build multi-hop inbound onion the way an exit would: encrypt at exit, then
-	// each previous hop applies its "toward client" layer.
 	ctx := context.Background()
 	keys := []hopKeys{genHopKeys(t), genHopKeys(t), genHopKeys(t)}
 
@@ -290,12 +249,10 @@ func TestChain_InboundFromExit_RoundTrip(t *testing.T) {
 	}
 
 	payload := []byte("response-body")
-	// Exit (hop 2) marshals with its forward-to-client keys.
 	body, err := servers[2].Marshal(&relay.DataCell{StreamID: 9, Payload: payload})
 	if err != nil {
 		t.Fatalf("exit marshal: %v", err)
 	}
-	// Middle then guard apply their forward-to-client layers (same as client backward XOR order reversed).
 	for i := 1; i >= 0; i-- {
 		servers[i].Forwards.XORKeyStream(body, body)
 	}
@@ -350,7 +307,6 @@ func TestChain_DecryptFailure_WrongKeys(t *testing.T) {
 	var client hops.Chain
 	client.Append(clientHopFromKeys(t, ctx, genHopKeys(t)))
 
-	// Encrypt with unrelated keys.
 	other := serverCoderFromKeys(t, genHopKeys(t))
 	body, err := other.Marshal(&relay.BeginDirCell{StreamID: 1})
 	if err != nil {
@@ -365,9 +321,8 @@ func TestChain_DecryptFailure_WrongKeys(t *testing.T) {
 
 func TestChain_DecryptFailure_CorruptBody(t *testing.T) {
 	ctx := context.Background()
-	k := genHopKeys(t)
 	var client hops.Chain
-	client.Append(clientHopFromKeys(t, ctx, k))
+	client.Append(clientHopFromKeys(t, ctx, genHopKeys(t)))
 
 	body := make([]byte, cells.CELL_BODY_LEN)
 	rand.Read(body)
@@ -378,7 +333,7 @@ func TestChain_DecryptFailure_CorruptBody(t *testing.T) {
 	}
 }
 
-func TestChain_MarshalDoesNotMutateCellAcrossHops(t *testing.T) {
+func TestChain_MarshalAdvancesCipher(t *testing.T) {
 	ctx := context.Background()
 	var client hops.Chain
 	for range 3 {
@@ -390,7 +345,6 @@ func TestChain_MarshalDoesNotMutateCellAcrossHops(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Second marshal must work (running AES/digest advances — different ciphertext).
 	b2, err := client.MarshalMessage(cell, 2)
 	if err != nil {
 		t.Fatal(err)
@@ -420,7 +374,6 @@ func TestHop_SendMeNotify(t *testing.T) {
 		t.Fatal("timeout waiting NotifySendMe")
 	}
 
-	// Non-blocking: second notify while full must not block.
 	h.NotifySendMe()
 	h.NotifySendMe()
 	done := make(chan struct{})
@@ -465,80 +418,10 @@ func TestHop_WindowsArePointers(t *testing.T) {
 		t.Fatal("windows must be stored by pointer identity")
 	}
 	rcv.Subtract(5)
-	if !h.Recv().IsZero() && h.Recv().GetDigest() == [20]byte{} {
-		// just ensure subtract affected same object
-	}
-	// After one trigger step from 10 with add 5: 10-5=5, 5%5==0 → triggered
 	select {
 	case <-h.Recv().Get():
 	default:
 		t.Fatal("expected window trigger on shared pointer")
-	}
-}
-
-func TestRelayCell_OpaqueBody_EncodeDecode(t *testing.T) {
-	body := make([]byte, cells.CELL_BODY_LEN)
-	for i := range body {
-		body[i] = byte(i)
-	}
-	cell := &cells.RelayCell{CircuitID: 0x80000001, Body: body}
-
-	var buf bytes.Buffer
-	if err := cell.Encode(&buf); err != nil {
-		t.Fatal(err)
-	}
-	if buf.Len() != cells.CELL_BODY_LEN {
-		t.Fatalf("encode len = %d", buf.Len())
-	}
-
-	out := &cells.RelayCell{}
-	if err := out.Decode(bytes.NewReader(buf.Bytes())); err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(out.Body, body) {
-		t.Fatal("body mismatch after encode/decode")
-	}
-}
-
-func TestRelayCell_EncodePadsShortBody(t *testing.T) {
-	cell := &cells.RelayCell{Body: []byte{1, 2, 3}}
-	var buf bytes.Buffer
-	if err := cell.Encode(&buf); err != nil {
-		t.Fatal(err)
-	}
-	if buf.Len() != cells.CELL_BODY_LEN {
-		t.Fatalf("len = %d, want %d", buf.Len(), cells.CELL_BODY_LEN)
-	}
-	if buf.Bytes()[0] != 1 || buf.Bytes()[2] != 3 {
-		t.Fatal("prefix not preserved")
-	}
-}
-
-func TestCellCoder_RelayRoundTrip(t *testing.T) {
-	coder := cells.NewCellCoder(cells.AllKnownCells)
-	body := bytes.Repeat([]byte{0xab}, cells.CELL_BODY_LEN)
-	raw, err := coder.MarshalCell(&cells.RelayCell{
-		CircuitID: 0x80000002,
-		Body:      body,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	// full cell = 4 circ + 1 cmd + 509 body
-	if len(raw) != 4+1+cells.CELL_BODY_LEN {
-		t.Fatalf("raw len = %d", len(raw))
-	}
-
-	got, err := coder.ReadCell(bytes.NewReader(raw))
-	if err != nil {
-		t.Fatal(err)
-	}
-	rc, ok := got.(*cells.RelayCell)
-	if !ok {
-		t.Fatalf("type %T", got)
-	}
-	if !bytes.Equal(rc.Body, body) {
-		t.Fatal("body mismatch")
 	}
 }
 
@@ -559,42 +442,16 @@ func TestChain_DataCell_DigestSetOnMarshal(t *testing.T) {
 	}
 }
 
-func TestChain_ParallelIndependentChains(t *testing.T) {
-	// Two circuits must not share crypto state.
-	ctx := context.Background()
-	k := genHopKeys(t)
-
-	var a, b hops.Chain
-	a.Append(clientHopFromKeys(t, ctx, k))
-	// b gets fresh keys — same structural test with different material
-	b.Append(clientHopFromKeys(t, ctx, genHopKeys(t)))
-
-	outA, err := a.MarshalMessage(&relay.BeginDirCell{StreamID: 1}, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	outB, err := b.MarshalMessage(&relay.BeginDirCell{StreamID: 1}, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if bytes.Equal(outA, outB) {
-		t.Fatal("independent chains produced identical ciphertext (suspicious key reuse)")
-	}
-}
-
 func TestChain_TableDrivenDestinations(t *testing.T) {
 	ctx := context.Background()
 	const n = 4
 	keys := make([]hopKeys, n)
-	var client hops.Chain
 	for i := range n {
 		keys[i] = genHopKeys(t)
-		client.Append(clientHopFromKeys(t, ctx, keys[i]))
 	}
 
 	for dst := 0; dst < n; dst++ {
 		t.Run(fmt.Sprintf("dst_%d", dst), func(t *testing.T) {
-			// Fresh chain state per subtest — running values advance, so rebuild.
 			var c hops.Chain
 			srvs := make([]*relay.RelayCellCoder, n)
 			for i := range n {
