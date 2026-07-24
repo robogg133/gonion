@@ -3,7 +3,6 @@ package gonion
 import (
 	"context"
 	"crypto/ecdh"
-	"fmt"
 	"math/rand"
 	"time"
 
@@ -12,6 +11,7 @@ import (
 
 // nextConsensus will refresh the consensus when needed
 func (circuit *Circuit) nextConsensus(ctx context.Context, cns *common.Consensus) {
+	log := logger(ctx).With().Str("job", "consensus_refresh").Logger()
 
 	select {
 	case <-ctx.Done():
@@ -32,62 +32,70 @@ func (circuit *Circuit) nextConsensus(ctx context.Context, cns *common.Consensus
 	ne := end.Unix()
 
 	fetchTimestamp := rand.Int63n(ne-ns) + ns
-
 	fetchTime := time.Unix(fetchTimestamp, 0).UTC()
 
-	// Sleeping until new fetch
+	log.Info().Time("fetch_at", fetchTime).Msg("scheduled consensus refresh")
+
 	if err := sleepCtx(ctx, time.Until(fetchTime)); err != nil {
+		log.Debug().Err(err).Msg("consensus refresh cancelled")
 		return
 	}
 
 	cnsPtr, err := circuit.GetConsensus()
 	if err != nil {
-		panic(err)
+		log.Error().Err(err).Msg("consensus refresh failed")
+		return
 	}
 
 	*cns = *cnsPtr
+	log.Info().Int("relays", len(cns.RelayInformation)).Msg("consensus refreshed")
 
 	go circuit.nextConsensus(ctx, cns)
 }
 
-// Bootstrap will get onion keys to make circuits, using 1 conn
+// BootstrapOneConn fetches consensus and microdescriptors using one OR connection.
 func BootstrapOneConn(conn *Conn) error {
+	ctx := conn.ctx
+	log := logger(ctx).With().Str("job", "bootstrap").Logger()
+	ctx = withLogger(ctx, log)
+	log.Info().Msg("bootstrap starting")
 
 	circuit, err := conn.NewFastCircuit(1)
 	if err != nil {
-		return err
+		return fail(ctx, ErrBootstrap, "create bootstrap circuit failed", err)
 	}
 
 	cns, err := circuit.GetConsensus()
 	if err != nil {
-		return err
+		return fail(ctx, ErrBootstrap, "fetch consensus failed", err)
 	}
+	log.Info().Int("relays", len(cns.RelayInformation)).Msg("consensus fetched")
 
 	common.SetGlobalConsensus(cns)
 
-	var AlldigestsString []string
+	var allDigests []string
 	for _, relay := range cns.RelayInformation {
-		AlldigestsString = append(AlldigestsString, relay.MicrodescriptorDigest)
+		allDigests = append(allDigests, relay.MicrodescriptorDigest)
 	}
 
-	for i := 0; i < len(AlldigestsString); i += 91 {
+	for i := 0; i < len(allDigests); i += 91 {
 		end := i + 91
-
-		end = min(end, len(AlldigestsString))
-
-		chunk := AlldigestsString[i:end]
-		if err := circuit.fetchAndApplyMicrodescriptors(cns, chunk, i); err != nil {
+		end = min(end, len(allDigests))
+		chunk := allDigests[i:end]
+		log.Debug().Int("offset", i).Int("count", len(chunk)).Msg("fetching microdescriptor chunk")
+		if err := circuit.fetchAndApplyMicrodescriptors(ctx, cns, chunk, i); err != nil {
 			return err
 		}
 	}
+
+	log.Info().Msg("bootstrap complete")
 	return nil
 }
 
-func (circuit *Circuit) fetchAndApplyMicrodescriptors(cons *common.Consensus, digestsSlice []string, offest int) error {
-
+func (circuit *Circuit) fetchAndApplyMicrodescriptors(ctx context.Context, cons *common.Consensus, digestsSlice []string, offset int) error {
 	desc, err := circuit.GetMicrodescriptors(digestsSlice)
 	if err != nil {
-		return err
+		return fail(ctx, ErrDirectory, "fetch microdescriptors failed", err)
 	}
 
 	curve := ecdh.X25519()
@@ -95,15 +103,16 @@ func (circuit *Circuit) fetchAndApplyMicrodescriptors(cons *common.Consensus, di
 		if v == nil {
 			continue
 		}
-		idx := offest + i
+		idx := offset + i
 		if idx >= len(cons.RelayInformation) {
-			return fmt.Errorf("fetchAndApplyMicrodescriptors: index out of bounds: %d", idx)
+			logger(ctx).Error().Int("idx", idx).Int("len", len(cons.RelayInformation)).Msg("microdesc index out of bounds")
+			return Public(ErrDirectory, "microdescriptor index out of bounds")
 		}
 
 		cons.RelayInformation[idx].OnionKey = v.OnionKey
 		ntor, err := curve.NewPublicKey(v.NTorOnionKey)
 		if err != nil {
-			return err
+			return fail(ctx, ErrDirectory, "invalid ntor onion key", err)
 		}
 		cons.RelayInformation[idx].NTorOnionKey = ntor
 		if v.ExitRules != nil {
@@ -113,8 +122,6 @@ func (circuit *Circuit) fetchAndApplyMicrodescriptors(cons *common.Consensus, di
 		cons.RelayInformation[idx].Familys = v.Familys
 		cons.RelayInformation[idx].IdEd25519 = v.IdEd25519
 	}
-
-	desc = nil
 
 	return nil
 }
@@ -133,5 +140,4 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 	case <-timer.C:
 		return nil
 	}
-
 }

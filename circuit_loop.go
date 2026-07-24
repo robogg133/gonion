@@ -2,19 +2,23 @@ package gonion
 
 import (
 	"bytes"
-	"fmt"
 
 	cells "github.com/robogg133/gonion/pkg/cells/base"
 	"github.com/robogg133/gonion/pkg/cells/relay"
 )
 
 func (c *Circuit) readloop() {
+	log := logger(c.Ctx)
+	log.Debug().Msg("circuit read loop started")
+	defer log.Debug().Msg("circuit read loop stopped")
+
 	for {
 		select {
 		case rawCell := <-c.Inbound:
 			cell, err := c.Coder.ReadCell(bytes.NewReader(rawCell))
 			if err != nil {
-				c.ctxCancel(err)
+				pub := fail(c.Ctx, ErrIO, "decode inbound cell failed", err)
+				c.ctxCancel(pub)
 				return
 			}
 
@@ -30,7 +34,9 @@ func (c *Circuit) readloop() {
 
 				hopN, rcCell, err := c.hops.UnmarshalMessage(body)
 				if err != nil {
-					c.ctxCancel(err)
+					log.Error().Err(err).Msg("onion decrypt failed")
+					pub := fail(c.Ctx, ErrDecrypt, "relay decrypt failed", err)
+					c.ctxCancel(pub)
 					return
 				}
 
@@ -41,6 +47,11 @@ func (c *Circuit) readloop() {
 
 				stream := c.streams.Get(rcCell.GetStreamID())
 				if stream == nil {
+					log.Debug().
+						Uint16("stream_id", rcCell.GetStreamID()).
+						Uint8("relay_cmd", rcCell.ID()).
+						Int("hop", hopN).
+						Msg("relay cell for unknown stream dropped")
 					continue
 				}
 
@@ -52,6 +63,7 @@ func (c *Circuit) readloop() {
 						hop.Recv().Subtract(1)
 					}
 					if err := stream.writeDataCell(dataCell); err != nil {
+						logger(stream.Ctx).Warn().Err(err).Msg("stream buffer write failed")
 						stream.Close()
 					}
 					continue
@@ -73,28 +85,37 @@ func (c *Circuit) readloop() {
 }
 
 func (c *Circuit) writeLoop() {
+	log := logger(c.Ctx)
+	log.Debug().Msg("circuit write loop started")
+	defer log.Debug().Msg("circuit write loop stopped")
+
 	for {
 		select {
 		case out := <-c.WriteRelayCell:
 			body, err := c.hops.MarshalMessage(out.Cell, out.Dst)
 			if err != nil {
-				c.ctxCancel(err)
+				log.Error().Err(err).Int("dst", out.Dst).Uint8("relay_cmd", out.Cell.ID()).Msg("onion encrypt failed")
+				pub := fail(c.Ctx, ErrCircuit, "relay encrypt failed", err)
+				c.ctxCancel(pub)
 				return
 			}
 
 			if out.Cell.ID() == relay.COMMAND_DATA {
 				hop := c.hops.At(out.Dst)
 				if hop == nil {
-					c.ctxCancel(errInvalidHop(out.Dst))
+					pub := failf(c.Ctx, ErrInvalidHop, nil, "invalid hop destination %d", out.Dst)
+					c.ctxCancel(pub)
 					return
 				}
 				sendWindow := hop.Send()
 				sendWindow.SetDigest(out.Cell.(*relay.DataCell).Digest())
 				sendWindow.Subtract(1)
 				if sendWindow.IsZero() {
+					log.Debug().Int("hop", out.Dst).Msg("circuit send window exhausted, waiting SENDME")
 					select {
 					case <-hop.SendMe():
 						sendWindow.Increase()
+						log.Debug().Int("hop", out.Dst).Msg("circuit send window restored")
 					case <-c.Ctx.Done():
 						return
 					case <-hop.Ctx().Done():
@@ -114,27 +135,31 @@ func (c *Circuit) writeLoop() {
 }
 
 func (c *Circuit) relayControlFunc(rc relay.Cell, dst int) {
+	log := logger(c.Ctx).With().Int("hop", dst).Uint8("relay_cmd", rc.ID()).Logger()
+
 	switch rc.ID() {
 	case relay.COMMAND_SENDME:
 		hop := c.hops.At(dst)
 		if hop == nil {
-			c.ctxCancel(errInvalidHop(dst))
+			pub := failf(c.Ctx, ErrInvalidHop, nil, "invalid hop destination %d", dst)
+			c.ctxCancel(pub)
 			return
 		}
-		if err := verifySendMe(rc.(*relay.SendMeCell), c.SendMeVersion, hop.Send()); err != nil {
+		if err := verifySendMe(c.Ctx, rc.(*relay.SendMeCell), c.SendMeVersion, hop.Send()); err != nil {
 			c.ctxCancel(err)
 			return
 		}
+		log.Debug().Msg("circuit SENDME accepted")
 		hop.NotifySendMe()
 	case relay.COMMAND_EXTENDED2:
+		log.Debug().Msg("EXTENDED2 received")
 		select {
 		case c.extended2Received <- rc.(*relay.Extended2Cell):
 		case <-c.Ctx.Done():
 		default:
+			log.Warn().Msg("EXTENDED2 dropped (no waiter)")
 		}
+	default:
+		log.Debug().Msg("unhandled circuit control relay")
 	}
-}
-
-func errInvalidHop(dst int) error {
-	return fmt.Errorf("invalid hop destination: %d", dst)
 }

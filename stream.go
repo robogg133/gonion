@@ -2,8 +2,6 @@ package gonion
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"io"
 	"net"
 	"sync"
@@ -57,29 +55,37 @@ type Stream struct {
 
 func (c *Circuit) NewStream(target string, hopDest int) (*Stream, error) {
 	var suc bool
-	freeCtx, freeCtxCancel := context.WithCancelCause(c.Ctx)
+
+	id := c.nextStreamID
+	c.nextStreamID++
+
+	baseLog := logger(c.Ctx).With().
+		Str("component", "stream").
+		Uint16("stream_id", id).
+		Str("target", target).
+		Int("hop", hopDest).
+		Logger()
+
+	freeCtx, freeCtxCancel := context.WithCancelCause(withLogger(c.Ctx, baseLog))
 	ctx, ctxCancel := context.WithCancelCause(freeCtx)
 
 	buffer := ringbuffer.New(STREAM_BUFFER_SIZE).SetBlocking(true).WithNoCloseOnTimeout()
 
 	stream := &Stream{
-		ID:             c.nextStreamID,
-		circuit:        c,
-		InboundControl: make(chan relay.Cell, 512),
-		outbound:       make(chan relay.Cell, 2048),
-		Ctx:            ctx,
-		ctxCancel:      ctxCancel,
-		freeCtx:        freeCtx,
-		freeCtxCancel:  freeCtxCancel,
-		receiveSendMe:  make(chan struct{}, 1),
-
+		ID:               id,
+		circuit:          c,
+		InboundControl:   make(chan relay.Cell, 512),
+		outbound:         make(chan relay.Cell, 2048),
+		Ctx:              ctx,
+		ctxCancel:        ctxCancel,
+		freeCtx:          freeCtx,
+		freeCtxCancel:    freeCtxCancel,
+		receiveSendMe:    make(chan struct{}, 1),
 		SendWindow:       window.NewWindow(500, 50),
 		ReceiveWindow:    window.NewWindow(500, 50),
 		myHopDestination: hopDest,
-
-		State: STREAM_OPENING,
-
-		buffer: buffer,
+		State:            STREAM_OPENING,
+		buffer:           buffer,
 	}
 	stream.Reader = &readCloserWrapper{
 		buff:   buffer,
@@ -93,9 +99,9 @@ func (c *Circuit) NewStream(target string, hopDest int) (*Stream, error) {
 		}
 	}()
 
-	c.nextStreamID++
-
 	c.streams.Set(stream.ID, stream)
+	log := logger(ctx)
+	log.Info().Msg("opening stream")
 
 	switch target {
 	case "dir":
@@ -115,31 +121,37 @@ func (c *Circuit) NewStream(target string, hopDest int) (*Stream, error) {
 	go stream.controlLoop()
 	go stream.sendController()
 	suc = true
+	log.Info().Msg("stream open")
 	return stream, nil
 }
 
 func (s *Stream) controlLoop() {
+	log := logger(s.Ctx)
 	for {
 		select {
 		case cell, ok := <-s.InboundControl:
 			if !ok {
 				return
 			}
-			// SWITCH for controll cells
 			switch cell.ID() {
 			case relay.COMMAND_SENDME:
 				sendme := cell.(*relay.SendMeCell)
-				if err := verifySendMe(sendme, s.circuit.SendMeVersion, s.SendWindow); err != nil {
-					s.circuit.ctxCancel(fmt.Errorf("(stream %d): %s", s.ID, err.Error()))
+				if err := verifySendMe(s.Ctx, sendme, s.circuit.SendMeVersion, s.SendWindow); err != nil {
+					log.Error().Err(err).Msg("stream SENDME failed")
+					s.circuit.ctxCancel(err)
 					s.Free()
+					return
 				}
-
+				log.Debug().Msg("stream SENDME accepted")
 				select {
 				case s.receiveSendMe <- struct{}{}:
 				default:
 				}
 			case relay.COMMAND_RELAY_END:
+				log.Info().Msg("RELAY_END received")
 				s.Close()
+			default:
+				log.Debug().Uint8("relay_cmd", cell.ID()).Msg("unhandled stream control cell")
 			}
 
 		case <-s.Ctx.Done():
@@ -148,8 +160,8 @@ func (s *Stream) controlLoop() {
 	}
 }
 
-// sendController Controls sendWindow and can line up relay cells
 func (s *Stream) sendController() {
+	log := logger(s.Ctx)
 	for {
 		select {
 		case cell, ok := <-s.outbound:
@@ -162,14 +174,15 @@ func (s *Stream) sendController() {
 				s.SendWindow.Subtract(1)
 
 				if s.SendWindow.IsZero() {
+					log.Debug().Msg("stream send window exhausted, waiting SENDME")
 					select {
 					case <-s.receiveSendMe:
 						s.SendWindow.Increase()
+						log.Debug().Msg("stream send window restored")
 					case <-s.Ctx.Done():
 						return
 					}
 				}
-
 			}
 			select {
 			case s.circuit.WriteRelayCell <- RelayOut{Cell: cell, Dst: s.myHopDestination}:
@@ -189,7 +202,7 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 	defer s.mu.RUnlock()
 
 	if s.State != STREAM_OPEN {
-		return 0, errors.New("stream closed")
+		return 0, ErrStreamClosed
 	}
 	var wrote int
 
@@ -212,7 +225,7 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 
 func (s *Stream) SendCell(cell relay.Cell) error {
 	if s.State == STREAM_CLOSED {
-		return errors.New("stream closed")
+		return ErrStreamClosed
 	}
 
 	cell.SetStreamID(s.ID)
@@ -221,16 +234,18 @@ func (s *Stream) SendCell(cell relay.Cell) error {
 		return nil
 	case <-s.Ctx.Done():
 		s.Close()
-		return context.Cause(s.Ctx)
+		return fail(s.Ctx, ErrStreamClosed, "stream closed", context.Cause(s.Ctx))
 	}
 }
 
 func (s *Stream) End(reason uint8) error {
+	logger(s.Ctx).Info().Uint8("reason", reason).Msg("ending stream")
 	if err := s.SendCell(&relay.RelayEndCell{Reason: reason}); err != nil {
 		return err
 	}
 	return s.Free()
 }
+
 func (s *Stream) Free() error {
 	if s.State != STREAM_CLOSED {
 		if err := s.Close(); err != nil {
@@ -238,25 +253,28 @@ func (s *Stream) Free() error {
 		}
 	}
 	if s.freeCtx.Err() == nil {
-		s.freeCtxCancel(errors.New("requested free"))
+		s.freeCtxCancel(ErrClosed)
 	}
 
 	if err := s.Reader.Close(); err != nil {
-		return err
+		logger(s.Ctx).Debug().Err(err).Msg("stream reader close")
+		return fail(s.Ctx, ErrIO, "stream reader close failed", err)
 	}
 	s.circuit.streams.Delete(s.ID)
+	logger(s.Ctx).Debug().Msg("stream freed")
 	return nil
 }
 
 func (s *Stream) Close() error {
 	var err error
 	s.closeOnce.Do(func() {
+		logger(s.Ctx).Debug().Msg("stream closing")
 		s.mu.Lock()
 		s.State = STREAM_CLOSED
 		s.mu.Unlock()
 
 		if s.Ctx.Err() == nil {
-			s.ctxCancel(errors.New("requested close"))
+			s.ctxCancel(ErrStreamClosed)
 		}
 		if s.freeCtx.Err() != nil {
 			defer s.Free()
@@ -277,7 +295,6 @@ func (s *Stream) writeDataCell(cell *relay.DataCell) error {
 	if _, err := s.buffer.Write(cell.Payload); err != nil {
 		return err
 	}
-
 	return nil
 }
 

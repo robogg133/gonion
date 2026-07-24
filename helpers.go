@@ -1,28 +1,39 @@
 package gonion
 
 import (
-	"fmt"
+	"context"
+	"encoding/hex"
 
 	"github.com/robogg133/gonion/internal/hops"
 	"github.com/robogg133/gonion/internal/window"
 	"github.com/robogg133/gonion/pkg/cells/relay"
 )
 
-func verifySendMe(sendme *relay.SendMeCell, sendmeVersion uint8, win *window.Window) error {
+func verifySendMe(ctx context.Context, sendme *relay.SendMeCell, sendmeVersion uint8, win *window.Window) error {
 	if sendmeVersion == 0 {
 		return nil
 	}
 	if sendme.Version != sendmeVersion {
-		return fmt.Errorf("protocol violation: different SEND_ME version")
+		logger(ctx).Error().
+			Uint8("got", sendme.Version).
+			Uint8("want", sendmeVersion).
+			Msg("SENDME version mismatch")
+		return Public(ErrSendMe, "version mismatch")
 	}
 
 	select {
 	case digest := <-win.Get():
 		if digest != sendme.Sha1ForLastCell {
-			return fmt.Errorf("protocol violation mismatched SEND_ME digest: %x %x", sendme.Sha1ForLastCell[:], digest[:])
+			// Digests stay in logs only — not in the public error string.
+			logger(ctx).Error().
+				Str("got", hex.EncodeToString(sendme.Sha1ForLastCell[:])).
+				Str("want", hex.EncodeToString(digest[:])).
+				Msg("SENDME digest mismatch")
+			return Public(ErrSendMe, "digest mismatch")
 		}
 	default:
-		return fmt.Errorf("protocol violation: unexpected SEND_ME")
+		logger(ctx).Error().Msg("unexpected SENDME")
+		return Public(ErrSendMe, "unexpected")
 	}
 	return nil
 }
@@ -30,6 +41,10 @@ func verifySendMe(sendme *relay.SendMeCell, sendmeVersion uint8, win *window.Win
 func (c *Circuit) sendmeManage(i int, hop *hops.Hop) {
 	win := hop.Recv()
 	ctx := hop.Ctx()
+	log := logger(c.Ctx).With().Int("hop", i).Str("job", "sendme_manage").Logger()
+	log.Debug().Msg("sendme manager started")
+	defer log.Debug().Msg("sendme manager stopped")
+
 	for {
 		select {
 		case digest := <-win.Get():
@@ -41,6 +56,7 @@ func (c *Circuit) sendmeManage(i int, hop *hops.Hop) {
 			select {
 			case c.WriteRelayCell <- RelayOut{Cell: sendMeCell, Dst: i}:
 				win.Increase()
+				log.Debug().Msg("circuit SENDME sent")
 			case <-ctx.Done():
 				return
 			case <-c.Ctx.Done():

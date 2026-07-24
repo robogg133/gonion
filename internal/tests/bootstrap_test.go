@@ -1,6 +1,7 @@
 package tests
 
 import (
+	"io"
 	"fmt"
 	"testing"
 
@@ -24,7 +25,7 @@ func TestMicrodesc(t *testing.T) {
 
 	fmt.Printf("Using addr %s from fallback dirs\n", c.RemoteAddr().String())
 
-	conn, err := gonion2.NewConn(c)
+	conn, err := gonion2.NewConn(c, io.Discard, true)
 	if err != nil {
 		t.Fatal(err)
 	}

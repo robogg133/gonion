@@ -30,7 +30,7 @@ func TestConnect(t *testing.T) {
 
 	fmt.Printf("Using addr %s from fallback dirs\n", c.RemoteAddr().String())
 
-	conn, err := gonion.NewConn(c)
+	conn, err := gonion.NewConn(c, io.Discard, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +53,7 @@ func TestConnect(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	conn, err = gonion.NewConn(c)
+	conn, err = gonion.NewConn(c, io.Discard, true)
 	if err != nil {
 		t.Fatal(err)
 	}

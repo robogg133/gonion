@@ -3,6 +3,7 @@ module github.com/robogg133/gonion
 go 1.25.0
 
 require (
+	github.com/rs/zerolog v1.35.1
 	github.com/smallnest/ringbuffer v0.1.2-0.20260703033355-9d1708966377
 	gitlab.com/yawning/obfs4.git v0.0.0-20231012084234-c3e2d44b1033
 	gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/goptlib v1.6.0
@@ -34,6 +35,8 @@ require (
 	github.com/klauspost/compress v1.18.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.6 // indirect
 	github.com/klauspost/reedsolomon v1.12.0 // indirect
+	github.com/mattn/go-colorable v0.1.15 // indirect
+	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/miekg/dns v1.1.65 // indirect
 	github.com/patrickmn/go-cache v2.1.0+incompatible // indirect
 	github.com/pion/datachannel v1.6.0 // indirect
@@ -67,7 +70,7 @@ require (
 	golang.org/x/crypto v0.53.0 // indirect
 	golang.org/x/mod v0.36.0 // indirect
 	golang.org/x/sync v0.21.0 // indirect
-	golang.org/x/sys v0.46.0 // indirect
+	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.38.0 // indirect
 	golang.org/x/time v0.10.0 // indirect
 	golang.org/x/tools v0.45.0 // indirect

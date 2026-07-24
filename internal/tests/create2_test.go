@@ -1,6 +1,7 @@
 package tests
 
 import (
+	"io"
 	"crypto/ecdh"
 	"crypto/rand"
 	"net"
@@ -25,7 +26,7 @@ func TestCreate2Circuit(t *testing.T) {
 	}
 	defer c.Close()
 
-	conn, err := gonion.NewConn(c)
+	conn, err := gonion.NewConn(c, io.Discard, true)
 	if err != nil {
 		t.Fatal(err)
 	}

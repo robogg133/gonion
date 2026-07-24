@@ -5,7 +5,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/binary"
-	"fmt"
 	"io"
 	"net"
 	"net/netip"
@@ -43,8 +42,20 @@ type Conn struct {
 	cellBodyLen int
 }
 
-func NewConn(c net.Conn) (*Conn, error) {
-	ctx, cancel := context.WithCancelCause(context.Background())
+// NewConn performs the Tor link handshake on c.
+// logOut receives structured logs when debug is false; when debug is true, logs go to stderr in console form.
+func NewConn(c net.Conn, logOut io.Writer, debug bool) (*Conn, error) {
+	base := newLogger(logOut, debug)
+	remote := ""
+	if ra := c.RemoteAddr(); ra != nil {
+		remote = ra.String()
+	}
+	base = base.With().
+		Str("component", "conn").
+		Str("remote", remote).
+		Logger()
+
+	ctx, cancel := context.WithCancelCause(withLogger(context.Background(), base))
 	conn := &Conn{
 		writeCall: make(chan []byte, 4096),
 		ctx:       ctx,
@@ -55,63 +66,88 @@ func NewConn(c net.Conn) (*Conn, error) {
 		cellBodyLen: cells.CELL_BODY_LEN,
 	}
 
+	log := logger(ctx)
+	log.Info().Msg("link handshake starting")
+
 	var err error
-	conn.socket, conn.Cert, err = setupTls(c)
+	conn.socket, conn.Cert, err = setupTls(ctx, c)
 	if err != nil {
+		cancel(err)
+		return nil, fail(ctx, ErrTLS, "tls handshake failed", err)
+	}
+	log.Debug().Msg("tls established")
+
+	if err := conn.socket.SetDeadline(time.Now().Add(CONNECTION_TIMEOUT)); err != nil {
+		cancel(err)
+		return nil, fail(ctx, ErrIO, "set handshake deadline failed", err)
+	}
+
+	conn.ProtcolVersion, err = negotiateVersion(ctx, conn.socket, conn.socket)
+	if err != nil {
+		cancel(err)
 		return nil, err
 	}
 
-	conn.socket.SetDeadline(time.Now().Add(60 * time.Second))
-
-	conn.ProtcolVersion, err = negotiateVersion(conn.socket, conn.socket)
-	if err != nil {
-		return nil, err
-	}
+	// Enrich context logger with negotiated version for all subsequent work on this conn.
+	conn.ctx = base.With().Uint16("link_version", conn.ProtcolVersion).Logger().WithContext(conn.ctx)
+	ctx = conn.ctx
+	log = logger(ctx)
+	log.Info().Uint16("link_version", conn.ProtcolVersion).Msg("version negotiated")
 
 	coder := cells.NewCellCoder(cells.AllKnownCells)
 
 	pkg, err := coder.ReadCell(conn.socket)
 	if err != nil {
-		return nil, err
+		cancel(err)
+		return nil, fail(ctx, ErrIO, "read CERTS cell failed", err)
 	}
 	if pkg.ID() != cells.COMMAND_CERTS {
-		return nil, fmt.Errorf("protocol violation: incorrect package order")
+		pub := Publicf(ErrProtocolViolation, "expected CERTS, got command %d", pkg.ID())
+		log.Error().Uint8("cmd", pkg.ID()).Msg("unexpected cell during handshake")
+		cancel(pub)
+		return nil, pub
 	}
 
 	certs := pkg.(*cells.CertsCell)
-
 	var cert4 *crypto.TorCert
 	var cert5 *crypto.TorCert
 	for _, v := range certs.Certificates {
 		switch v.Type {
-
 		case 4:
 			cert4, err = crypto.ParseIdentityVSigningCert(v.Cert)
 			if err != nil {
-				return nil, err
+				cancel(err)
+				return nil, fail(ctx, ErrHandshake, "parse identity cert failed", err)
 			}
 		case 5:
 			cert5, err = crypto.ParseIdentityVSigningCert(v.Cert)
 			if err != nil {
-				return nil, err
+				cancel(err)
+				return nil, fail(ctx, ErrHandshake, "parse signing cert failed", err)
 			}
-
 		}
 	}
 	if err := crypto.VerifyConnection(cert4, cert5, conn.Cert.Raw); err != nil {
-		return nil, err
+		cancel(err)
+		return nil, fail(ctx, ErrHandshake, "certificate verification failed", err)
 	}
+	log.Debug().Msg("certs verified")
 
-	if err := discardAuthChallange(conn.socket); err != nil {
+	if err := discardAuthChallenge(ctx, conn.socket); err != nil {
+		cancel(err)
 		return nil, err
 	}
 
 	pkg, err = coder.ReadCell(conn.socket)
 	if err != nil {
-		return nil, err
+		cancel(err)
+		return nil, fail(ctx, ErrIO, "read NETINFO cell failed", err)
 	}
 	if pkg.ID() != cells.COMMAND_NETINFO {
-		return nil, fmt.Errorf("protocol violation: incorrect package order")
+		pub := Publicf(ErrProtocolViolation, "expected NETINFO, got command %d", pkg.ID())
+		log.Error().Uint8("cmd", pkg.ID()).Msg("unexpected cell during handshake")
+		cancel(pub)
+		return nil, pub
 	}
 
 	netinfo := pkg.(*cells.NetInfoCell)
@@ -124,11 +160,16 @@ func NewConn(c net.Conn) (*Conn, error) {
 		MyAdress:  nil,
 	}
 	if err := coder.WriteCell(&info, conn.socket); err != nil {
-		return nil, err
+		cancel(err)
+		return nil, fail(ctx, ErrIO, "write NETINFO cell failed", err)
 	}
 
-	conn.socket.SetDeadline(time.Time{})
+	if err := conn.socket.SetDeadline(time.Time{}); err != nil {
+		cancel(err)
+		return nil, fail(ctx, ErrIO, "clear deadline failed", err)
+	}
 
+	log.Info().Msg("link ready")
 	go conn.readLoop()
 	go conn.writeLoop()
 
@@ -136,93 +177,108 @@ func NewConn(c net.Conn) (*Conn, error) {
 }
 
 func (conn *Conn) Close() error {
+	logger(conn.ctx).Info().Msg("closing connection")
+	conn.ctxCancel(ErrClosed)
 	return conn.socket.Close()
 }
 
-func setupTls(c net.Conn) (net.Conn, *x509.Certificate, error) {
+func (conn *Conn) Context() context.Context {
+	return conn.ctx
+}
 
-	ctx, cancel := context.WithTimeout(context.Background(), CONNECTION_TIMEOUT)
+func setupTls(ctx context.Context, c net.Conn) (net.Conn, *x509.Certificate, error) {
+	tctx, cancel := context.WithTimeout(ctx, CONNECTION_TIMEOUT)
 	defer cancel()
 
 	tlsConn := tls.Client(c, &tls.Config{
 		InsecureSkipVerify: true,
-
-		// Adding tor cipher suites
 		CipherSuites: []uint16{
 			tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
 			tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,
 		},
-		// Disabling session resumption
 		SessionTicketsDisabled: true,
 		ClientSessionCache:     nil,
 	})
 
-	if err := tlsConn.HandshakeContext(ctx); err != nil {
+	if err := tlsConn.HandshakeContext(tctx); err != nil {
 		return nil, nil, err
 	}
 
 	state := tlsConn.ConnectionState()
-
-	certificate := state.PeerCertificates[0]
-
-	return tlsConn, certificate, nil
+	if len(state.PeerCertificates) == 0 {
+		return nil, nil, Public(ErrTLS, "no peer certificate")
+	}
+	return tlsConn, state.PeerCertificates[0], nil
 }
 
-func discardAuthChallange(conn net.Conn) error {
-
+func discardAuthChallenge(ctx context.Context, conn net.Conn) error {
 	header := make([]byte, 7)
-	io.ReadFull(conn, header)
-
-	if uint8(header[4]) != cells.COMMAND_AUTH_CHALLANGE {
-		return fmt.Errorf("invalid auth_challange (%d) cell: invalid command: %d", cells.COMMAND_AUTH_CHALLANGE, uint8(header[4]))
+	if _, err := io.ReadFull(conn, header); err != nil {
+		return fail(ctx, ErrIO, "read AUTH_CHALLENGE header failed", err)
 	}
 
-	totalLenght := binary.BigEndian.Uint16(header[5:])
-	_, err := io.CopyN(io.Discard, conn, int64(totalLenght))
+	if uint8(header[4]) != cells.COMMAND_AUTH_CHALLANGE {
+		logger(ctx).Error().
+			Uint8("expected", cells.COMMAND_AUTH_CHALLANGE).
+			Uint8("got", header[4]).
+			Msg("invalid AUTH_CHALLENGE command")
+		return Publicf(ErrProtocolViolation, "expected AUTH_CHALLENGE, got command %d", header[4])
+	}
 
-	return err
+	totalLength := binary.BigEndian.Uint16(header[5:])
+	if _, err := io.CopyN(io.Discard, conn, int64(totalLength)); err != nil {
+		return fail(ctx, ErrIO, "discard AUTH_CHALLENGE body failed", err)
+	}
+	logger(ctx).Debug().Uint16("len", totalLength).Msg("AUTH_CHALLENGE discarded")
+	return nil
 }
 
-func negotiateVersion(r io.Reader, w io.Writer) (uint16, error) {
+func negotiateVersion(ctx context.Context, r io.Reader, w io.Writer) (uint16, error) {
 	versionsCell := &cells.VersionCell{
 		CircuitID: 0,
 		Versions:  []uint16{4, 5},
 	}
 
-	w.Write(versionsCell.Serialize())
+	if _, err := w.Write(versionsCell.Serialize()); err != nil {
+		return 0, fail(ctx, ErrIO, "write VERSIONS failed", err)
+	}
 
 	initialBuffer := make([]byte, 5)
 	n, err := r.Read(initialBuffer)
 	if err != nil {
-		return 0, err
+		return 0, fail(ctx, ErrIO, "read VERSIONS header failed", err)
 	}
 	if n != 5 {
-		return 0, fmt.Errorf("did not read 5 bytes from connection")
+		return 0, fail(ctx, ErrProtocolViolation, "short VERSIONS header", nil)
 	}
 
 	if uint8(initialBuffer[2]) != cells.COMMAND_VERSIONS {
-		return 0, fmt.Errorf("invalid version (%d) cell: invalid command: %d", cells.COMMAND_VERSIONS, uint8(initialBuffer[3]))
+		logger(ctx).Error().
+			Uint8("expected", cells.COMMAND_VERSIONS).
+			Uint8("got", initialBuffer[2]).
+			Msg("invalid VERSIONS command")
+		return 0, Publicf(ErrVersion, "expected VERSIONS, got command %d", initialBuffer[2])
 	}
 
 	length := binary.BigEndian.Uint16(initialBuffer[3:5])
-
 	versions := make([]byte, 5+length)
-	if _, err := r.Read(versions[5:]); err != nil {
-		return 0, err
+	if _, err := io.ReadFull(r, versions[5:]); err != nil {
+		return 0, fail(ctx, ErrIO, "read VERSIONS body failed", err)
 	}
-
 	copy(versions, initialBuffer)
 
 	serverVersions, err := cells.UnserializeVersionCell(versions)
 	if err != nil {
-		return 0, err
+		return 0, fail(ctx, ErrVersion, "parse VERSIONS failed", err)
 	}
 
 	if slices.Contains(serverVersions.Versions, 5) {
 		return 5, nil
-	} else if slices.Contains(serverVersions.Versions, 4) {
+	}
+	if slices.Contains(serverVersions.Versions, 4) {
 		return 4, nil
 	}
 
-	return 0, fmt.Errorf("no version match with server")
+	logger(ctx).Error().Uints16("server_versions", serverVersions.Versions).Msg("no common link version")
+	return 0, Public(ErrVersion, "no common link version")
 }

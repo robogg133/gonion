@@ -22,7 +22,7 @@ func TestConsensus(t *testing.T) {
 	}
 	t.Log("selected address from fallback", c.RemoteAddr().String())
 
-	conn, err := gonion2.NewConn(c)
+	conn, err := gonion2.NewConn(c, io.Discard, true)
 	if err != nil {
 		t.Fatal(err)
 	}

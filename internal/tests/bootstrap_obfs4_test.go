@@ -1,6 +1,7 @@
 package tests
 
 import (
+	"io"
 	"fmt"
 	"testing"
 
@@ -16,7 +17,7 @@ func TestMicrodescObfs4(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	conn, err := gonion2.NewConn(c)
+	conn, err := gonion2.NewConn(c, io.Discard, true)
 	if err != nil {
 		t.Fatal(err)
 	}
