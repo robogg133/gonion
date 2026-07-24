@@ -1,21 +1,16 @@
 package cells
 
 import (
-	"fmt"
 	"io"
-
-	"github.com/robogg133/gonion/pkg/cells/relay"
 )
 
 const COMMAND_RELAY uint8 = 3
 
+// RelayCell carries an opaque 509-byte relay body.
+// Onion encrypt/decrypt is owned by internal/hops.Chain, not this type.
 type RelayCell struct {
 	CircuitID uint32
-
-	Hops []*relay.RelayCellCoder
-
-	Cell relay.Cell
-	hopN uint8
+	Body      []byte
 }
 
 func (*RelayCell) ID() uint8               { return COMMAND_RELAY }
@@ -23,36 +18,20 @@ func (c *RelayCell) GetCircuitID() uint32  { return c.CircuitID }
 func (c *RelayCell) SetCircuitID(n uint32) { c.CircuitID = n }
 
 func (c *RelayCell) Encode(w io.Writer) error {
-	payload, err := c.Hops[len(c.Hops)-1].Marshal(c.Cell)
-	if err != nil {
-		return err
+	if len(c.Body) == 0 {
+		c.Body = make([]byte, CELL_BODY_LEN)
 	}
-	for i := len(c.Hops) - 2; i >= 0; i-- {
-		c.Hops[i].Forwards.XORKeyStream(payload[:], payload)
+	if len(c.Body) < CELL_BODY_LEN {
+		padded := make([]byte, CELL_BODY_LEN)
+		copy(padded, c.Body)
+		c.Body = padded
 	}
-	_, err = w.Write(payload)
+	_, err := w.Write(c.Body[:CELL_BODY_LEN])
 	return err
-
 }
+
 func (c *RelayCell) Decode(r io.Reader) error {
-
-	body := make([]byte, CELL_BODY_LEN)
-	_, err := io.ReadFull(r, body)
-	if err != nil {
-		return err
-	}
-	for i, hop := range c.Hops {
-		hop.Backwards.XORKeyStream(body[0:], body)
-		if relay.IsDecrypted(body) {
-			c.hopN = uint8(i)
-			c.Cell, err = hop.UnmarshalPlain(body)
-			return err
-		}
-	}
-
-	return fmt.Errorf("Can't decrypt payload")
-}
-
-func (c *RelayCell) HopDestination() uint8 {
-	return c.hopN
+	c.Body = make([]byte, CELL_BODY_LEN)
+	_, err := io.ReadFull(r, c.Body)
+	return err
 }

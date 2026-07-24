@@ -8,12 +8,8 @@ import (
 )
 
 func (s *Stream) beginDir() error {
-
 	select {
-	case s.circuit.WriteRelayCell <- struct {
-		relay.Cell
-		uint8
-	}{Cell: &relay.BeginDirCell{StreamID: s.ID}, uint8: s.myHopDestination}:
+	case s.circuit.WriteRelayCell <- RelayOut{Cell: &relay.BeginDirCell{StreamID: s.ID}, Dst: s.myHopDestination}:
 	case <-s.Ctx.Done():
 		return context.Cause(s.Ctx)
 	}
@@ -31,12 +27,9 @@ func (s *Stream) beginDir() error {
 
 func (s *Stream) begin(addrport string) error {
 	select {
-	case s.circuit.WriteRelayCell <- struct {
-		relay.Cell
-		uint8
-	}{
-		Cell:  &relay.BeginCell{Addrport: addrport, StreamID: s.ID},
-		uint8: s.myHopDestination,
+	case s.circuit.WriteRelayCell <- RelayOut{
+		Cell: &relay.BeginCell{Addrport: addrport, StreamID: s.ID},
+		Dst:  s.myHopDestination,
 	}:
 	case <-s.Ctx.Done():
 		return context.Cause(s.Ctx)
@@ -45,7 +38,7 @@ func (s *Stream) begin(addrport string) error {
 	select {
 	case relayCell := <-s.InboundControl:
 		if relayCell.ID() != relay.COMMAND_CONNECTED {
-			return errors.New("the relay didn't responded the BEGIN_DIR cell with a CONNECTED")
+			return errors.New("the relay didn't responded the BEGIN cell with a CONNECTED")
 		}
 	case <-s.Ctx.Done():
 		return context.Cause(s.Ctx)

@@ -2,16 +2,13 @@ package gonion
 
 import (
 	"bytes"
+	"fmt"
 
 	cells "github.com/robogg133/gonion/pkg/cells/base"
 	"github.com/robogg133/gonion/pkg/cells/relay"
 )
 
 func (c *Circuit) readloop() {
-	for i, win := range c.hopsWindows {
-		go c.sendmeManage(i, win.receive, c.hopsCtx[i].Context)
-	}
-
 	for {
 		select {
 		case rawCell := <-c.Inbound:
@@ -21,13 +18,24 @@ func (c *Circuit) readloop() {
 				return
 			}
 
-			// Check if is relay cell
-			if cell.ID() == cells.COMMAND_RELAY {
-				relaycell := cell.(*cells.RelayCell)
-				rcCell := relaycell.Cell
+			switch cell.ID() {
+			case cells.COMMAND_RELAY, cells.COMMAND_RELAY_EARLY:
+				var body []byte
+				switch rc := cell.(type) {
+				case *cells.RelayCell:
+					body = rc.Body
+				case *cells.RelayEarlyCell:
+					body = rc.C.Body
+				}
+
+				hopN, rcCell, err := c.hops.UnmarshalMessage(body)
+				if err != nil {
+					c.ctxCancel(err)
+					return
+				}
 
 				if rcCell.GetStreamID() == 0 {
-					c.relayControlFunc(rcCell, relaycell.HopDestination())
+					c.relayControlFunc(rcCell, hopN)
 					continue
 				}
 
@@ -38,9 +46,11 @@ func (c *Circuit) readloop() {
 
 				if rcCell.ID() == relay.COMMAND_DATA {
 					dataCell := rcCell.(*relay.DataCell)
-					c.hopsWindows[relaycell.HopDestination()].receive.SetDigest(dataCell.Digest())
-					c.hopsWindows[relaycell.HopDestination()].receive.Subtract(1) // Subtract from receive window
-
+					hop := c.hops.At(hopN)
+					if hop != nil {
+						hop.Recv().SetDigest(dataCell.Digest())
+						hop.Recv().Subtract(1)
+					}
 					if err := stream.writeDataCell(dataCell); err != nil {
 						stream.Close()
 					}
@@ -52,10 +62,10 @@ func (c *Circuit) readloop() {
 				case <-stream.Ctx.Done():
 				}
 				continue
-			}
 
-			// Non-relay cells (DESTROY, etc.)
-			go c.handleCell(cell)
+			default:
+				go c.handleCell(cell)
+			}
 		case <-c.Ctx.Done():
 			return
 		}
@@ -65,25 +75,37 @@ func (c *Circuit) readloop() {
 func (c *Circuit) writeLoop() {
 	for {
 		select {
-		case cll := <-c.WriteRelayCell:
-			if cll.Cell.ID() == relay.COMMAND_DATA {
-				sendWindow := c.hopsWindows[cll.uint8].send
-				sendWindow.SetDigest(cll.Cell.(*relay.DataCell).Digest())
+		case out := <-c.WriteRelayCell:
+			body, err := c.hops.MarshalMessage(out.Cell, out.Dst)
+			if err != nil {
+				c.ctxCancel(err)
+				return
+			}
+
+			if out.Cell.ID() == relay.COMMAND_DATA {
+				hop := c.hops.At(out.Dst)
+				if hop == nil {
+					c.ctxCancel(errInvalidHop(out.Dst))
+					return
+				}
+				sendWindow := hop.Send()
+				sendWindow.SetDigest(out.Cell.(*relay.DataCell).Digest())
 				sendWindow.Subtract(1)
 				if sendWindow.IsZero() {
 					select {
-					case <-c.sendMeReceived:
+					case <-hop.SendMe():
 						sendWindow.Increase()
 					case <-c.Ctx.Done():
+						return
+					case <-hop.Ctx().Done():
 						return
 					}
 				}
 			}
-			cell := &cells.RelayCell{
-				Hops: c.hops[0 : cll.uint8+1],
-				Cell: cll.Cell,
+
+			if err := c.SendCell(&cells.RelayCell{Body: body}); err != nil {
+				return
 			}
-			c.SendCell(cell)
 
 		case <-c.Ctx.Done():
 			return
@@ -91,18 +113,19 @@ func (c *Circuit) writeLoop() {
 	}
 }
 
-func (c *Circuit) relayControlFunc(rc relay.Cell, dst uint8) {
+func (c *Circuit) relayControlFunc(rc relay.Cell, dst int) {
 	switch rc.ID() {
 	case relay.COMMAND_SENDME:
-		if err := verifySendMe(rc.(*relay.SendMeCell), c.SendMeVersion, c.hopsWindows[dst].send); err != nil {
+		hop := c.hops.At(dst)
+		if hop == nil {
+			c.ctxCancel(errInvalidHop(dst))
+			return
+		}
+		if err := verifySendMe(rc.(*relay.SendMeCell), c.SendMeVersion, hop.Send()); err != nil {
 			c.ctxCancel(err)
 			return
 		}
-		select {
-		case <-c.Ctx.Done():
-		case c.sendMeReceived <- struct{}{}:
-		default:
-		}
+		hop.NotifySendMe()
 	case relay.COMMAND_EXTENDED2:
 		select {
 		case c.extended2Received <- rc.(*relay.Extended2Cell):
@@ -110,5 +133,8 @@ func (c *Circuit) relayControlFunc(rc relay.Cell, dst uint8) {
 		default:
 		}
 	}
+}
 
+func errInvalidHop(dst int) error {
+	return fmt.Errorf("invalid hop destination: %d", dst)
 }

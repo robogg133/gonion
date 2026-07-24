@@ -9,6 +9,7 @@ import (
 	"io"
 	"sync"
 
+	"github.com/robogg133/gonion/internal/hops"
 	"github.com/robogg133/gonion/internal/shared"
 	"github.com/robogg133/gonion/internal/window"
 	cells "github.com/robogg133/gonion/pkg/cells/base"
@@ -20,61 +21,47 @@ import (
 )
 
 type Circuit struct {
-	// Info
 	conn *Conn
 
 	ID uint32
 
 	isUp bool
 
-	Coder *cells.CellCoder
+	hops hops.Chain
 
 	SendMeVersion uint8
 
 	streams      *streams
 	nextStreamID uint16
 
-	// Crypto
-	hops        []*relay.RelayCellCoder
-	hopsWindows []struct {
-		receive *window.Window
-		send    *window.Window
-	}
-	hopsCtx []struct {
-		context.Context
-		context.CancelCauseFunc
-	}
+	Coder *cells.CellCoder
 
-	// Channels
-	WriteRelayCell chan struct {
-		relay.Cell
-		uint8
-	}
-	Inbound   chan []byte
-	Ctx       context.Context
-	ctxCancel context.CancelCauseFunc
-	closeOnce sync.Once
+	WriteRelayCell chan RelayOut
+	Inbound        chan []byte
+	Ctx            context.Context
+	ctxCancel      context.CancelCauseFunc
+	closeOnce      sync.Once
 
 	extended2Received chan *relay.Extended2Cell
-	sendMeReceived    chan struct{}
+}
+
+type RelayOut struct {
+	Cell relay.Cell
+	Dst  int
 }
 
 func (c *Conn) NewCircuit(id uint32, htype uint16, hs handshakes.Handshake) (*Circuit, error) {
 	suc := false
 	ctx, cancel := context.WithCancelCause(c.ctx)
 	circuit := &Circuit{
-		conn:    c,
-		ID:      shared.MSB(id),
-		Inbound: make(chan []byte, 2048),
-		WriteRelayCell: make(chan struct {
-			relay.Cell
-			uint8
-		}, 512),
+		conn:           c,
+		ID:             shared.MSB(id),
+		Inbound:        make(chan []byte, 2048),
+		WriteRelayCell: make(chan RelayOut, 512),
 
 		Ctx:               ctx,
 		ctxCancel:         cancel,
 		extended2Received: make(chan *relay.Extended2Cell, 1),
-		sendMeReceived:    make(chan struct{}, 1),
 
 		streams: &streams{
 			streams: make(map[uint16]*Stream),
@@ -84,7 +71,7 @@ func (c *Conn) NewCircuit(id uint32, htype uint16, hs handshakes.Handshake) (*Ci
 		nextStreamID:  1,
 		isUp:          true,
 
-		Coder: cells.NewCellCoder(cells.AllKnownCells, &relay.RelayCellCoder{}), // Starting empty relay cell coder
+		Coder: cells.NewCellCoder(cells.AllKnownCells),
 	}
 	c.circuits.Set(circuit.ID, circuit)
 	defer func() {
@@ -95,8 +82,7 @@ func (c *Conn) NewCircuit(id uint32, htype uint16, hs handshakes.Handshake) (*Ci
 	}()
 
 	create2 := cells.Create2Cell{
-		CircuitID: circuit.ID,
-
+		CircuitID:     circuit.ID,
 		HandshakeType: htype,
 		Handshake:     hs,
 	}
@@ -116,7 +102,7 @@ func (c *Conn) NewCircuit(id uint32, htype uint16, hs handshakes.Handshake) (*Ci
 		return circuit, err
 	}
 	if cell.ID() != cells.COMMAND_CREATED2 {
-		return circuit, fmt.Errorf("NewCircuit: Protocol violation expecting CREATED2(%d) got %d ", cells.COMMAND_CREATE2, cell.ID())
+		return circuit, fmt.Errorf("NewCircuit: Protocol violation expecting CREATED2(%d) got %d ", cells.COMMAND_CREATED2, cell.ID())
 	}
 
 	created2 := cell.(*cells.Created2Cell)
@@ -145,28 +131,9 @@ func (c *Conn) NewCircuit(id uint32, htype uint16, hs handshakes.Handshake) (*Ci
 		return circuit, err
 	}
 
-	circuit.hops = []*relay.RelayCellCoder{relay.NewDataCellCoder(back, forwards)}
-	circuit.hopsWindows = []struct {
-		receive *window.Window
-		send    *window.Window
-	}{
-		{
-			receive: rcvWindow,
-			send:    sndWindow,
-		},
-	}
-	hopCtx, hopCancelFn := context.WithCancelCause(ctx)
-	circuit.hopsCtx = []struct {
-		context.Context
-		context.CancelCauseFunc
-	}{
-		{
-			Context:         hopCtx,
-			CancelCauseFunc: hopCancelFn,
-		},
-	}
-
-	circuit.Coder.Hops = circuit.hops
+	hop := hops.NewHop(circuit.Ctx, relay.NewDataCellCoder(back, forwards), rcvWindow, sndWindow)
+	circuit.hops.Append(hop)
+	go circuit.sendmeManage(0, hop)
 
 	go circuit.writeLoop()
 	go circuit.readloop()
@@ -180,30 +147,24 @@ func (c *Conn) NewFastCircuit(id uint32) (*Circuit, error) {
 	ctx, cancel := context.WithCancelCause(c.ctx)
 
 	circuit := &Circuit{
-		conn:    c,
-		ID:      circID,
-		Inbound: make(chan []byte, 512),
-		WriteRelayCell: make(chan struct {
-			relay.Cell
-			uint8
-		}, 128),
-		sendMeReceived: make(chan struct{}, 1),
-		Ctx:            ctx,
-		ctxCancel:      cancel,
+		conn:              c,
+		ID:                circID,
+		Inbound:           make(chan []byte, 512),
+		WriteRelayCell:    make(chan RelayOut, 128),
+		Ctx:               ctx,
+		ctxCancel:         cancel,
+		extended2Received: make(chan *relay.Extended2Cell, 1),
 
 		streams: &streams{
 			streams: make(map[uint16]*Stream),
 		},
-		hops: make([]*relay.RelayCellCoder, 0),
-		hopsWindows: make([]struct {
-			receive *window.Window
-			send    *window.Window
-		}, 0),
 
 		SendMeVersion: 0,
 
 		nextStreamID: 1,
 		isUp:         true,
+
+		Coder: cells.NewCellCoder(cells.AllKnownCells),
 	}
 
 	xMaterial := make([]byte, 20)
@@ -224,8 +185,6 @@ func (c *Conn) NewFastCircuit(id uint32) (*Circuit, error) {
 			circuit.ctxCancel(fmt.Errorf("error starting circuit"))
 		}
 	}()
-
-	circuit.Coder = cells.NewCellCoder(cells.AllKnownCells, &relay.RelayCellCoder{})
 
 	if err := circuit.SendCell(&createFast); err != nil {
 		return nil, err
@@ -269,29 +228,10 @@ func (c *Conn) NewFastCircuit(id uint32) (*Circuit, error) {
 		return nil, err
 	}
 
-	circuit.hops = []*relay.RelayCellCoder{relay.NewDataCellCoder(back, forwards)}
-	circuit.hopsWindows = []struct {
-		receive *window.Window
-		send    *window.Window
-	}{
-		{
-			receive: rcvWindow,
-			send:    sndWindow,
-		},
-	}
+	hop := hops.NewHop(circuit.Ctx, relay.NewDataCellCoder(back, forwards), rcvWindow, sndWindow)
+	circuit.hops.Append(hop)
+	go circuit.sendmeManage(0, hop)
 
-	circuit.Coder.Hops = circuit.hops
-
-	hopCtx, hopCancelFn := context.WithCancelCause(ctx)
-	circuit.hopsCtx = []struct {
-		context.Context
-		context.CancelCauseFunc
-	}{
-		{
-			Context:         hopCtx,
-			CancelCauseFunc: hopCancelFn,
-		},
-	}
 	suc = true
 	go circuit.readloop()
 	go circuit.writeLoop()
@@ -299,20 +239,24 @@ func (c *Conn) NewFastCircuit(id uint32) (*Circuit, error) {
 }
 
 func (c *Circuit) Extend(lspec []lspec.Lspec, htype uint16, handshake handshakes.Handshake) error {
+	if c.hops.Len() == 0 {
+		return errors.New("cannot extend empty circuit")
+	}
 
 	extend2 := &relay.Extend2Cell{
-		StreamID: 0,
-
+		StreamID:  0,
 		Lspecs:    lspec,
 		HType:     htype,
 		Handshake: handshake,
 	}
 
+	dst := c.hops.Len() - 1
+	body, err := c.hops.MarshalMessage(extend2, dst)
+	if err != nil {
+		return err
+	}
 	if err := c.SendCell(&cells.RelayEarlyCell{
-		C: &cells.RelayCell{
-			Hops: c.hops,
-			Cell: extend2,
-		},
+		C: &cells.RelayCell{Body: body},
 	}); err != nil {
 		return err
 	}
@@ -328,7 +272,6 @@ func (c *Circuit) Extend(lspec []lspec.Lspec, htype uint16, handshake handshakes
 	}
 
 	keys := &crypto.CircuitKeys{}
-	var err error
 	switch htype {
 	case handshakes.HTYPE_NTOR:
 		nths := handshake.(*handshakes.Client_NTorHandshake)
@@ -350,26 +293,14 @@ func (c *Circuit) Extend(lspec []lspec.Lspec, htype uint16, handshake handshakes
 		return err
 	}
 
-	c.hops = append(c.hops, relay.NewDataCellCoder(backwards, forwards))
-	c.hopsWindows = append(c.hopsWindows, struct {
-		receive *window.Window
-		send    *window.Window
-	}{
-		receive: rcvWindow,
-		send:    sndWindow,
-	})
-
-	hopCtx, hopCancelFn := context.WithCancelCause(c.Ctx)
-	c.hopsCtx = append(c.hopsCtx, struct {
-		context.Context
-		context.CancelCauseFunc
-	}{
-		Context:         hopCtx,
-		CancelCauseFunc: hopCancelFn,
-	})
-	go c.sendmeManage(len(c.hops)-1, rcvWindow, hopCtx)
-	c.Coder.Hops = c.hops
+	hop := hops.NewHop(c.Ctx, relay.NewDataCellCoder(backwards, forwards), rcvWindow, sndWindow)
+	c.hops.Append(hop)
+	go c.sendmeManage(c.hops.Len()-1, hop)
 	return nil
+}
+
+func (c *Circuit) HopCount() int {
+	return c.hops.Len()
 }
 
 func (c *Circuit) Close() error {
@@ -380,9 +311,7 @@ func (c *Circuit) Close() error {
 func (c *Circuit) handleCell(cell cells.Cell) {
 	switch cell.ID() {
 	case cells.COMMAND_DESTROY:
-		// #debug
 		c.ctxCancel(fmt.Errorf("received circuit destroy: reason=%d (%s)", cell.(*cells.DestroyCell).Reason, common.DestroyGetReasonS(cell.(*cells.DestroyCell).Reason)))
-		// #debug
 		return
 	}
 }

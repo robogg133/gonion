@@ -1,14 +1,14 @@
 package gonion
 
 import (
-	"context"
 	"fmt"
 
+	"github.com/robogg133/gonion/internal/hops"
 	"github.com/robogg133/gonion/internal/window"
 	"github.com/robogg133/gonion/pkg/cells/relay"
 )
 
-func verifySendMe(sendme *relay.SendMeCell, sendmeVersion uint8, window *window.Window) error {
+func verifySendMe(sendme *relay.SendMeCell, sendmeVersion uint8, win *window.Window) error {
 	if sendmeVersion == 0 {
 		return nil
 	}
@@ -17,9 +17,9 @@ func verifySendMe(sendme *relay.SendMeCell, sendmeVersion uint8, window *window.
 	}
 
 	select {
-	case digest := <-window.Get():
+	case digest := <-win.Get():
 		if digest != sendme.Sha1ForLastCell {
-			return fmt.Errorf("protcol violation mismatched SEND_ME digest: %x %x", sendme.Sha1ForLastCell[:], digest[:])
+			return fmt.Errorf("protocol violation mismatched SEND_ME digest: %x %x", sendme.Sha1ForLastCell[:], digest[:])
 		}
 	default:
 		return fmt.Errorf("protocol violation: unexpected SEND_ME")
@@ -27,39 +27,29 @@ func verifySendMe(sendme *relay.SendMeCell, sendmeVersion uint8, window *window.
 	return nil
 }
 
-func (c *Circuit) sendmeManage(i int, window *window.Window, ctx context.Context) {
+func (c *Circuit) sendmeManage(i int, hop *hops.Hop) {
+	win := hop.Recv()
+	ctx := hop.Ctx()
 	for {
 		select {
-		case digest := <-window.Get():
+		case digest := <-win.Get():
 			sendMeCell := &relay.SendMeCell{
 				StreamID:        0,
 				Version:         c.SendMeVersion,
 				Sha1ForLastCell: digest,
 			}
 			select {
-			case c.WriteRelayCell <- struct {
-				relay.Cell
-				uint8
-			}{Cell: sendMeCell, uint8: uint8(i)}:
-				window.Increase()
+			case c.WriteRelayCell <- RelayOut{Cell: sendMeCell, Dst: i}:
+				win.Increase()
 			case <-ctx.Done():
+				return
+			case <-c.Ctx.Done():
 				return
 			}
 		case <-ctx.Done():
 			return
+		case <-c.Ctx.Done():
+			return
 		}
 	}
-}
-
-func (c *Circuit) deleteHop(i int) {
-	c.hops = remove(c.hops, i)
-	c.hopsWindows = remove(c.hopsWindows, i)
-	c.hopsCtx = remove(c.hopsCtx, i)
-}
-
-func remove[T any](s []T, i int) []T {
-	if i < 0 || i >= len(s) {
-		return s
-	}
-	return append(s[:i], s[i+1:]...)
 }

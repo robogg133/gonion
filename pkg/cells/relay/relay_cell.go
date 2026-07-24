@@ -14,6 +14,7 @@ import (
 const RELAY_BODY_LEN = 498
 
 var AllKnownRellayCells = map[uint8]func() Cell{
+	COMMAND_BEGIN:     func() Cell { return &BeginCell{} },
 	COMMAND_DATA:      func() Cell { return &DataCell{} },
 	COMMAND_CONNECTED: func() Cell { return &ConnectedCell{} },
 	COMMAND_EXTEND2:   func() Cell { return &Extend2Cell{} },
@@ -144,7 +145,11 @@ func (d *RelayCellCoder) UnmarshalPlain(plain []byte) (Cell, error) {
 		return nil, fmt.Errorf("recognized is not 0")
 	}
 
-	c := AllKnownRellayCells[plain[0]]()
+	factory, ok := AllKnownRellayCells[plain[0]]
+	if !ok {
+		return nil, fmt.Errorf("unknown relay command: %d", plain[0])
+	}
+	c := factory()
 
 	// StreamID [3:5]
 	c.SetStreamID(binary.BigEndian.Uint16(plain[3:5]))

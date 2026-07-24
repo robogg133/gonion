@@ -40,7 +40,10 @@ func (w *Window) Add(n int32) {
 func (w *Window) Subtract(n int32) {
 	value := atomic.AddInt32(&w.v, -n)
 	if value%w.addValue == 0 {
-		digest := w.digest.Load().([20]byte)
+		var digest [20]byte
+		if v := w.digest.Load(); v != nil {
+			digest = v.([20]byte)
+		}
 		select {
 		case w.Trigged <- digest:
 		default:
@@ -61,5 +64,8 @@ func (w *Window) SetDigest(digest [20]byte) {
 }
 
 func (w *Window) GetDigest() [20]byte {
-	return w.digest.Load().([20]byte)
+	if v := w.digest.Load(); v != nil {
+		return v.([20]byte)
+	}
+	return [20]byte{}
 }

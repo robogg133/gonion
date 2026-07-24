@@ -29,7 +29,7 @@ const (
 type Stream struct {
 	ID uint16
 
-	myHopDestination uint8
+	myHopDestination int
 	circuit          *Circuit
 	addr             net.Addr
 
@@ -55,7 +55,7 @@ type Stream struct {
 	receiveSendMe chan struct{}
 }
 
-func (c *Circuit) NewStream(target string, hopDest uint8) (*Stream, error) {
+func (c *Circuit) NewStream(target string, hopDest int) (*Stream, error) {
 	var suc bool
 	freeCtx, freeCtxCancel := context.WithCancelCause(c.Ctx)
 	ctx, ctxCancel := context.WithCancelCause(freeCtx)
@@ -172,10 +172,7 @@ func (s *Stream) sendController() {
 
 			}
 			select {
-			case s.circuit.WriteRelayCell <- struct {
-				relay.Cell
-				uint8
-			}{Cell: cell, uint8: s.myHopDestination}:
+			case s.circuit.WriteRelayCell <- RelayOut{Cell: cell, Dst: s.myHopDestination}:
 			case <-s.Ctx.Done():
 				s.Close()
 				return

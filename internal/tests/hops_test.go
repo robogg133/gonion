@@ -1,10 +1,13 @@
 package tests
 
 import (
-	"crypto/ed25519"
+	"bufio"
+	"crypto/ecdh"
 	"crypto/rand"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
 	"testing"
 
 	"github.com/robogg133/gonion"
@@ -17,7 +20,6 @@ import (
 )
 
 func TestConnect(t *testing.T) {
-	t.Parallel()
 
 	dialer := fallback.New(shared.Fallbacks)
 
@@ -57,15 +59,16 @@ func TestConnect(t *testing.T) {
 	}
 	t.Log("TOR CONNECTION TO GUARD")
 
-	pk, _, err := ed25519.GenerateKey(rand.Reader)
+	sk, err := ecdh.X25519().GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	ntorHS := &handshakes.Client_NTorHandshake{
-		NodeID:    sl.Guard().NodeID,
-		KeyID:     sl.Guard().NTorOnionKey,
-		PublicKey: pk,
+		NodeID:     sl.Guard().NodeID,
+		KeyID:      sl.Guard().NTorOnionKey,
+		PrivateKey: sk,
+		PublicKey:  sk.PublicKey(),
 	}
 
 	circ, err := conn.NewCircuit(1, handshakes.HTYPE_NTOR, ntorHS)
@@ -73,6 +76,13 @@ func TestConnect(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Log("CREATE2 with guardnode")
+	t.Log("Testing connection with guardnode")
+	t.Run("TestGuardNode", func(t *testing.T) {
+		if _, err := circ.GetConsensus(); err != nil {
+			t.Fatal(err)
+		}
+		t.Log("success")
+	})
 	for i, v := range sl.Circuit()[1:] {
 		addr := fmt.Sprintf("%s:%d", v.Ipv4Addr, v.ORPort)
 		t.Logf("loop %d, addr %s", i+2, addr)
@@ -86,15 +96,16 @@ func TestConnect(t *testing.T) {
 		lspecs = append(lspecs, lspec.NewNodeID(v.NodeID))
 		lspecs = append(lspecs, lspec.NewEd25519ID(v.IdEd25519))
 
-		pk, _, err := ed25519.GenerateKey(rand.Reader)
+		sk, err := ecdh.X25519().GenerateKey(rand.Reader)
 		if err != nil {
 			t.Fatal(err)
 		}
 
 		hs := &handshakes.Client_NTorHandshake{
-			NodeID:    v.NodeID,
-			KeyID:     v.NTorOnionKey,
-			PublicKey: pk,
+			NodeID:     v.NodeID,
+			KeyID:      v.NTorOnionKey,
+			PrivateKey: sk,
+			PublicKey:  sk.PublicKey(),
 		}
 
 		t.Log("extending")
@@ -102,5 +113,29 @@ func TestConnect(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Log("extended")
+	}
+
+	stream, err := circ.NewStream("servidordomal.lol:80", circ.HopCount()-1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Free()
+	req, err := http.NewRequest("GET", "/", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := req.Write(stream); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := http.ReadResponse(bufio.NewReader(stream.Reader), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if _, err := io.Copy(t.Output(), resp.Body); err != nil {
+		t.Fatal(err)
 	}
 }

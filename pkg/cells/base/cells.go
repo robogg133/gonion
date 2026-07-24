@@ -4,9 +4,8 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
-
-	"github.com/robogg133/gonion/pkg/cells/relay"
 )
 
 const CELL_BODY_LEN int = 509
@@ -27,11 +26,8 @@ var (
 )
 
 type CellCoder struct {
-	knownCells map[uint8]func() Cell
-
+	knownCells  map[uint8]func() Cell
 	cellBodyLen int
-
-	Hops []*relay.RelayCellCoder
 }
 
 var AllKnownCells = map[uint8]func() Cell{
@@ -41,48 +37,42 @@ var AllKnownCells = map[uint8]func() Cell{
 	COMMAND_CREATED_FAST: func() Cell { return &CreatedFastCell{} },
 	COMMAND_NETINFO:      func() Cell { return &NetInfoCell{} },
 
-	COMMAND_RELAY_EARLY: func() Cell { return &RelayEarlyCell{} },
+	COMMAND_RELAY_EARLY: func() Cell { return &RelayEarlyCell{C: &RelayCell{}} },
 	COMMAND_CREATE2:     func() Cell { return &Create2Cell{} },
 	COMMAND_CREATED2:    func() Cell { return &Created2Cell{} },
 
 	COMMAND_CERTS: func() Cell { return &CertsCell{} },
 }
 
-// NewCellCoder can encode and decode cells
-func NewCellCoder(knwonCells map[uint8]func() Cell, relayCoder *relay.RelayCellCoder) *CellCoder {
+// NewCellCoder can encode and decode link cells.
+func NewCellCoder(knownCells map[uint8]func() Cell) *CellCoder {
 	return &CellCoder{
-		knownCells:  knwonCells,
-		Hops:        []*relay.RelayCellCoder{relayCoder},
+		knownCells:  knownCells,
 		cellBodyLen: CELL_BODY_LEN,
 	}
 }
 
-// ReadCell reads a cell from the reader
+// ReadCell reads a cell from the reader.
+// The first 4 bytes (circuit id) are discarded; callers that need it must parse the header themselves.
 func (r *CellCoder) ReadCell(reader io.Reader) (Cell, error) {
-
 	if _, err := io.CopyN(io.Discard, reader, 4); err != nil {
 		return nil, err
 	}
 
 	cmd := make([]byte, 1)
-
 	if _, err := io.ReadFull(reader, cmd); err != nil {
 		return nil, err
 	}
 
-	cell := r.knownCells[cmd[0]]()
-
-	if rc, ok := cell.(*RelayCell); ok {
-		rc.Hops = r.Hops
+	factory, ok := r.knownCells[cmd[0]]
+	if !ok {
+		return nil, fmt.Errorf("%w: %d", ErrUnknownCommandID, cmd[0])
 	}
-	if rc, ok := cell.(*RelayEarlyCell); ok {
-		rc.C.Hops = r.Hops
-	}
+	cell := factory()
 
 	if err := cell.Decode(reader); err != nil {
 		return nil, err
 	}
-
 	return cell, nil
 }
 
@@ -93,7 +83,6 @@ func (r *CellCoder) MarshalCell(cell Cell) ([]byte, error) {
 }
 
 func (r *CellCoder) WriteCell(cell Cell, writer io.Writer) error {
-
 	circID := make([]byte, 4)
 	binary.BigEndian.PutUint32(circID, cell.GetCircuitID())
 

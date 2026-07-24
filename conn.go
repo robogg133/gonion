@@ -14,7 +14,6 @@ import (
 	"time"
 
 	cells "github.com/robogg133/gonion/pkg/cells/base"
-	"github.com/robogg133/gonion/pkg/cells/relay"
 	"github.com/robogg133/gonion/pkg/crypto"
 )
 
@@ -69,7 +68,7 @@ func NewConn(c net.Conn) (*Conn, error) {
 		return nil, err
 	}
 
-	coder := cells.NewCellCoder(cells.AllKnownCells, &relay.RelayCellCoder{})
+	coder := cells.NewCellCoder(cells.AllKnownCells)
 
 	pkg, err := coder.ReadCell(conn.socket)
 	if err != nil {
