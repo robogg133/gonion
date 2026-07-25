@@ -16,11 +16,9 @@ The goal of this project is to implement the Tor protocol from scratch while kee
 
 Gonion does not try to behave like a traditional Tor wrapper.
 
-Most Tor integrations work by:
+Most Tor integrations work by spawning the Tor daemon, opening a local SOCKS5 proxy, and forwarding all traffic through it.
 
-- spawning the Tor daemon,
-- opening a local SOCKS5 proxy,
-- and forwarding all traffic through it.
+
 
 Gonion takes a completely different approach.
 
