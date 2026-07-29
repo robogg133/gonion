@@ -39,21 +39,28 @@ func TestDataCell_EncodeDecode(t *testing.T) {
 }
 
 func TestBeginCell_EncodeDecode(t *testing.T) {
-	in := &relay.BeginCell{StreamID: 3, Addrport: "example.com:80"}
+	in := &relay.BeginCell{
+		StreamID: 3,
+		Addrport: "example.com:80",
+		Flags:    relay.BEGIN_FLAG_IPV6_OK,
+	}
 	var buf bytes.Buffer
 	if err := in.Encode(&buf); err != nil {
 		t.Fatal(err)
 	}
-	if buf.Bytes()[buf.Len()-1] != 0 {
-		t.Fatal("missing NUL terminator")
+	// addr + NUL + 4 flag bytes
+	if buf.Len() != len("example.com:80")+1+4 {
+		t.Fatalf("len=%d", buf.Len())
 	}
 	out := &relay.BeginCell{}
 	if err := out.Decode(bytes.NewReader(buf.Bytes())); err != nil {
 		t.Fatal(err)
 	}
-	// ReadString includes the delimiter.
 	if out.Addrport != "example.com:80\x00" {
 		t.Fatalf("addrport=%q", out.Addrport)
+	}
+	if out.Flags != relay.BEGIN_FLAG_IPV6_OK {
+		t.Fatalf("flags=%d", out.Flags)
 	}
 }
 

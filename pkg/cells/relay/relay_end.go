@@ -42,3 +42,39 @@ func (c *RelayEndCell) Decode(r io.Reader) error {
 	c.Reason = b[0]
 	return err
 }
+
+// EndReasonString returns a short public description of a RELAY_END reason.
+func EndReasonString(reason uint8) string {
+	switch reason {
+	case END_REASON_MISC:
+		return "misc"
+	case END_REASON_RESOLVEFAILED:
+		return "resolve failed"
+	case END_REASON_CONNECTIONREFUSED:
+		return "connection refused"
+	case END_REASON_EXITPOLICY:
+		return "exit policy"
+	case END_REASON_DESTROY:
+		return "circuit destroyed"
+	case END_REASON_DONE:
+		return "done"
+	case END_REASON_TIMEOUT:
+		return "timeout"
+	case END_REASON_NOROUTE:
+		return "no route"
+	case END_REASON_HIBERNATING:
+		return "hibernating"
+	case END_REASON_INTERNAL:
+		return "internal"
+	case END_REASON_RESOURCELIMIT:
+		return "resource limit"
+	case END_REASON_CONNRESET:
+		return "connection reset"
+	case END_REASON_TORPROTOCOL:
+		return "tor protocol"
+	case END_REASON_NOTDIRECTORY:
+		return "not directory"
+	default:
+		return "unknown"
+	}
+}

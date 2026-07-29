@@ -45,6 +45,10 @@ func (s *Stream) begin(addrport string) error {
 	select {
 	case relayCell := <-s.InboundControl:
 		if relayCell.ID() != relay.COMMAND_CONNECTED {
+			if end, ok := relayCell.(*relay.RelayEndCell); ok {
+				log.Error().Uint8("reason", end.Reason).Msg("BEGIN rejected with RELAY_END")
+				return Publicf(ErrStream, "BEGIN rejected: %s", relay.EndReasonString(end.Reason))
+			}
 			log.Error().Uint8("cmd", relayCell.ID()).Msg("BEGIN expected CONNECTED")
 			return Publicf(ErrStream, "BEGIN failed: expected CONNECTED, got command %d", relayCell.ID())
 		}
