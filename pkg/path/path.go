@@ -37,25 +37,31 @@ func New(cns *common.Consensus, longlive bool) *Selector {
 }
 
 func (sl *Selector) SelectRandomCircuit(hops uint, port uint16) error {
-	if hops <= 0 {
+	if hops == 0 {
 		return fmt.Errorf("invalid number of hops: %d need to be greater than 0", hops)
 	}
 
+	// Reset previous selection so retries are clean.
+	sl.guard = nil
+	sl.middles = nil
+	sl.exit = nil
+	sl.fullPath = nil
+
 	exitInfo, err := sl.selectRelay(exitValidateFunc, exitWeightFunc, port)
 	if err != nil {
-		return err
+		return fmt.Errorf("select exit: %w", err)
 	}
 	sl.exit = exitInfo
 	hops--
 
-	if hops <= 0 {
+	if hops == 0 {
 		sl.fullPath = append(sl.fullPath, exitInfo)
 		return nil
 	}
 
 	guardInfo, err := sl.selectRelay(guardValideFunc, guardWeightFunc, 0)
 	if err != nil {
-		return err
+		return fmt.Errorf("select guard: %w", err)
 	}
 	sl.guard = guardInfo
 	sl.fullPath = append(sl.fullPath, guardInfo)
@@ -64,7 +70,7 @@ func (sl *Selector) SelectRandomCircuit(hops uint, port uint16) error {
 	for range hops {
 		middleInfo, err := sl.selectRelay(middleValideFunc, middleWeightFunc, 0)
 		if err != nil {
-			return err
+			return fmt.Errorf("select middle: %w", err)
 		}
 		sl.middles = append(sl.middles, middleInfo)
 		sl.fullPath = append(sl.fullPath, middleInfo)
@@ -83,80 +89,77 @@ func (sl *Selector) selectRelay(fn validateFunc, wfn weightFunc, desiredPort uin
 	var totalBw int64
 	var values []value
 
-	for _, v := range sl.list {
+	for i := range sl.list {
+		v := &sl.list[i]
 
-		if desiredPort != 0 {
-			if !v.Ports.IsAllowed(desiredPort) {
-				continue
-			}
+		if desiredPort != 0 && !v.Ports.IsAllowed(desiredPort) {
+			continue
 		}
 
 		if sl.longLive && !v.StatusFlags[common.FLAG_STABLE] {
 			continue
 		}
-		if !v.StatusFlags[common.FLAG_RUNNING] && !v.StatusFlags[common.FLAG_VALID] {
+		if !v.StatusFlags[common.FLAG_RUNNING] || !v.StatusFlags[common.FLAG_VALID] {
 			continue
 		}
 
-		if !fn(v) {
+		if !fn(*v) {
 			continue
 		}
 
-		w := int64(v.BandWidth) * wfn(v.StatusFlags, sl.weight) / 10000
+		w := weightedBandwidth(int64(v.BandWidth), wfn(v.StatusFlags, sl.weight))
+		if w <= 0 {
+			continue
+		}
 		totalBw += w
-		values = append(values, value{wb: w, ptr: &v})
+		values = append(values, value{wb: w, ptr: v})
 	}
 
-	// TODO: old family checks
-	for {
+	if len(values) == 0 || totalBw <= 0 {
+		return nil, fmt.Errorf("no eligible relays (candidates=%d total_bw=%d port=%d)", len(values), totalBw, desiredPort)
+	}
+
+	// Family /16 uniqueness: sample until a free relay is found.
+	const maxAttempts = 256
+	for range maxAttempts {
 		random, err := selectRandom(totalBw, values)
 		if err != nil {
 			return nil, err
 		}
-
-		if sl.guard != nil {
-			if sl.guard.IPLevel == random.IPLevel || cmpFamily(sl.guard.Familys, random.Familys) {
-				continue
-			}
-		}
-		if sl.exit != nil {
-			if sl.exit.IPLevel == random.IPLevel || cmpFamily(sl.exit.Familys, random.Familys) {
-				continue
-			}
-		}
-
-		if sl.middles != nil {
-			valid := true
-			for _, m := range sl.middles {
-				if m.IPLevel == random.IPLevel {
-					valid = false
-					break
-				}
-
-				if cmpFamily(m.Familys, random.Familys) {
-					valid = false
-					break
-				}
-			}
-			if !valid {
-				continue
-			}
+		if sl.conflicts(random) {
+			continue
 		}
 		return random, nil
 	}
-
+	return nil, fmt.Errorf("could not pick relay without family/ip conflict after %d attempts", maxAttempts)
 }
 
-func cmpFamily(b, o []*common.FamilyIDs) (matched bool) {
+func (sl *Selector) conflicts(r *common.RouterStatus) bool {
+	if sl.guard != nil {
+		if sl.guard.IPLevel == r.IPLevel || cmpFamily(sl.guard.Familys, r.Familys) {
+			return true
+		}
+	}
+	if sl.exit != nil {
+		if sl.exit.IPLevel == r.IPLevel || cmpFamily(sl.exit.Familys, r.Familys) {
+			return true
+		}
+	}
+	for _, m := range sl.middles {
+		if m.IPLevel == r.IPLevel || cmpFamily(m.Familys, r.Familys) {
+			return true
+		}
+	}
+	return false
+}
+
+func cmpFamily(b, o []*common.FamilyIDs) bool {
 	for _, v := range b {
 		if v == nil {
 			continue
 		}
 		for _, r := range o {
-			if r == nil {
-				continue
-			}
-			if r.Kind != v.Kind {
+			if r == nil || r.Kind != v.Kind {
 				continue
 			}
 			if bytes.Equal(v.Value, r.Value) {
@@ -167,19 +170,38 @@ func cmpFamily(b, o []*common.FamilyIDs) (matched bool) {
 	return false
 }
 
+// weightedBandwidth applies consensus position weights. Falls back to raw
+// bandwidth when weights are missing/zero so selection never collapses to 0.
+func weightedBandwidth(bw, positionWeight int64) int64 {
+	if bw <= 0 {
+		return 0
+	}
+	if positionWeight <= 0 {
+		return bw
+	}
+	w := bw * positionWeight / 10000
+	if w <= 0 {
+		return 1
+	}
+	return w
+}
+
 func selectRandom(totalBw int64, values []value) (*common.RouterStatus, error) {
+	if len(values) == 0 || totalBw <= 0 {
+		return nil, fmt.Errorf("no eligible relays for weighted pick")
+	}
 
-	sum := int64(0)
-	for {
-		randonN := rand.Int64N(totalBw)
-
-		for _, v := range values {
-			sum += v.wb
-			if sum >= randonN {
-				return v.ptr, nil
-			}
+	// r in [0, totalBw)
+	r := rand.Int64N(totalBw)
+	var sum int64
+	for _, v := range values {
+		sum += v.wb
+		if r < sum {
+			return v.ptr, nil
 		}
 	}
+	// Floating-point / rounding safety: return last candidate.
+	return values[len(values)-1].ptr, nil
 }
 
 func haveAllKeys(r *common.RouterStatus) bool {
@@ -189,9 +211,8 @@ func haveAllKeys(r *common.RouterStatus) bool {
 	if r.NodeID == [20]byte{} {
 		return false
 	}
-	if r.IdEd25519 == nil {
+	if len(r.IdEd25519) == 0 {
 		return false
 	}
-
 	return true
 }
