@@ -104,20 +104,22 @@ func TestConcurrent_Subtract(t *testing.T) {
 
 	var wg sync.WaitGroup
 	for range 100 {
-		wg.Go(func() {
+		wg.Add(1)
+		go func() {
 			defer wg.Done()
 			w.Subtract(1)
-		})
+		}()
 	}
 	wg.Wait()
 
+	// 1000-100=900; boundaries at 900,800,...,100 may all fire (up to buffer).
 	if w.IsZero() {
 		t.Fatal("window should remain non-zero (900)")
 	}
 	select {
 	case <-w.Get():
 	default:
-		t.Fatal("expected one SENDME trigger at boundary")
+		t.Fatal("expected at least one SENDME trigger at a 100-cell boundary")
 	}
 }
 
