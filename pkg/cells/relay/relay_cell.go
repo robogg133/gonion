@@ -29,6 +29,7 @@ var AllKnownRellayCells = map[uint8]func() Cell{
 	COMMAND_INTRODUCE2:            func() Cell { return &Introduce2Cell{} },
 	COMMAND_RENDEZVOUS1:           func() Cell { return &Rendezvous1Cell{} },
 	COMMAND_RENDEZVOUS2:           func() Cell { return &Rendezvous2Cell{} },
+	COMMAND_INTRO_ESTABLISHED:     func() Cell { return &IntroEstablishedCell{} },
 	COMMAND_RENDEZVOUS_ESTABLISHED: func() Cell { return &RendezvousEstablishedCell{} },
 	COMMAND_INTRODUCE_ACK:         func() Cell { return &IntroduceAckCell{} },
 }
