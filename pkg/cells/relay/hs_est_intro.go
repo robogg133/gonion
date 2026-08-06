@@ -24,6 +24,12 @@ func (c *EstIntroCell) GetStreamID() uint16  { return c.StreamID }
 func (c *EstIntroCell) SetStreamID(n uint16) { c.StreamID = n }
 
 func (c *EstIntroCell) Encode(w io.Writer) error {
+	if len(c.AuthKey) != ed25519.PublicKeySize {
+		return fmt.Errorf("relay: ESTABLISH_INTRO auth key must be %d bytes, got %d", ed25519.PublicKeySize, len(c.AuthKey))
+	}
+	if len(c.MAC) != hsMacLen {
+		return fmt.Errorf("relay: ESTABLISH_INTRO MAC must be %d bytes, got %d", hsMacLen, len(c.MAC))
+	}
 	if err := writeByte(w, introAuthTypeED25519); err != nil {
 		return err
 	}
@@ -38,6 +44,9 @@ func (c *EstIntroCell) Encode(w io.Writer) error {
 	}
 	if _, err := w.Write(c.MAC); err != nil {
 		return err
+	}
+	if len(c.Sig) != ed25519.SignatureSize {
+		return fmt.Errorf("relay: ESTABLISH_INTRO sig must be %d bytes, got %d", ed25519.SignatureSize, len(c.Sig))
 	}
 	if err := writeU16(w, len(c.Sig)); err != nil {
 		return err
@@ -58,16 +67,22 @@ func (c *EstIntroCell) Decode(r io.Reader) error {
 	if err != nil {
 		return err
 	}
+	if len(key) != ed25519.PublicKeySize {
+		return fmt.Errorf("relay: ESTABLISH_INTRO auth key must be %d bytes, got %d", ed25519.PublicKeySize, len(key))
+	}
 	c.AuthKey = ed25519.PublicKey(key)
 	if c.Exts, err = decodeExts(r); err != nil {
 		return err
 	}
-	if c.MAC, err = readExact(r, 32); err != nil {
+	if c.MAC, err = readExact(r, hsMacLen); err != nil {
 		return err
 	}
 	sig, err := readLenP(r)
 	if err != nil {
 		return err
+	}
+	if len(sig) != ed25519.SignatureSize {
+		return fmt.Errorf("relay: ESTABLISH_INTRO sig must be %d bytes, got %d", ed25519.SignatureSize, len(sig))
 	}
 	c.Sig = sig
 	return nil

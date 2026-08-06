@@ -15,6 +15,7 @@ const (
 	COMMAND_INTRODUCE2             uint8 = 35
 	COMMAND_RENDEZVOUS1            uint8 = 36
 	COMMAND_RENDEZVOUS2            uint8 = 37
+	COMMAND_INTRO_ESTABLISHED      uint8 = 38
 	COMMAND_RENDEZVOUS_ESTABLISHED uint8 = 39
 	COMMAND_INTRODUCE_ACK          uint8 = 40
 )
@@ -24,6 +25,10 @@ const (
 const introAuthTypeED25519 = 2
 
 const cookieLen = 20
+
+// hsMacLen is the HANDSHAKE_AUTH/MAC size (32 bytes, SHA-3-256 truncated),
+// introduction-protocol §EST_INTRO.
+const hsMacLen = 32
 
 // Ext is a variable-length protocol extension (EST_INTRO / FMT_INTRO1 /
 // INTRODUCE_ACK). Wire: EXT_FIELD_TYPE (1) || EXT_FIELD_LEN (1) || EXT_FIELD.
@@ -41,6 +46,9 @@ type introHead struct {
 }
 
 func (h *introHead) encodeIntroHead(w io.Writer) error {
+	if len(h.AuthKey) != ed25519.PublicKeySize {
+		return fmt.Errorf("relay: intro auth key must be %d bytes, got %d", ed25519.PublicKeySize, len(h.AuthKey))
+	}
 	if _, err := w.Write(h.LegacyKeyID[:]); err != nil {
 		return err
 	}
@@ -71,16 +79,25 @@ func (h *introHead) decodeIntroHead(r io.Reader) error {
 	if err != nil {
 		return err
 	}
+	if len(key) != ed25519.PublicKeySize {
+		return fmt.Errorf("relay: intro auth key must be %d bytes, got %d", ed25519.PublicKeySize, len(key))
+	}
 	h.AuthKey = ed25519.PublicKey(key)
 	h.Exts, err = decodeExts(r)
 	return err
 }
 
 func encodeExts(w io.Writer, exts []Ext) error {
+	if len(exts) > 255 {
+		return fmt.Errorf("relay: too many extensions: %d", len(exts))
+	}
 	if err := writeByte(w, byte(len(exts))); err != nil {
 		return err
 	}
 	for _, e := range exts {
+		if len(e.Data) > 255 {
+			return fmt.Errorf("relay: extension field too long: %d", len(e.Data))
+		}
 		if err := writeByte(w, e.Type); err != nil {
 			return err
 		}
@@ -127,6 +144,9 @@ func writeByte(w io.Writer, b byte) error {
 }
 
 func writeU16(w io.Writer, v int) error {
+	if v < 0 || v > 0xffff {
+		return fmt.Errorf("relay: u16 field out of range: %d", v)
+	}
 	return binary.Write(w, binary.BigEndian, uint16(v))
 }
 
