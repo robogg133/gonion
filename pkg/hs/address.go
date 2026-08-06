@@ -1,6 +1,7 @@
 package hs
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"encoding/base32"
 	"errors"
@@ -86,6 +87,7 @@ func ParseOnionAddr(addr string) (OnionAddr, error) {
 	if !strings.HasSuffix(lower, hsSuffix) {
 		return zero, errInvalidAddr
 	}
+
 	upper := strings.ToUpper(strings.TrimSuffix(lower, hsSuffix))
 	blob, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(upper)
 	if err != nil || len(blob) != rawAddrLen {
@@ -97,7 +99,7 @@ func ParseOnionAddr(addr string) (OnionAddr, error) {
 		return zero, errInvalidAddr
 	}
 	sum := hash(pk, hsVersion)
-	if !sequenceEqual(blob[pub25519Len:rawAddrLen-1], sum[:checkLen]) {
+	if !bytes.Equal(blob[pub25519Len:rawAddrLen-1], sum[:checkLen]) {
 		return zero, errChecksum
 	}
 	if hasTorsion(pk) {
@@ -141,16 +143,4 @@ func hasTorsion(pubkey []byte) bool {
 	}
 	// valid (prime-order) points yield the identity; torsion points do not.
 	return acc.Equal(edwards25519.NewIdentityPoint()) != 1
-}
-
-func sequenceEqual(a, b []byte) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }
