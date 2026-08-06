@@ -23,15 +23,15 @@ var AllKnownRellayCells = map[uint8]func() Cell{
 	COMMAND_RELAY_END: func() Cell { return &RelayEndCell{} },
 	COMMAND_BEGIN_DIR: func() Cell { return &BeginDirCell{} },
 
-	COMMAND_ESTABLISH_INTRO:       func() Cell { return &EstIntroCell{} },
-	COMMAND_ESTABLISH_RENDEZVOUS:  func() Cell { return &EstRendezvousCell{} },
-	COMMAND_INTRODUCE1:            func() Cell { return &Introduce1Cell{} },
-	COMMAND_INTRODUCE2:            func() Cell { return &Introduce2Cell{} },
-	COMMAND_RENDEZVOUS1:           func() Cell { return &Rendezvous1Cell{} },
-	COMMAND_RENDEZVOUS2:           func() Cell { return &Rendezvous2Cell{} },
-	COMMAND_INTRO_ESTABLISHED:     func() Cell { return &IntroEstablishedCell{} },
+	COMMAND_ESTABLISH_INTRO:        func() Cell { return &EstIntroCell{} },
+	COMMAND_ESTABLISH_RENDEZVOUS:   func() Cell { return &EstRendezvousCell{} },
+	COMMAND_INTRODUCE1:             func() Cell { return &Introduce1Cell{} },
+	COMMAND_INTRODUCE2:             func() Cell { return &Introduce2Cell{} },
+	COMMAND_RENDEZVOUS1:            func() Cell { return &Rendezvous1Cell{} },
+	COMMAND_RENDEZVOUS2:            func() Cell { return &Rendezvous2Cell{} },
+	COMMAND_INTRO_ESTABLISHED:      func() Cell { return &IntroEstablishedCell{} },
 	COMMAND_RENDEZVOUS_ESTABLISHED: func() Cell { return &RendezvousEstablishedCell{} },
-	COMMAND_INTRODUCE_ACK:         func() Cell { return &IntroduceAckCell{} },
+	COMMAND_INTRODUCE_ACK:          func() Cell { return &IntroduceAckCell{} },
 }
 
 type Cell interface {
