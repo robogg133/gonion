@@ -6,15 +6,17 @@ import (
 	"golang.org/x/crypto/sha3"
 )
 
-// HSDir hash-ring indices, rend-spec §WHERE-HSDESC.
+// HSDir hash-ring indices, rend-spec §WHERE-HSDESC (verified against
+// tor hs_common.c hs_build_hs_index/hs_build_hsdir_index and hs_indexes.py).
 //
 //	service_index = SHA3-256("store-at-idx" || blinded_pk ||
 //	                        INT_8(replica) || INT_8(period_len) || INT_8(period_num))
 //	relay_index   = SHA3-256("node-idx" || node_identity ||
 //	                        shared_random_value ||
-//	                        INT_8(period_lept).8) || INT_8(period_num))
+//	                        INT_8(period_num) || INT_8(period_len))
 //
-// INT_8 fields are big-endian uint64 (tor hs_common.c uses tor_htonll).
+// INT_8 fields are big-endian uint64 (tor htonll). Note the service index comes
+// replica || period_len || period_num, but the relay index is period_num first.
 
 // ReplicaCount is the consensus default for hsdir_n_replicas.
 const ReplicaCount = 2
@@ -36,8 +38,8 @@ func RelayIndex(nodeIdentity, srv []byte, periodLenMin int, periodNum uint64) ([
 	return hashFrom("node-idx", [][]byte{
 		nodeIdentity,
 		srv,
-		be64(uint64(periodLenMin)),
 		be64(periodNum),
+		be64(uint64(periodLenMin)),
 	})
 }
 

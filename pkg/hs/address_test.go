@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"encoding/hex"
+	"errors"
 	"testing"
 )
 
@@ -52,14 +53,30 @@ func TestSpecExampleAddresses(t *testing.T) {
 func TestParseBadAddresses(t *testing.T) {
 	pub, _, _ := ed25519.GenerateKey(nil)
 	good, _ := EncodeOnionAddr(pub)
-	if _, err := ParseOnionAddr(good[:len(good)-1] + "x"); err == nil {
-		t.Fatal("expected checksum failure on tampered address")
+
+	// Tamper a base32 body char, keep the .onion suffix: must be a checksum
+	// failure, not a length/format error.
+	tampered := good[:len(good)-len(hsSuffix)]
+	if tampered[len(tampered)/2] == 'a' {
+		b := []byte(tampered)
+		b[len(b)/2] = 'b'
+		tampered = string(b)
+	} else {
+		b := []byte(tampered)
+		b[len(b)/2] = 'a'
+		tampered = string(b)
 	}
-	if _, err := ParseOnionAddr("not-an-onion"); err == nil {
-		t.Fatal("expected failure on non-onion")
+	if _, err := ParseOnionAddr(tampered + hsSuffix); err == nil {
+		t.Fatal("expected failure on tampered address")
+	} else if !errors.Is(err, errChecksum) {
+		t.Fatalf("tampered address: got %v, want errChecksum", err)
 	}
-	if _, err := ParseOnionAddr("short.onion"); err == nil {
-		t.Fatal("expected failure on short input")
+
+	if _, err := ParseOnionAddr("not-an-onion"); !errors.Is(err, errInvalidAddr) {
+		t.Fatalf("non-onion: got %v, want errInvalidAddr", err)
+	}
+	if _, err := ParseOnionAddr("short.onion"); !errors.Is(err, errInvalidAddr) {
+		t.Fatalf("short input: got %v, want errInvalidAddr", err)
 	}
 }
 
