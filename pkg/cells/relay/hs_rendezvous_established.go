@@ -9,8 +9,8 @@ type RendezvousEstablishedCell struct {
 	StreamID uint16
 }
 
-func (*RendezvousEstablishedCell) ID() uint8              { return COMMAND_RENDEZVOUS_ESTABLISHED }
-func (c *RendezvousEstablishedCell) GetStreamID() uint16  { return c.StreamID }
+func (*RendezvousEstablishedCell) ID() uint8 { return COMMAND_RENDEZVOUS_ESTABLISHED }
+func (c *RendezvousEstablishedCell) GetStreamID() uint16 { return c.StreamID }
 func (c *RendezvousEstablishedCell) SetStreamID(n uint16) { c.StreamID = n }
 
 func (c *RendezvousEstablishedCell) Encode(w io.Writer) error {
