@@ -3,7 +3,7 @@ name: Update Fallback Directory
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 3 * * *"
+    - cron: "0 0 */2 * *"
 
 jobs:
   update:
@@ -20,7 +20,7 @@ jobs:
 
       - name: Generate Go source
         run: |
-          go generate ./tools/gen/fallback_dir > internal/shared/fallback_dirs.go
+          go generate ./tools/fallback > internal/shared/fallback_dirs.go
 
       - name: Format Go code
         run: |
