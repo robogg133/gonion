@@ -29,7 +29,7 @@ jobs:
 
           git config pull.rebase true
 
-          git add internal/shared/fallback_dirs.go
-          git diff --cached --quiet || git commit -m "update fallback directory"
+          git add internal/shared/
+          git diff --cached --quiet || git commit -m "chore: update fallback directory"
           git pull
           git push
