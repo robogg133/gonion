@@ -20,11 +20,7 @@ jobs:
 
       - name: Generate Go source
         run: |
-          go generate ./tools/fallback > internal/shared/fallback_dirs.go
-
-      - name: Format Go code
-        run: |
-          gofmt -w internal/shared/fallback_dirs.go
+          go generate ./tools/fallback
 
       - name: Commit changes
         run: |
