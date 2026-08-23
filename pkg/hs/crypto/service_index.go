@@ -14,8 +14,8 @@ func (bk *BlindedPublicKey) ServiceIndex(replicaN uint64) HsServiceIndex {
 
 	sha.Write([]byte(StoreAtIdx))
 	sha.Write(bk.blindPk)
-	binary.Write(sha, binary.BigEndian, replicaN)
-	binary.Write(sha, binary.BigEndian, bk.periodLenght)
 	binary.Write(sha, binary.BigEndian, bk.periodNumber)
+	binary.Write(sha, binary.BigEndian, bk.periodLenght)
+	binary.Write(sha, binary.BigEndian, replicaN)
 	return sha.Sum(nil)
 }
