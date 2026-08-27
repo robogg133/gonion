@@ -47,7 +47,7 @@ func (circuit *Circuit) nextConsensus(ctx context.Context, cns *common.Consensus
 			return
 		}
 
-		cnsPtr, err := circuit.GetConsensus()
+		cnsPtr, err := circuit.GetConsensus(ConsensusFlavorMicrodesc)
 		if err != nil {
 			log.Error().Err(err).Msg("consensus refresh failed; retrying in 30m")
 			if err := sleepCtx(ctx, 30*time.Minute); err != nil {
@@ -60,6 +60,11 @@ func (circuit *Circuit) nextConsensus(ctx context.Context, cns *common.Consensus
 		// full re-bootstrap of microdescs is left to a higher-level client later.
 		*cns = *cnsPtr
 		common.SetGlobalConsensus(cns)
+		if circuit.conn.storage != nil {
+			if err := circuit.conn.storage.StoreConsensus(cns); err != nil {
+				log.Warn().Err(err).Msg("store refreshed consensus failed")
+			}
+		}
 		log.Info().Int("relays", len(cns.RelayInformation)).Msg("consensus refreshed")
 	}
 }
@@ -119,16 +124,30 @@ func BootstrapOneConn(conn *Conn) error {
 	ctx = withLogger(ctx, log)
 	log.Info().Msg("bootstrap starting")
 
+	if conn.storage != nil {
+		if cached, err := conn.storage.GetConsensus(); err == nil && cached != nil && cached.ValidUntil.After(time.Now().UTC()) {
+			log.Info().Int("relays", len(cached.RelayInformation)).Time("valid_until", cached.ValidUntil).Msg("using cached consensus")
+			common.SetGlobalConsensus(cached)
+			return nil
+		}
+	}
+
 	circuit, err := conn.NewFastCircuit(1)
 	if err != nil {
 		return fail(ctx, ErrBootstrap, "create bootstrap circuit failed", err)
 	}
 
-	cns, err := circuit.GetConsensus()
+	cns, err := circuit.GetConsensus(ConsensusFlavorMicrodesc)
 	if err != nil {
 		return fail(ctx, ErrBootstrap, "fetch consensus failed", err)
 	}
 	log.Info().Int("relays", len(cns.RelayInformation)).Msg("consensus fetched")
+
+	if conn.storage != nil {
+		if err := conn.storage.StoreConsensus(cns); err != nil {
+			log.Warn().Err(err).Msg("store cached consensus failed")
+		}
+	}
 
 	common.SetGlobalConsensus(cns)
 

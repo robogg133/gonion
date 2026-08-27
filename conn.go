@@ -14,6 +14,7 @@ import (
 
 	cells "github.com/robogg133/gonion/pkg/cells/base"
 	"github.com/robogg133/gonion/pkg/crypto"
+	"github.com/robogg133/gonion/pkg/storage"
 )
 
 const CONNECTION_TIMEOUT = 60 * time.Second
@@ -40,6 +41,14 @@ type Conn struct {
 	exitID  uint32
 
 	cellBodyLen int
+
+	storage storage.Storage
+}
+
+// SetStorage attaches a consensus store to the connection.
+// When set, bootstrap and consensus refresh read from and write to it.
+func (c *Conn) SetStorage(st storage.Storage) {
+	c.storage = st
 }
 
 // NewConn performs the Tor link handshake on c.
@@ -156,7 +165,7 @@ func NewConn(c net.Conn, logOut io.Writer, debug bool) (*Conn, error) {
 	info := cells.NetInfoCell{
 		CircuitID: 0,
 		Timestamp: 0,
-		OtherAddr: netip.MustParseAddrPort(conn.socket.RemoteAddr().String()).Addr(),
+		OtherAddr: parseRemoteAddr(conn.socket.RemoteAddr()),
 		MyAdress:  nil,
 	}
 	if err := coder.WriteCell(&info, conn.socket); err != nil {
@@ -174,6 +183,14 @@ func NewConn(c net.Conn, logOut io.Writer, debug bool) (*Conn, error) {
 	go conn.writeLoop()
 
 	return conn, nil
+}
+
+func parseRemoteAddr(addr net.Addr) netip.Addr {
+	ap, err := netip.ParseAddrPort(addr.String())
+	if err != nil {
+		return netip.Addr{}
+	}
+	return ap.Addr()
 }
 
 func (conn *Conn) Close() error {
