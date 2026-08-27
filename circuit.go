@@ -108,7 +108,7 @@ func (c *Conn) NewCircuit(id uint32, htype uint16, hs handshakes.Handshake) (*Ci
 		return nil, fail(ctx, ErrCircuit, "decode CREATED2 failed", err)
 	}
 	if cell.ID() != cells.COMMAND_CREATED2 {
-		log.Error().Uint8("cmd", cell.ID()).Msg("expected CREATED2")
+		log.Error().Uint8("cmd", cell.ID()).Type("cell_type", cell.ID()).Msg("expected CREATED2")
 		return nil, Publicf(ErrProtocolViolation, "expected CREATED2, got command %d", cell.ID())
 	}
 

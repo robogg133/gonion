@@ -16,6 +16,25 @@ import (
 	"github.com/robogg133/gonion/pkg/path"
 )
 
+// dialPathWithRetry seleciona um novo caminho até 3 vezes, como o exitGET faz.
+func dialPathWithRetry(t *testing.T, cns *common.Consensus) (*gonion.Circuit, *gonion.Conn, error) {
+	var last error
+	for attempt := 0; attempt < 3; attempt++ {
+		sl := path.New(cns, false)
+		if err := sl.SelectRandomCircuit(3, 80); err != nil {
+			t.Fatal(err)
+		}
+		relays := sl.Circuit()
+		circ, conn, err := dialPath(relays)
+		if err == nil {
+			return circ, conn, nil
+		}
+		last = err
+		t.Logf("path attempt %d failed: %v", attempt+1, err)
+	}
+	return nil, nil, last
+}
+
 // TestExitHTTP builds a 3-hop circuit and GETs check.torproject.org via the exit.
 func TestExitHTTP(t *testing.T) {
 	skipIfShort(t)
@@ -109,7 +128,7 @@ func dialPath(relays []*common.RouterStatus) (*gonion.Circuit, *gonion.Conn, err
 	if err != nil {
 		return nil, nil, err
 	}
-	conn, err := gonion.NewConn(raw, io.Discard, false)
+	conn, err := gonion.NewConn(raw, io.Discard, true)
 	if err != nil {
 		raw.Close()
 		return nil, nil, err
@@ -135,7 +154,7 @@ func bootstrapConsensus(t *testing.T) *common.Consensus {
 	}
 	t.Logf("bootstrap via %s", raw.RemoteAddr())
 
-	conn, err := gonion.NewConn(raw, io.Discard, false)
+	conn, err := gonion.NewConn(raw, io.Discard, true)
 	if err != nil {
 		t.Fatal(err)
 	}
