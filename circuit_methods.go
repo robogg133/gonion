@@ -9,18 +9,24 @@ import (
 	"time"
 
 	"github.com/robogg133/gonion/pkg/common"
+	"github.com/robogg133/gonion/pkg/parsers/microdesc"
+	"github.com/robogg133/gonion/pkg/parsers/usual"
 )
 
 const (
-	HTTP_PATH_CONSENSUS_MICRODESC        string = "/tor/status-vote/current/consensus-microdesc"
+	HTTP_PATH_CONSENSUS                  string = "/tor/status-vote/current/consensus"
 	HTTP_PATH_MICRODESCRIPTOR_DIR_FORMAT string = "/tor/micro/d/%s"
+)
+
+const (
+	ConsensusFlavorMicrodesc string = "microdesc"
 )
 
 const (
 	TIMEOUT_DOWNLOADS time.Duration = 10 * time.Minute
 )
 
-func (c *Circuit) GetConsensus() (*common.Consensus, error) {
+func (c *Circuit) GetConsensus(flavor string) (*common.Consensus, error) {
 	log := logger(c.Ctx).With().Str("job", "get_consensus").Logger()
 	log.Info().Msg("fetching consensus")
 
@@ -32,7 +38,12 @@ func (c *Circuit) GetConsensus() (*common.Consensus, error) {
 	ctx, cancel := context.WithTimeout(s.Ctx, TIMEOUT_DOWNLOADS)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, "GET", HTTP_PATH_CONSENSUS_MICRODESC, nil)
+	requestPath := HTTP_PATH_CONSENSUS
+	if flavor != "" {
+		requestPath = requestPath + "-" + flavor
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "GET", requestPath, nil)
 	if err != nil {
 		return nil, fail(c.Ctx, ErrDirectory, "build consensus request failed", err)
 	}
@@ -57,7 +68,7 @@ func (c *Circuit) GetConsensus() (*common.Consensus, error) {
 		return nil, Publicf(ErrDirectory, "consensus HTTP status %d", consensusResp.StatusCode)
 	}
 
-	consensus, err := common.ParseConsensus(bufio.NewScanner(consensusResp.Body))
+	consensus, err := (usual.Parser{}).Parse(consensusResp.Body)
 	if err != nil {
 		return nil, fail(c.Ctx, ErrDirectory, "parse consensus failed", err)
 	}
@@ -109,7 +120,7 @@ func (c *Circuit) GetMicrodescriptors(src []string) ([]*common.Microdesc, error)
 		return nil, Publicf(ErrDirectory, "microdescriptor HTTP status %d", microDescs.StatusCode)
 	}
 
-	out, err := common.ParseMicrodescFile(bufio.NewScanner(microDescs.Body), src)
+	out, err := (microdesc.Parser{}).Parse(microDescs.Body, src)
 	if err != nil {
 		return nil, fail(c.Ctx, ErrDirectory, "parse microdescriptors failed", err)
 	}

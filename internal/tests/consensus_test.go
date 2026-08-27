@@ -41,7 +41,7 @@ func TestConsensus(t *testing.T) {
 	}
 	t.Log("Stream open")
 
-	req, err := http.NewRequest("GET", gonion2.HTTP_PATH_CONSENSUS_MICRODESC, nil)
+	req, err := http.NewRequest("GET", "/tor/status-vote/current/consensus", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +62,7 @@ func TestConsensus(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	os.WriteFile("consensus-microdesc.txt", consensus, 0777)
+	os.WriteFile("consensus.txt", consensus, 0777)
 	sum := sha256.Sum256(consensus)
 	consensusFromFast := hex.EncodeToString(sum[:])
 

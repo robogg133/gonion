@@ -72,7 +72,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	cns, err := circ.GetConsensus()
+	cns, err := circ.GetConsensus(gonion.ConsensusFlavorMicrodesc)
 	if err != nil {
 		panic(err)
 	}

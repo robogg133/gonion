@@ -1,9 +1,9 @@
 package tests
 
 import (
-	"io"
 	"crypto/ecdh"
 	"crypto/rand"
+	"io"
 	"net"
 	"testing"
 
@@ -56,7 +56,7 @@ func TestCreate2Circuit(t *testing.T) {
 	// test if circuit is working
 	t.Log("testing if sucessifully created")
 	t.Run("GetConsensus", func(t *testing.T) {
-		if _, err := circuit.GetConsensus(); err != nil {
+		if _, err := circuit.GetConsensus(""); err != nil {
 			t.Fatal(err)
 		}
 	})

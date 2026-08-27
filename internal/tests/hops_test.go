@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/robogg133/gonion"
 	"github.com/robogg133/gonion/pkg/path"
 )
 
@@ -40,7 +41,7 @@ func TestConnect(t *testing.T) {
 	defer circ.Close()
 
 	t.Run("GuardDir", func(t *testing.T) {
-		if _, err := circ.GetConsensus(); err != nil {
+		if _, err := circ.GetConsensus(gonion.ConsensusFlavorMicrodesc); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -60,7 +61,8 @@ func TestConnect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	io.Copy(io.Discard, io.LimitReader(resp.Body, 8<<10))
+	t.Logf("resp.body.len=%d", resp.ContentLength)
+	io.Copy(t.Output(), io.LimitReader(resp.Body, 8<<10))
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("second stream status %s", resp.Status)

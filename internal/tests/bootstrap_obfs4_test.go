@@ -1,8 +1,8 @@
 package tests
 
 import (
-	"io"
 	"fmt"
+	"io"
 	"testing"
 
 	gonion2 "github.com/robogg133/gonion"
@@ -30,7 +30,7 @@ func TestMicrodescObfs4(t *testing.T) {
 	}
 	t.Log("Created circuit")
 
-	cns, err := circuit.GetConsensus()
+	cns, err := circuit.GetConsensus("")
 	if err != nil {
 		t.Fatal(err)
 	}

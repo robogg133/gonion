@@ -66,9 +66,10 @@ type Consensus struct {
 	FreshUntil time.Time
 	ValidUntil time.Time
 
-	SharedCurrentValue [32]byte
+	SharedCurrentValue  [32]byte
+	SharedPreviousValue [32]byte
 
-	routerStatusTmp *RouterStatus
+	HsdirInterval *uint64
 
 	RelayInformation []RouterStatus
 
@@ -151,48 +152,6 @@ type Proto struct {
 	Padding   VersionValue
 	FlowCtrl  VersionValue
 	Conflux   VersionValue
-}
-
-func flagStringToNumber(s string) uint8 {
-	//  Authority BadExit Exit Fast Guard HSDir MiddleOnly NoEdConsensus Running Stable StaleDesc Sybil V2Dir Valid
-	switch s {
-	case "Authority":
-		return FLAG_AUTHORITY
-	case "BadExit":
-		return FLAG_BAD_EXIT
-	case "Exit":
-		return FLAG_EXIT
-	case "Fast":
-		return FLAG_FAST
-	case "Guard":
-		return FLAG_GUARD
-	case "HSDir":
-		return FLAG_HIDDEN_SERVICE_DIR
-	case "MiddleOnly":
-		return FLAG_MIDDLE_ONLY
-	case "NoEdConsensus":
-		return FLAG_NO_ED_CONSENSUS
-	case "Running":
-		return FLAG_RUNNING
-	case "Stable":
-		return FLAG_STABLE
-	case "StaleDesc":
-		return FLAG_STALE_DESC
-	case "Sybil":
-		return FLAG_SYBIL
-	case "V2Dir":
-		return FLAG_V2DIR
-	case "Valid":
-		return FLAG_VALID
-	default:
-		return 15
-	}
-}
-
-var flagNumberToString = []string{
-	"Authority",
-	"BadExit",
-	"Exit",
 }
 
 func (v *VersionValue) CheckIsTrue(n uint8) bool {

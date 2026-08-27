@@ -31,7 +31,7 @@ func TestBootstrapWebTunnel(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := circuit.GetConsensus(); err != nil {
+	if _, err := circuit.GetConsensus(""); err != nil {
 		t.Fatal(err)
 	}
 }
