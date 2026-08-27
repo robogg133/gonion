@@ -3,17 +3,18 @@ module github.com/robogg133/gonion
 go 1.25.0
 
 require (
+	filippo.io/edwards25519 v1.2.0
 	github.com/rs/zerolog v1.35.1
 	github.com/smallnest/ringbuffer v0.1.2-0.20260703033355-9d1708966377
 	gitlab.com/yawning/obfs4.git v0.0.0-20231012084234-c3e2d44b1033
 	gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/goptlib v1.6.0
 	gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/snowflake/v2 v2.14.1
 	gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/webtunnel v0.0.6
+	golang.org/x/crypto v0.53.0
 	golang.org/x/net v0.55.0
 )
 
 require (
-	filippo.io/edwards25519 v1.1.1 // indirect
 	github.com/andybalholm/brotli v1.0.6 // indirect
 	github.com/aws/aws-sdk-go-v2 v1.40.0 // indirect
 	github.com/aws/aws-sdk-go-v2/config v1.32.1 // indirect
@@ -68,7 +69,6 @@ require (
 	github.com/xtaci/smux v1.5.56 // indirect
 	gitlab.com/yawning/edwards25519-extra v0.0.0-20231005122941-2149dcafc266 // indirect
 	gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/ptutil v0.0.0-20250815012447-418f76dcf315 // indirect
-	golang.org/x/crypto v0.53.0 // indirect
 	golang.org/x/mod v0.36.0 // indirect
 	golang.org/x/sync v0.21.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
