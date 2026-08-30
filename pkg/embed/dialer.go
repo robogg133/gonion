@@ -239,7 +239,9 @@ func dialGuard(r *common.RouterStatus) (net.Conn, error) {
 	if r == nil || r.Ipv4Addr == "" || r.ORPort == 0 {
 		return nil, fmt.Errorf("embed: guard %s missing OR address", r.Nickname)
 	}
-	return net.DialTimeout("tcp", net.JoinHostPort(r.Ipv4Addr, strconv.Itoa(int(r.ORPort))), 15*time.Second)
+	// A short timeout caps wasted time on unreachable guards; the HS client
+	// retries with fresh guards, so a reachable-one-first heuristic is enough.
+	return net.DialTimeout("tcp", net.JoinHostPort(r.Ipv4Addr, strconv.Itoa(int(r.ORPort))), 6*time.Second)
 }
 
 // guardCirc closes the underlying guard connection when the circuit is closed.

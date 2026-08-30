@@ -46,15 +46,16 @@ func recvRendezvous2(ctx context.Context, circ capi.Circ) ([]byte, error) {
 	return r2.HandshakeInfo, nil
 }
 
-// serviceStreamTarget returns the host:port the client opens to the service
-// once the e2e hop is attached. The .onion address carries an optional :port;
-// absent, we use the standard 80.
+// serviceStreamTarget returns the BEGIN target for opening the final stream to
+// the service on the rendezvous circuit. Per rend-spec-v3 §Managing-streams the
+// client sends an empty target address and only the port (e.g. ":80");
+// the service maps the port to its local endpoint without a hostname resolve.
 func serviceStreamTarget(addr string) string {
-	host, port, err := net.SplitHostPort(addr)
+	_, port, err := net.SplitHostPort(addr)
 	if err != nil || port == "" {
-		return addr + ":80"
+		return ":80"
 	}
-	return host + ":" + port
+	return ":" + port
 }
 
 // relayStatusFromSpecs reconstructs the minimal RouterStatus needed to extend a

@@ -23,10 +23,16 @@ func Search(sharedSecret []byte, periodNum, periodLen uint64, list []common.Rout
 		if !relay.StatusFlags[common.FLAG_HIDDEN_SERVICE_DIR] {
 			continue
 		}
+		// The hsdir_index uses the relay's ed25519 identity, not its (RSA) node
+		// id (rend-spec-v3 §[HSDIR-INDEX]).
+		identity := relay.IdEd25519
+		if len(identity) == 0 {
+			continue
+		}
 
 		filtered = append(filtered, routerStatsAndRelayIndex{
 			RouterStatus: relay,
-			idx:          new(big.Int).SetBytes(crypto.RelayIndex(relay.NodeID[:], sharedSecret, periodNum, periodLen)),
+			idx:          new(big.Int).SetBytes(crypto.RelayIndex(identity, sharedSecret, periodNum, periodLen)),
 		})
 	}
 

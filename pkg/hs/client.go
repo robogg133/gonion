@@ -121,8 +121,10 @@ func (c *Client) fetchDescriptor(ctx context.Context, builder capi.CircuitBuilde
 
 // circuitBuildRetries is how many fresh paths (guards) we try when building one
 // circuit. A randomly selected guard can be down or unreachable, so we retry
-// dialing a different guard (mirrors a Tor client's guard retry).
-const circuitBuildRetries = 3
+// dialing a different guard (mirrors a Tor client's guard retry). Guard
+// reachability in practice is imperfect, so a few retries keep one circuit from
+// failing outright on a bad guard.
+const circuitBuildRetries = 6
 
 // buildCircuitWithRetry selects a fresh random path and builds a circuit,
 // retrying with a new guard on each attempt. If tail is non-nil it is forced as
@@ -200,11 +202,15 @@ func (c *Client) establishRendezvousPoint(ctx context.Context, builder capi.Circ
 
 	var lastErr error
 	for attempt := 0; attempt < circuitBuildRetries; attempt++ {
+		// buildCircuitWithRetry already exhausts the guard-dial retry budget
+		// internally, so a build failure here is terminal for this attempt.
 		rpCirc, err := buildCircuitWithRetry(ctx, builder, cns, 3, 0, nil)
 		if err != nil {
-			lastErr = err
-			continue
+			return nil, [20]byte{}, err
 		}
+
+		// The outer loop only retries the ESTABLISH_RENDEZVOUS protocol
+		// exchange (e.g. the RP never acked), on a fresh circuit.
 
 		var cookie [20]byte
 		if _, err := rand.Read(cookie[:]); err != nil {
