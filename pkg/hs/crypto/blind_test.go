@@ -1,9 +1,9 @@
 package crypto
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
-	"bytes"
 	"testing"
 )
 

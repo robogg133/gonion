@@ -5,8 +5,10 @@ import (
 	"crypto/cipher"
 	"crypto/ecdh"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/subtle"
 	"errors"
+	"fmt"
 
 	"golang.org/x/crypto/sha3"
 )
@@ -248,4 +250,21 @@ func aes256Ctr(key, data []byte) ([]byte, error) {
 	out := make([]byte, len(data))
 	cipher.NewCTR(block, make([]byte, aes.BlockSize)).XORKeyStream(out, data)
 	return out, nil
+}
+
+// ParseECDHKeys interprets a raw X25519 public-key point as an ecdh.PublicKey.
+// The descriptor intro onion key is exactly such a 32-byte point.
+func ParseECDHKeys(raw []byte) (*ecdh.PrivateKey, *ecdh.PublicKey, error) {
+	if len(raw) != 32 {
+		return nil, nil, fmt.Errorf("hs/crypto: bad x25519 point length %d", len(raw))
+	}
+	B, err := ecdh.X25519().NewPublicKey(raw)
+	if err != nil {
+		return nil, nil, err
+	}
+	priv, err := ecdh.X25519().GenerateKey(rand.Reader)
+	if err != nil {
+		return nil, nil, err
+	}
+	return priv, B, nil
 }
