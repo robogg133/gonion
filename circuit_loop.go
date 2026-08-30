@@ -159,6 +159,21 @@ func (c *Circuit) relayControlFunc(rc relay.Cell, dst int) {
 		default:
 			log.Warn().Msg("EXTENDED2 dropped (no waiter)")
 		}
+	case relay.COMMAND_RENDEZVOUS_ESTABLISHED, relay.COMMAND_RENDEZVOUS2,
+		relay.COMMAND_INTRO_ESTABLISHED, relay.COMMAND_INTRODUCE_ACK:
+		// Hidden-service control cells have no stream ID. If a hidden-service
+		// op registered a handler, forward non-blocking; otherwise keep the
+		// existing debug log below.
+		if c.HSControl != nil {
+			select {
+			case c.HSControl <- rc:
+			case <-c.Ctx.Done():
+			default:
+				log.Warn().Uint8("relay_cmd", rc.ID()).Msg("HS control cell dropped (no waiter)")
+			}
+			return
+		}
+		log.Debug().Msg("unhandled circuit control relay")
 	default:
 		log.Debug().Msg("unhandled circuit control relay")
 	}

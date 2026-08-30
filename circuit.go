@@ -41,6 +41,12 @@ type Circuit struct {
 	closeOnce      sync.Once
 
 	extended2Received chan *relay.Extended2Cell
+
+	// HSControl receives circuit-level hidden-service control cells
+	// (RENDEZVOUS_ESTABLISHED, RENDEZVOUS2, INTRO_ESTABLISHED, INTRODUCE_ACK
+	// that arrive with StreamID == 0). nil until a hidden-service op registers
+	// a handler by assigning a buffered channel.
+	HSControl chan relay.Cell
 }
 
 type RelayOut struct {
@@ -327,6 +333,51 @@ func (c *Circuit) Extend(lspecs []lspec.Lspec, htype uint16, handshake handshake
 
 func (c *Circuit) HopCount() int {
 	return c.hops.Len()
+}
+
+// AppendE2EHop attaches an end-to-end (hidden-service) hop as the last hop of
+// the circuit. Unlike Extend/ExtendTo it does NOT send an EXTEND2: the crypto
+// keys are computed locally from the already-established rendezvous key seed
+// (rend-spec-v3 §JOIN_REND). Kf/Kb are the forward/backward AES-128-CTR keys
+// and Df/Db the SHA-1 digest seeds used to layer the e2e encryption on top of
+// the existing circuit hops. The new hop inherits the same SENDME windows as
+// the current exit hop.
+func (c *Circuit) AppendE2EHop(Kf, Kb, Df, Db []byte) error {
+	if c.hops.Len() == 0 {
+		return fail(c.Ctx, ErrExtend, "cannot append e2e hop to empty circuit", nil)
+	}
+	last := c.hops.At(c.hops.Len() - 1)
+	back, err := crypto.NewRunningValues(Kb, Db)
+	if err != nil {
+		return fail(c.Ctx, ErrExtend, "init e2e hop crypto failed", err)
+	}
+	forwards, err := crypto.NewRunningValues(Kf, Df)
+	if err != nil {
+		return fail(c.Ctx, ErrExtend, "init e2e hop crypto failed", err)
+	}
+	hop := hops.NewHop(c.Ctx, relay.NewDataCellCoder(back, forwards), last.Recv(), last.Send())
+	c.hops.Append(hop)
+	go c.sendmeManage(c.hops.Len()-1, hop)
+	logger(c.Ctx).Info().Int("hops", c.hops.Len()).Msg("e2e hop appended")
+	return nil
+}
+
+// SendHSControl relays a circuit-level hidden-service control cell (StreamID==0)
+// through the onion encryption layers to the final hop. The cell is marshalled
+// exactly like any other relay cell; the e2e hop (if present) supplies the
+// outermost encryption layer.
+func (c *Circuit) SendHSControl(cell relay.Cell) error {
+	return c.SendCell(&cells.RelayCell{Body: mustMarshalRelay(c, cell)})
+}
+
+// mustMarshalRelay encrypts a relay cell for the circuit's outermost hop.
+func mustMarshalRelay(c *Circuit, cell relay.Cell) []byte {
+	dst := c.hops.Len() - 1
+	body, err := c.hops.MarshalMessage(cell, dst)
+	if err != nil {
+		return nil
+	}
+	return body
 }
 
 func (c *Circuit) Close() error {

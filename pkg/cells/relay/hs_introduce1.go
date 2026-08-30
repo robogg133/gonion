@@ -1,6 +1,9 @@
 package relay
 
-import "io"
+import (
+	"crypto/ed25519"
+	"io"
+)
 
 // Introduce1Cell asks an intro point to relay an introduction. Wire per
 // FMT_INTRO1; Encrypted is the sealed intro payload (up to end of body).
@@ -31,4 +34,13 @@ func (c *Introduce1Cell) Decode(r io.Reader) error {
 	}
 	c.Encrypted = rest
 	return nil
+}
+
+// NewIntroduce1Cell builds an INTRODUCE1 cell from an intro auth key and the
+// sealed ENCRYPTED payload (rend-spec-v3 §FMT_INTRO1).
+func NewIntroduce1Cell(authKey ed25519.PublicKey, encrypted []byte) *Introduce1Cell {
+	return &Introduce1Cell{
+		introHead: introHead{AuthKey: authKey},
+		Encrypted: encrypted,
+	}
 }

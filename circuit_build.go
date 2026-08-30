@@ -102,7 +102,8 @@ func (c *Circuit) dialOnion(addr string) (net.Conn, error) {
 	log.Debug().Str("route", routers[1].Nickname).Str("route_ip", routers[1].Ipv4Addr).Msg("hsdir")
 	log.Debug().Str("route", routers[2].Nickname).Str("route_ip", routers[2].Ipv4Addr).Msg("hsdir")
 
-	return nil, fmt.Errorf("onion rendezvous not implemented yet")
+	client := &hs.Client{}
+	return client.Connect(c.conn.ctx, NewConnBuilder(c.conn), cns, addr)
 }
 
 func newNTorHandshake(r *common.RouterStatus) (*handshakes.Client_NTorHandshake, error) {
