@@ -111,11 +111,7 @@ func (c *Client) Connect(ctx context.Context, builder capi.CircuitBuilder, cns *
 // fetchDescriptor opens a fresh 3-hop circuit to the HSDir and fetches the
 // descriptor. A new circuit per HSDir keeps the RP circuit distinct.
 func (c *Client) fetchDescriptor(ctx context.Context, builder capi.CircuitBuilder, cns *common.Consensus, h common.RouterStatus, bpk *crypto.BlindedPublicKey, periodNum, periodLen, replica uint64) (*desc.Descriptor, error) {
-	sel := path.New(cns, true)
-	if err := sel.SelectRandomCircuit(3, 0); err != nil {
-		return nil, err
-	}
-	circ, err := builder.BuildPath(nextCircuitID(), sel.Circuit())
+	circ, err := buildCircuitWithRetry(ctx, builder, cns, 3, 0, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -123,31 +119,78 @@ func (c *Client) fetchDescriptor(ctx context.Context, builder capi.CircuitBuilde
 	return desc.Fetch(ctx, circ, h, bpk, periodNum, periodLen, replica)
 }
 
+// circuitBuildRetries is how many fresh paths (guards) we try when building one
+// circuit. A randomly selected guard can be down or unreachable, so we retry
+// dialing a different guard (mirrors a Tor client's guard retry).
+const circuitBuildRetries = 3
+
+// buildCircuitWithRetry selects a fresh random path and builds a circuit,
+// retrying with a new guard on each attempt. If tail is non-nil it is forced as
+// the last hop (used by the intro circuit to end at a specific intro point).
+func buildCircuitWithRetry(ctx context.Context, builder capi.CircuitBuilder, cns *common.Consensus, hops uint, port uint16, tail *common.RouterStatus) (capi.Circ, error) {
+	var last error
+	for attempt := 0; attempt < circuitBuildRetries; attempt++ {
+		sel := path.New(cns, true)
+		if err := sel.SelectRandomCircuit(hops, port); err != nil {
+			last = err
+			logger(ctx).Debug().Err(err).Uint("hops", hops).Msg("path selection failed")
+			continue
+		}
+		relays := sel.Circuit()
+		if tail != nil {
+			relays = append(relays, tail)
+		}
+		circ, err := builder.BuildPath(nextCircuitID(), relays)
+		if err == nil {
+			return circ, nil
+		}
+		last = err
+		logger(ctx).Debug().Err(err).Int("attempt", attempt+1).Uint("hops", hops).Msg("circuit build failed; retrying with fresh path")
+	}
+	if last == nil {
+		last = fmt.Errorf("hs: circuit build failed")
+	}
+	return nil, fmt.Errorf("hs: build circuit after %d attempts: %w", circuitBuildRetries, last)
+}
+
 // fetchDescriptorReplicas walks replica 1 then replica 2, and for each HSDir in
 // the replica's index fetches+decrypts the descriptor. The descriptor id <z> is
 // derived with the SAME replica (rend-spec-v3 §DESC-FETCH).
 func (c *Client) fetchDescriptorReplicas(ctx context.Context, builder capi.CircuitBuilder, cns *common.Consensus, bpk *crypto.BlindedPublicKey, periodNum, periodLen uint64) (*desc.Descriptor, error) {
 	log := logger(ctx)
+	var firstErr error
 	for replica := uint64(1); replica <= 2; replica++ {
 		hsdirs, err := pickHSDirs(cns, bpk, periodNum, periodLen, replica)
 		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
 			log.Debug().Err(err).Uint64("replica", replica).Msg("hsdir selection failed")
 			continue
 		}
 		for _, h := range hsdirs {
 			d, ferr := c.fetchDescriptor(ctx, builder, cns, h, bpk, periodNum, periodLen, replica)
 			if ferr != nil {
+				if firstErr == nil {
+					firstErr = ferr
+				}
 				log.Debug().Err(ferr).Str("hsdir", h.Nickname).Uint64("replica", replica).Msg("descriptor fetch failed")
 				continue
 			}
 			if len(d.IntroPoints) == 0 {
+				if firstErr == nil {
+					firstErr = fmt.Errorf("hs: descriptor had no intro points")
+				}
 				log.Debug().Str("hsdir", h.Nickname).Msg("descriptor had no intro points")
 				continue
 			}
 			return d, nil
 		}
 	}
-	return nil, fmt.Errorf("hs: could not fetch/decrypt a usable descriptor from any hsdir")
+	if firstErr == nil {
+		firstErr = fmt.Errorf("hs: no hsdirs available")
+	}
+	return nil, fmt.Errorf("hs: could not fetch/decrypt a usable descriptor from any hsdir: %w", firstErr)
 }
 
 // establishRendezvousPoint builds a long-lived circuit and sends
@@ -155,41 +198,48 @@ func (c *Client) fetchDescriptorReplicas(ctx context.Context, builder capi.Circu
 func (c *Client) establishRendezvousPoint(ctx context.Context, builder capi.CircuitBuilder, cns *common.Consensus) (capi.Circ, [20]byte, error) {
 	log := logger(ctx)
 
-	sel := path.New(cns, true)
-	if err := sel.SelectRandomCircuit(3, 0); err != nil {
-		return nil, [20]byte{}, err
-	}
-	rpCirc, err := builder.BuildPath(nextCircuitID(), sel.Circuit())
-	if err != nil {
-		return nil, [20]byte{}, err
-	}
+	var lastErr error
+	for attempt := 0; attempt < circuitBuildRetries; attempt++ {
+		rpCirc, err := buildCircuitWithRetry(ctx, builder, cns, 3, 0, nil)
+		if err != nil {
+			lastErr = err
+			continue
+		}
 
-	var cookie [20]byte
-	if _, err := rand.Read(cookie[:]); err != nil {
-		_ = rpCirc.Close()
-		return nil, [20]byte{}, err
-	}
+		var cookie [20]byte
+		if _, err := rand.Read(cookie[:]); err != nil {
+			_ = rpCirc.Close()
+			return nil, [20]byte{}, err
+		}
 
-	rpCirc.SetHSControl(make(chan relay.Cell, 8))
+		rpCirc.SetHSControl(make(chan relay.Cell, 8))
 
-	if err := rpCirc.SendHSControl(&relay.EstRendezvousCell{Cookie: cookie}); err != nil {
-		_ = rpCirc.Close()
-		return nil, [20]byte{}, err
-	}
+		if err := rpCirc.SendHSControl(&relay.EstRendezvousCell{Cookie: cookie}); err != nil {
+			_ = rpCirc.Close()
+			lastErr = err
+			continue
+		}
 
-	// Await RENDEZVOUS_ESTABLISHED.
-	cell, err := rpCirc.RecvHSControl(ctx)
-	if err != nil {
-		_ = rpCirc.Close()
-		return nil, [20]byte{}, fmt.Errorf("hs: wait RENDEZVOUS_ESTABLISHED: %w", err)
-	}
-	if _, ok := cell.(*relay.RendezvousEstablishedCell); !ok {
-		_ = rpCirc.Close()
-		return nil, [20]byte{}, fmt.Errorf("hs: expected RENDEZVOUS_ESTABLISHED, got %T", cell)
-	}
+		// Await RENDEZVOUS_ESTABLISHED.
+		cell, err := rpCirc.RecvHSControl(ctx)
+		if err != nil {
+			_ = rpCirc.Close()
+			lastErr = fmt.Errorf("hs: wait RENDEZVOUS_ESTABLISHED: %w", err)
+			continue
+		}
+		if _, ok := cell.(*relay.RendezvousEstablishedCell); !ok {
+			_ = rpCirc.Close()
+			lastErr = fmt.Errorf("hs: expected RENDEZVOUS_ESTABLISHED, got %T", cell)
+			continue
+		}
 
-	log.Debug().Msg("rendezvous point established")
-	return rpCirc, cookie, nil
+		log.Debug().Msg("rendezvous point established")
+		return rpCirc, cookie, nil
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("hs: could not establish rendezvous point")
+	}
+	return nil, [20]byte{}, lastErr
 }
 
 // introduce builds an intro-point circuit, sends ESTABLISH_INTRO + INTRODUCE1,
@@ -220,13 +270,7 @@ func (c *Client) tryIntro(ctx context.Context, builder capi.CircuitBuilder, cns 
 	}
 	// Reuse path selection but force the intro point as the final hop by
 	// constructing a 2-hop (guard+middle) circuit then extending to the intro.
-	sel := path.New(cns, true)
-	if err := sel.SelectRandomCircuit(2, 0); err != nil {
-		return err
-	}
-	hops := sel.Circuit()
-	hops = append(hops, introRelay)
-	circ, err := builder.BuildPath(nextCircuitID(), hops)
+	circ, err := buildCircuitWithRetry(ctx, builder, cns, 2, 0, introRelay)
 	if err != nil {
 		return err
 	}
