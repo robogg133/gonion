@@ -16,7 +16,7 @@ import (
 	"github.com/robogg133/gonion/pkg/path"
 )
 
-// dialPathWithRetry seleciona um novo caminho até 3 vezes, como o exitGET faz.
+// dialPathWithRetry picks a fresh path up to 3 times, like exitGET does.
 func dialPathWithRetry(t *testing.T, cns *common.Consensus) (*gonion.Circuit, *gonion.Conn, error) {
 	var last error
 	for attempt := 0; attempt < 3; attempt++ {

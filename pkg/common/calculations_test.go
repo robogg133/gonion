@@ -6,7 +6,7 @@ import (
 )
 
 func TestCalcPeriodNum(t *testing.T) {
-	// Consenso típico: valid-after 22:00, fresh-until 23:00, sem hsdir-interval.
+	// Typical consensus: valid-after 22:00, fresh-until 23:00, no hsdir-interval.
 	validAfter := time.Date(2026, 1, 30, 22, 0, 0, 0, time.UTC)
 	cns := &Consensus{
 		ValidAfter: validAfter,
