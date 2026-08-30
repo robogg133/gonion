@@ -63,6 +63,11 @@ func (lspec *Lspec) Type() uint8 {
 	return lspec.spec.Type()
 }
 
+// Bytes returns the bare specifier body (no TYPE/LEN header).
+func (lspec *Lspec) Bytes() ([]byte, error) {
+	return lspec.spec.Marshal()
+}
+
 func Read(r io.Reader) (Lspec, error) {
 	header := make([]byte, 2)
 	if _, err := r.Read(header); err != nil {
@@ -104,8 +109,8 @@ func (Ed25519ID) Type() uint8                 { return LSTYPE_ED25519_ID }
 func (Ed25519ID) Len() uint8                  { return LEN_LSTYPE_ED25519_ID }
 func (id Ed25519ID) Marshal() ([]byte, error) { return id[:], nil }
 func (id *Ed25519ID) Unmarshal(b []byte) error {
-	if len(b) > int(LEN_LSTYPE_LEGACY_ID) {
-		return fmt.Errorf("lspec: too big expecting len %d", LEN_LSTYPE_LEGACY_ID)
+	if len(b) > int(LEN_LSTYPE_ED25519_ID) {
+		return fmt.Errorf("lspec: too big expecting len %d", LEN_LSTYPE_ED25519_ID)
 	}
 	*id = b
 	return nil
@@ -148,4 +153,21 @@ func lspecType(lstype uint8) spec {
 	default:
 		return nil
 	}
+}
+
+// FromWire builds an Lspec from a raw (type-less) wire body. It is the inverse
+// of spec.Marshal and is used by readers that already consumed the TYPE(1)
+// LEN(1) header (e.g. descriptor intro-point link specifier lists).
+func FromWire(lsType uint8, body []byte) (Lspec, error) {
+	s := lspecType(lsType)
+	if s == nil {
+		return Lspec{}, fmt.Errorf("lspec: unknown type %d", lsType)
+	}
+	if len(body) != int(s.Len()) {
+		return Lspec{}, fmt.Errorf("lspec: type %d body len %d want %d", lsType, len(body), s.Len())
+	}
+	if err := s.Unmarshal(body); err != nil {
+		return Lspec{}, err
+	}
+	return Lspec{spec: s}, nil
 }
