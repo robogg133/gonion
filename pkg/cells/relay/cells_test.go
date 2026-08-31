@@ -64,6 +64,21 @@ func TestBeginCell_EncodeDecode(t *testing.T) {
 	}
 }
 
+func TestBeginCell_ZeroFlags_OmitsFlagsField(t *testing.T) {
+	// The onion-stream BEGIN sends an empty address and flags 0: ":<port>\x00".
+	in := &relay.BeginCell{StreamID: 4, Addrport: ":443"}
+	var buf bytes.Buffer
+	if err := in.Encode(&buf); err != nil {
+		t.Fatal(err)
+	}
+	if buf.Len() != len(":443")+1 {
+		t.Fatalf("len=%d, flags should be omitted when 0", buf.Len())
+	}
+	if got := buf.String(); got != ":443\x00" {
+		t.Fatalf("body=%q", got)
+	}
+}
+
 func TestBeginDir_Connected_EmptyPayload(t *testing.T) {
 	for _, cell := range []relay.Cell{
 		&relay.BeginDirCell{StreamID: 1},

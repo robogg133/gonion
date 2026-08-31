@@ -32,6 +32,12 @@ func (c *BeginCell) Encode(w io.Writer) error {
 	if _, err := w.Write(append([]byte(c.Addrport), 0)); err != nil {
 		return err
 	}
+	// tor-spec: "Whenever 0 would be sent for FLAGS, FLAGS is omitted from the
+	// message body." The onion-service stream (empty address, flags 0) therefore
+	// encodes to just ":<port>\x00".
+	if c.Flags == 0 {
+		return nil
+	}
 	return binary.Write(w, binary.BigEndian, c.Flags)
 }
 
