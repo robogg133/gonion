@@ -61,9 +61,6 @@ func NewFromString(addr string) (*OnionHostname, error) {
 // Host extracts the hostname accepted by the dial APIs. Bare onion hostnames
 // remain accepted for existing direct Circuit.Dial callers.
 func Host(addr string) (string, error) {
-	if strings.HasSuffix(strings.ToLower(addr), HostnameSufix) {
-		return addr, nil
-	}
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
 		return "", fmt.Errorf("onion: invalid address %q: %w", addr, err)
