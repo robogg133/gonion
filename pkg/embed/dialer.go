@@ -6,13 +6,13 @@ import (
 	"fmt"
 	"net"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
 	gonion "github.com/robogg133/gonion"
 	"github.com/robogg133/gonion/pkg/common"
 	"github.com/robogg133/gonion/pkg/hs/capi"
+	"github.com/robogg133/gonion/pkg/hs/onion"
 	"github.com/robogg133/gonion/pkg/path"
 )
 
@@ -25,7 +25,11 @@ func (c *Client) DialContext(ctx context.Context, network, addr string) (net.Con
 	if network != "tcp" && network != "tcp4" && network != "tcp6" {
 		return nil, fmt.Errorf("embed: unsupported network %q", network)
 	}
-	if strings.HasSuffix(addr, ".onion") {
+	isOnion, err := onion.IsOnion(addr)
+	if err != nil {
+		return nil, err
+	}
+	if isOnion {
 		return c.hs.Connect(ctx, gonionBuilder{}, c.Consensus(), addr)
 	}
 	port := portOf(addr)

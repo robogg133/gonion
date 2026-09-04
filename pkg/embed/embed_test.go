@@ -13,6 +13,7 @@ import (
 
 	"github.com/robogg133/gonion/pkg/cells/relay"
 	"github.com/robogg133/gonion/pkg/common"
+	"github.com/robogg133/gonion/pkg/hs"
 	"github.com/robogg133/gonion/pkg/hs/capi"
 )
 
@@ -245,6 +246,20 @@ func TestDialNonOnion(t *testing.T) {
 	}
 	if err := conn.Close(); err != nil {
 		t.Fatalf("close: %v", err)
+	}
+}
+
+func TestDialOnionHostPortUsesHSPath(t *testing.T) {
+	b := &stubBuilder{}
+	c := newTestClient(b)
+	c.hs = &hs.Client{}
+
+	_, err := c.DialContext(context.Background(), "tcp", "2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion:80")
+	if err == nil {
+		t.Fatal("expected offline hidden-service setup to fail")
+	}
+	if b.built != 0 {
+		t.Fatalf("onion destination used exit path (%d circuits built)", b.built)
 	}
 }
 
