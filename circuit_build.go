@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"fmt"
 	"net"
-	"strings"
 
 	"github.com/robogg133/gonion/pkg/common"
 	"github.com/robogg133/gonion/pkg/handshakes"
@@ -61,7 +60,11 @@ func (c *Circuit) Dial(addr string) (net.Conn, error) {
 	if c.hops.Len() == 0 {
 		return nil, Public(ErrCircuit, "empty circuit")
 	}
-	if strings.HasSuffix(addr, ".onion") {
+	isOnion, err := onion.IsOnion(addr)
+	if err != nil {
+		return nil, err
+	}
+	if isOnion {
 		return c.dialOnion(addr)
 	}
 	stream, err := c.NewStream(addr, c.hops.Len()-1)
