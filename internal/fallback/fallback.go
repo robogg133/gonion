@@ -1,9 +1,12 @@
 package fallback
 
 import (
+	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
+	"strconv"
 	"time"
 
 	"github.com/robogg133/gonion/internal/shared"
@@ -15,7 +18,7 @@ type FallBackDialer struct {
 
 func New(list []shared.FallbackDir) *FallBackDialer {
 	return &FallBackDialer{
-		list: list,
+		list: append([]shared.FallbackDir(nil), list...),
 	}
 }
 
@@ -25,27 +28,48 @@ func Dial(ipv6Enabled bool) (net.Conn, error) {
 }
 
 func (fb *FallBackDialer) Dial(tryipv6 bool) (net.Conn, error) {
+	return fb.DialContext(context.Background(), tryipv6)
+}
 
-	var allErrors string
+// DialContext carries the selected fallback's RSA identity into the OR
+// handshake. Returning only its address would lose the identity pin.
+func (fb *FallBackDialer) DialContext(ctx context.Context, tryipv6 bool) (net.Conn, error) {
+	var failures []error
 	for _, v := range fb.list {
-		stop := false
-
-		addr := fmt.Sprintf("%s:%d", v.IPv4, v.ORPort)
-
-	dial:
-		conn, err := net.DialTimeout("tcp", addr, 15*time.Second)
-		if err == nil {
-			return conn, nil
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
-		allErrors = allErrors + addr + " ->" + err.Error() + "\n"
-
-		if !tryipv6 || stop || v.IPv6 == "" || v.IPv6Port == 0 {
+		raw, err := hex.DecodeString(v.Fingerprint)
+		if err != nil || len(raw) != 20 || [20]byte(raw) == [20]byte{} || net.ParseIP(v.IPv4).To4() == nil || v.ORPort == 0 {
+			failures = append(failures, fmt.Errorf("fallback: invalid identity or IPv4 endpoint"))
 			continue
 		}
-
-		addr = fmt.Sprintf("[%s]:%d", v.IPv6, v.ORPort)
-		stop = true
-		goto dial
+		addresses := []string{net.JoinHostPort(v.IPv4, strconv.Itoa(int(v.ORPort)))}
+		if tryipv6 && v.IPv6 != "" && v.IPv6Port != 0 {
+			if ip := net.ParseIP(v.IPv6); ip != nil && ip.To4() == nil {
+				addresses = append(addresses, net.JoinHostPort(v.IPv6, strconv.Itoa(int(v.IPv6Port))))
+			}
+		}
+		for _, addr := range addresses {
+			conn, err := (&net.Dialer{Timeout: 15 * time.Second}).DialContext(ctx, "tcp", addr)
+			if err == nil {
+				return &pinnedConn{Conn: conn, identity: [20]byte(raw)}, nil
+			}
+			failures = append(failures, err)
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
 	}
-	return nil, errors.New(allErrors)
+	if len(failures) == 0 {
+		return nil, fmt.Errorf("fallback: no directory relays configured")
+	}
+	return nil, errors.Join(failures...)
 }
+
+type pinnedConn struct {
+	net.Conn
+	identity [20]byte
+}
+
+func (c *pinnedConn) ExpectedRelayIdentity() [20]byte { return c.identity }
