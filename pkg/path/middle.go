@@ -7,11 +7,11 @@ func middleWeightFunc(flags [15]bool, weights common.BandWidthWeight) int64 {
 
 	if flags[common.FLAG_GUARD] {
 		weightToUse = int64(weights.Wmg)
-	} else if flags[common.FLAG_EXIT] {
-		weightToUse = int64(weights.Wmm)
+	} else if flags[common.FLAG_EXIT] && !flags[common.FLAG_BAD_EXIT] {
+		weightToUse = int64(weights.Wme)
 	}
 
-	if flags[common.FLAG_GUARD] && flags[common.FLAG_EXIT] {
+	if flags[common.FLAG_GUARD] && flags[common.FLAG_EXIT] && !flags[common.FLAG_BAD_EXIT] {
 		weightToUse = int64(weights.Wmd)
 	}
 

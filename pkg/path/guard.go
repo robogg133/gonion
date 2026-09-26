@@ -4,7 +4,7 @@ import "github.com/robogg133/gonion/pkg/common"
 
 func guardWeightFunc(flags [15]bool, weights common.BandWidthWeight) int64 {
 	var weightToUse int64 = int64(weights.Wgg)
-	if flags[common.FLAG_EXIT] {
+	if flags[common.FLAG_EXIT] && !flags[common.FLAG_BAD_EXIT] {
 		weightToUse = int64(weights.Wgd)
 	}
 	return weightToUse
