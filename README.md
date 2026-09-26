@@ -1,258 +1,109 @@
 # Gonion
+
 ![Gonion](icon.png)
 
-A pure Go implementation of the Tor client protocol.
-
-> No CGO.  
-> No bindings to the official Tor daemon.  
-> No wrappers around `libtor`.  
-> Gonion is a complete reimplementation of the Tor client stack written entirely in Go.
-
-The goal of this project is to implement the Tor protocol from scratch while keeping the codebase understandable, auditable, hackable, lightweight, and fully portable.
-
----
-
-# Design Philosophy
-
-Gonion does not try to behave like a traditional Tor wrapper.
-
-Most Tor integrations work by spawning the Tor daemon, opening a local SOCKS5 proxy, and forwarding all traffic through it.
-
-
-
-Gonion takes a completely different approach.
-
-Instead of exposing a SOCKS5 proxy and routing traffic externally, the framework contains its own native Tor networking stack and its own dialer implementation.
-
-Applications communicate directly with Gonion internally, without needing a local proxy server.
-
-This changes several things:
-
-- only the relay connections themselves are visible,
-- applications do not need to expose a local SOCKS port,
-- there is less local network surface,
-- there are fewer detectable Tor-related artifacts,
-- and the system uses fewer external resources.
-
-The objective is to make the Tor client integration feel more embedded, self-contained, lightweight, and harder to fingerprint compared to the traditional “spawn tor + connect to SOCKS5” model.
-
-The framework aims to operate as if the Tor logic were part of the application itself instead of an external daemon.
-
----
-
-# Project Goals
-
-Gonion is not just a SOCKS proxy or a minimal Tor connector.
-
-The objective is to build a **fully functional Tor client implementation** capable of handling the complete Tor networking stack directly in Go.
-
-The long-term goals include:
-
-- Full Tor link protocol implementation
-- Circuit creation and management
-- 3-hop anonymous circuits
-- Consensus fetching and parsing
-- Stream multiplexing
-- Hidden services (`.onion`)
-- Introduction points
-- DNS resolution through Tor
-- Circuit rotation
-- Relay family awareness
-- IPv4 and IPv6 support
-- Spec-compatible behavior
-- Native dialer support
-- Tor traffic obfuscation
-
-The final objective is to have a standalone Tor client implementation that can operate independently without requiring the official Tor daemon.
-
----
-
-# Why Pure Go?
-
-Most Tor-related Go projects either:
-
-- wrap the Tor daemon,
-- depend on external binaries,
-- use CGO bindings,
-- or only implement partial functionality.
-
-Gonion avoids all of that.
-
-Everything is implemented directly in Go:
-
-- TLS handling
-- Cell serialization
-- Circuit cryptography
-- Relay protocol
-- Stream management
-- Hidden service protocols
-- Directory communication
-- Transport obfuscation
-- Native Tor dialing
-
-This brings several advantages:
-
-- Easier cross compilation
-- Better portability
-- Simpler deployment
-- Easier static linking
-- Better understanding of the protocol internals
-- Full control over the networking stack
-- No external runtime dependencies
-
----
-
-# Native Dialer
-
-Instead of exposing a SOCKS5 proxy and forcing applications to connect through localhost, Gonion provides its own native Tor dialer implementation.
-
-This means applications can establish Tor connections directly through the framework itself.
-
-The advantages include:
-
-- no local SOCKS5 server,
-- no localhost proxy artifacts,
-- fewer open ports,
-- lower overhead,
-- reduced external visibility,
-- simpler embedding into applications,
-- and tighter control over connection handling.
-
-The framework aims to minimize unnecessary exposure and operate using as little externally visible infrastructure as possible.
-
----
-
-# Pluggable Transports & Obfuscation
-
-Another major objective of Gonion is native support for Tor obfuscation transports.
-
-The framework already includes support for:
-
-- obfs4
-
-The long-term goal is supporting multiple pluggable transports and censorship circumvention systems, including:
-
-- snowflake
-- webtunnel
-- custom transports
-
-The architecture is designed so transports can be integrated directly into the networking layer instead of relying on external wrappers whenever possible.
-
-This allows:
-
-- censorship bypassing,
-- traffic obfuscation,
-- DPI resistance,
-- bridge support,
-- and more stealthy relay communication.
-
----
-
-# Current State
-
-Gonion is still under active development and is not considered production ready yet.
-
-At the moment, the framework already implements large parts of the Tor low-level protocol stack, including:
-
-- Tor link protocol negotiation
-- TLS relay connections
-- CERTS validation
-- NETINFO handling
-- CREATE_FAST circuits
-- Relay cell encoding/decoding
-- SENDME flow control
-- Consensus fetching
-- Consensus parsing
-- Microdescriptor fetching
-- Microdescriptor parsing
-- Relay selection algorithms
-- Stream infrastructure
-- Circuit infrastructure
-- Directory requests through Tor circuits
-- obfs4 support
-- Native Tor dialing
-
-The architecture is designed to eventually support the entire Tor client protocol stack.
-
----
-
-# Architecture
-
-The project is structured around the actual Tor protocol layers.
-
-## Connection Layer
-
-Responsible for:
-
-- TLS connections to relays
-- Version negotiation
-- CERTS handling
-- AUTH_CHALLENGE handling
-- NETINFO exchange
-- Raw Tor cell transport
-- Pluggable transports
-- Obfuscation layers
-
-## Circuit Layer
-
-Responsible for:
-
-- Circuit lifecycle
-- Cryptographic state
-- Relay encryption/decryption
-- Flow control
-- Relay forwarding
-- SENDME handling
-- Circuit teardown
-
-## Stream Layer
-
-Responsible for:
-
-- Multiplexed streams over circuits
-- Data transfer
-- Directory streams
-- Future SOCKS and DNS support
-
-# Hidden Services
-
-A major goal of Gonion is implementing native hidden service support.
-The implementation aims to follow the Tor specifications as closely as possible.
-
----
-
-# Performance Philosophy
-
-The project aims to balance:
-
-- correctness,
-- protocol compatibility,
-- low allocations,
-- low overhead,
-- low visibility,
-- minimal external exposure,
-- and maintainable code.
-
-Some parser sections are intentionally simple for now and may be optimized later once the protocol implementation stabilizes.
-
----
-
-# Security
-
-This project deals with anonymous networking and cryptographic protocols.
-
-Even though many protocol parts are already implemented, the framework should currently be considered experimental.
-
-Security auditing, edge-case handling, hardening, and spec verification are still ongoing.
-
----
-
-# Status
-
-This project is a work in progress.
-
-The API is unstable and may change frequently while the protocol implementation evolves.
-
----
-
-## [Tor specs](https://spec.torproject.org/intro/index.html)
+An experimental **pure-Go Tor client and onion-v3 service** designed for embedding.
+No CGO, native bindings, `libtor`, external Tor daemon or local SOCKS proxy is
+required by the client implementation.
+
+> **Not production-ready or an anonymity boundary.** Persistent guard selection
+> is still missing, and no full independent security audit has been completed.
+> Successful TCP/HTTPS/onion interoperability tests do not establish anonymity,
+> censorship resistance, reduced detectability, or complete Tor compatibility.
+
+## Current functionality
+
+- TLS/OR link negotiation, relay CERTS authentication and expected identity pins.
+- Tor cell framing, ntor circuit construction, per-hop cryptography, streams,
+  SENDME flow control and deadlines.
+- Authenticated consensus download, microdescriptor hydration, refresh and
+  separate raw/hydrated cache files.
+- `pkg/embed`: `DefaultOptions`, caller-controlled bootstrap/guard dialers and
+  storage, TCP/HTTPS/onion Dial, circuit pooling and lifecycle management.
+- Onion-v3 descriptor validation, introduction/rendezvous, and service publication.
+- A Tor-backed `net.Listener` for onion services, without a local listening socket.
+  Service identities and durable descriptor revision allocation belong to callers.
+- An obfs4 transport adapter. End-to-end bridge-aware guard selection is not yet
+  implemented; using obfs4 for bootstrap alone does not route traffic through it.
+
+See the [embedding guide](pkg/embed/README.md),
+[runnable examples](examples/embed/README.md), and
+[detailed implementation status and remaining work](pkg/hs/IMPLEMENTATION_STATUS.md).
+
+For the dated development handoff, read [context and decisions](docs/CONTEXT.md),
+[current validation and known failures](docs/STATUS.md), and
+[the resume plan](docs/NEXT_STEPS.md), in that order. The 2026-09-26 full offline
+suite currently fails one ns fixture digest assertion; historical passes do not
+supersede this result.
+
+## Architecture
+
+| Area | Responsibility |
+| --- | --- |
+| Root `conn*.go` | OR/TLS handshake, relay authentication, cell I/O and connection lifetime |
+| Root `circuit*.go` | Circuit construction, relay encryption/control, routing and service-side acceptance |
+| Root `stream*.go` | Tor-backed `net.Conn`, buffering, deadlines, flow control and close behavior |
+| `pkg/cells`, `pkg/lspec` | Bounded wire encoding/decoding for link/relay cells and link specifiers |
+| `pkg/crypto`, `internal/hops`, `internal/window` | Ordinary circuit crypto, per-hop state and flow-control accounting |
+| `pkg/common`, `pkg/parsers` | Directory models, consensus signature/quorum verification, text/JSON/microdescriptor parsing |
+| Root `bootstraping.go`, `helpers.go` | Directory download, hash-checked hydration and consensus refresh |
+| `pkg/storage` | Caller-selected in-memory or on-disk public directory caches |
+| `pkg/path` | Weighted relay selection, family/identity/subnet constraints; persistent guards remain outstanding |
+| `pkg/hs/onion`, `pkg/hs/crypto`, `pkg/hs/desc` | Onion address checks, key blinding, HS-ntor, signed/encrypted descriptors |
+| `pkg/hs`, `pkg/hs/capi` | Client/service orchestration and integration with real circuits |
+| `pkg/embed` | Application-facing Dial/HTTP/Listen APIs and resource ownership |
+| `pkg/transports` | Transport adapters, independent of application network policy |
+| `internal/tests` | Opt-in public-network interoperability tests |
+| `torspec`, `tor-source` | Local protocol and C Tor references; not runtime dependencies |
+
+The implementation keeps ordinary circuit state separate from HS end-to-end
+AES-256/SHA3-256 state. Descriptor fetching/publication uses directory streams on
+dedicated circuits. A service's accepted stream is delivered directly to the
+application rather than forwarded to a local TCP server.
+
+## Consensus formats
+
+The normal `ns` consensus and microdesc consensus are distinct signed formats.
+**Neither contains every relay key by itself.** Embedded bootstrap uses the
+microdesc consensus plus matching microdescriptors.
+
+- `cached-consensus`: original signed `ns` text.
+- `cached-microdesc-consensus`: original signed microdesc text.
+- `gonion-consensus.json`: hydrated Gonion snapshot with original signed and
+  descriptor bytes, reverified before use.
+
+See the [cache and ownership contract](pkg/embed/README.md#consensus-cache-and-download-flavors).
+
+## Validation
+
+```sh
+go test ./...
+go vet ./...
+go test -race ./...
+```
+
+The default suite is offline. Opt-in tests have exercised public exit TCP/HTTPS,
+the Tor Project's onion website, and Gonion service publication with both a
+Gonion client and an independent C Tor client. The service test checks 1 MiB in
+each direction and listener/client close semantics. Commands, dependencies and
+limits are documented in the [status report](pkg/hs/IMPLEMENTATION_STATUS.md).
+
+Public-network tests are not availability guarantees. They do not replace fixed
+protocol vectors, negative tests, fuzzing, controlled-network testing or audit.
+
+## Development priorities
+
+1. Implement persistent guard state/persistence and path-bias handling.
+2. Recover directory refresh after channel loss; stress long-running service
+   rollover, publication failures and restarts.
+3. Harden the mutable authenticated-consensus API and expand CERTS/parser/stream
+   negative and concurrency tests.
+4. Add unsupported capabilities only with their corresponding spec review and
+   interoperability tests: bridge-aware guards, IPv6 streams, normal consensus
+   server-descriptor hydration and high-level authorized services.
+
+Correctness, explicit validation and readable/auditable code take priority over
+speculative optimizations. Performance and fingerprinting claims require
+measurements; being embedded is not evidence of either.
+
+Protocol source of truth: [Tor specifications](https://spec.torproject.org/intro/index.html).
