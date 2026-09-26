@@ -23,8 +23,8 @@ func TestNextConsensusFetchTime_Window(t *testing.T) {
 
 	// Sample many times from "before window".
 	now := validAfter
-	wantStart := freshUntil.Add(45 * time.Minute)  // +3/4 of 1h
-	wantEnd := freshUntil.Add(105 * time.Minute)   // +7/8 of 2h
+	wantStart := freshUntil.Add(45 * time.Minute)      // +3/4 of 1h
+	wantEnd := wantStart.Add(75 * time.Minute / 8 * 7) // +7/8 of the remaining 75m
 
 	for range 50 {
 		ft, err := gonion.NextConsensusFetchTimeForTest(cns, now)

@@ -1,11 +1,14 @@
 package tests
 
-import "testing"
+import (
+	"os"
+	"testing"
+)
 
-// skipIfShort skips live network tests when -short is set.
+// skipIfShort keeps public-network tests explicitly opt-in.
 func skipIfShort(t *testing.T) {
 	t.Helper()
-	if testing.Short() {
-		t.Skip("skipping integration test in short mode")
+	if testing.Short() || os.Getenv("GONION_NETWORK_TESTS") != "1" {
+		t.Skip("set GONION_NETWORK_TESTS=1 and omit -short for live Tor tests")
 	}
 }
