@@ -1,0 +1,30 @@
+network-status-version 3
+vote-status consensus
+consensus-method 36
+valid-after 2026-09-20 13:00:00
+fresh-until 2026-09-20 14:00:00
+valid-until 2026-09-20 16:00:00
+r Quintex152 AAjZZA/klH9z41X2fiDC0pC7xyw BO/3BB69q10vySM69aT/SGdv50k 2026-09-20 11:59:30 204.8.96.141 444 0
+a [2620:7:6003::141]:81
+s Exit Fast Guard HSDir Running Stable V2Dir Valid
+v Tor 0.4.9.12
+pr Conflux=1 Cons=1-2 Desc=1-4 DirCache=2 FlowCtrl=1-2 HSDir=2 HSIntro=4-5 HSRend=1-2 Link=3-5 LinkAuth=3 Microdesc=1-3 Padding=2 Relay=2-6
+w Bandwidth=7300
+p accept 43,53,80,443,1194,1293,9418
+r donottouchtheconfig AAxxlhMy3ae2qrKoj/B7DDdlD3A 5M+xXSiV0h7qQH+boXSuzcE8h8w 2026-09-19 22:33:47 191.115.235.251 56010 0
+s Fast Running Valid
+v Tor 0.4.9.12
+pr Conflux=1 Cons=1-2 Desc=1-4 DirCache=2 FlowCtrl=1-2 HSDir=2 HSIntro=4-5 HSRend=1-2 Link=3-5 LinkAuth=3 Microdesc=1-3 Padding=2 Relay=2-6
+w Bandwidth=520
+p reject 1-65535
+directory-footer
+bandwidth-weights Wbd=0 Wbe=0 Wbg=3630 Wbm=10000 Wdb=10000 Web=10000 Wed=10000 Wee=10000 Weg=10000 Wem=10000 Wgb=10000 Wgd=0 Wgg=6370 Wgm=6370 Wmb=10000 Wmd=0 Wme=0 Wmg=3630 Wmm=10000
+directory-signature 0232AF901C31A04EE9848595AF9BB7620D4C5B2E 79ABAEE942F8F0F6E5FEB989D2539B05AB86DD8B
+-----BEGIN SIGNATURE-----
+B2UZFLc7628vQwABxCoZUwl4vY4gkjlH7nzlHMKTELmx/SGxQlB191HAhW7q0Pxd
+25FZ+sfGFDPjho+gTPeRt2Ej8XoccZKNcYc4NwNmYuMLt5nwz6ekk0BHMMozO/Ah
+NExmADIAo6TBeIAqLeWEKmDUFVgS4b32VczF/+G6Pc3ctrRekZ7wbnBexBYNkEFB
+yX7ePfGyvTpZoslfuu9F/7r7wj0dZFveDI2/W18VQk7TUxdHYJvsQ3DEPrd8I3w4
+xGO4JxSeFWlquiJEmZhgWUYRPPUK15apKrEODvq6JzLiAYtv8VsDFyGFyOk6j9Jo
+StVrZX3kmxrMTObA9802fQ==
+-----END SIGNATURE-----

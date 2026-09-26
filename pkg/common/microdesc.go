@@ -3,6 +3,7 @@ package common
 import "crypto/ed25519"
 
 type Microdesc struct {
+	RawDocument  []byte
 	OnionKey     []byte
 	NTorOnionKey []byte            // curve25519
 	IdEd25519    ed25519.PublicKey // ed25519

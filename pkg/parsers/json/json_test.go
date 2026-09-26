@@ -18,8 +18,12 @@ func TestRoundTrip(t *testing.T) {
 	}
 	key := priv.PublicKey()
 
+	interval := uint64(1440)
 	c := &common.Consensus{
 		NetowrkStatusVersion: 3,
+		Flavor:               common.ConsensusFlavorMicrodesc,
+		SharedPreviousValue:  [32]byte{4, 5, 6},
+		HsdirInterval:        &interval,
 		ValidAfter:           time.Date(2026, 1, 30, 22, 0, 0, 0, time.UTC),
 		FreshUntil:           time.Date(2026, 1, 30, 23, 0, 0, 0, time.UTC),
 		ValidUntil:           time.Date(2026, 1, 31, 1, 0, 0, 0, time.UTC),
@@ -35,14 +39,15 @@ func TestRoundTrip(t *testing.T) {
 				DirPort:               9030,
 				BandWidth:             102400,
 				Ipv6Addr:              "[2001:db8::1]:9001",
-				MicrodescriptorDigest: "abc",
-				ProtoVersions: common.Proto{Link: 0b11000, Relay: 0b10100},
-				StatusFlags:   [common.FLAG_ARRAY_LENGTH + 1]bool{0: true, 5: true},
-				OnionKey:      []byte("fake rsa bytes"),
-				NTorOnionKey:  key,
-				IdEd25519:     []byte{0xde, 0xad},
-				Family:        []common.Family{{Digest: []byte{1, 2}}, {Nickname: "nick"}},
-				Familys:       []*common.FamilyIDs{{Kind: "AAP", Value: []byte{0xbe, 0xef}}},
+				MicrodescriptorDigest: "fXPextdkQnmBDwYmo0UHLbUhaU6C0slh/NQVtZn1VU0",
+				MicrodescriptorLoaded: true,
+				ProtoVersions:         common.Proto{Link: 0b11000, Relay: 0b10100},
+				StatusFlags:           [common.FLAG_ARRAY_LENGTH + 1]bool{0: true, 5: true},
+				OnionKey:              []byte("fake rsa bytes"),
+				NTorOnionKey:          key,
+				IdEd25519:             bytes.Repeat([]byte{0xde}, 32),
+				Family:                []common.Family{{Digest: []byte{1, 2}}, {Nickname: "nick"}},
+				Familys:               []*common.FamilyIDs{{Kind: "AAP", Value: []byte{0xbe, 0xef}}},
 			},
 		},
 	}

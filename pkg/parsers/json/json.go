@@ -2,6 +2,7 @@
 package json
 
 import (
+	"bytes"
 	"crypto/ecdh"
 	"encoding/base64"
 	"encoding/json"
@@ -10,21 +11,29 @@ import (
 	"time"
 
 	"github.com/robogg133/gonion/pkg/common"
+	"github.com/robogg133/gonion/pkg/parsers"
 )
 
 // Parser implements common.ConsensusParser using JSON as the document format.
 type Parser struct{}
 
 func (Parser) Parse(r io.Reader) (*common.Consensus, error) {
+	data, err := parsers.ReadAll(r, 256<<20)
+	if err != nil {
+		return nil, err
+	}
 	d := &dtoConsensus{}
-	if err := json.NewDecoder(r).Decode(d); err != nil {
+	if err := json.Unmarshal(data, d); err != nil {
 		return nil, err
 	}
 	return d.toConsensus()
 }
 
 func (Parser) Format(c *common.Consensus) ([]byte, error) {
-	b, err := json.MarshalIndent(dtoFromConsensus(c), "", "  ")
+	if err := c.Validate(); err != nil {
+		return nil, err
+	}
+	b, err := json.Marshal(dtoFromConsensus(c))
 	if err != nil {
 		return nil, err
 	}
@@ -32,13 +41,22 @@ func (Parser) Format(c *common.Consensus) ([]byte, error) {
 }
 
 type dtoConsensus struct {
-	NetowrkStatusVersion uint8
-	ValidAfter           time.Time
-	FreshUntil           time.Time
-	ValidUntil           time.Time
-	SharedCurrentValue   string
-	RelayInformation     []dtoRouterStatus
-	BandWidthWeight      common.BandWidthWeight
+	NetowrkStatusVersion   uint8
+	Flavor                 string
+	RawDocument            []byte
+	AuthorityCertificates  []byte
+	Microdescriptors       map[string][]byte
+	SharedPreviousValue    string
+	HasSharedPreviousValue bool
+	HasSharedCurrentValue  bool
+	HsdirInterval          *uint64
+	Params                 map[string]int32
+	ValidAfter             time.Time
+	FreshUntil             time.Time
+	ValidUntil             time.Time
+	SharedCurrentValue     string
+	RelayInformation       []dtoRouterStatus
+	BandWidthWeight        common.BandWidthWeight
 }
 
 type dtoRouterStatus struct {
@@ -47,7 +65,9 @@ type dtoRouterStatus struct {
 	Ipv4Addr              string
 	ORPort                uint16
 	IPLevel               uint32
+	DescriptorDigest      string
 	MicrodescriptorDigest string
+	MicrodescriptorLoaded bool
 	DirPort               uint16
 	BandWidth             uint32
 	Ipv6Addr              string
@@ -63,13 +83,22 @@ type dtoRouterStatus struct {
 
 func dtoFromConsensus(c *common.Consensus) *dtoConsensus {
 	d := &dtoConsensus{
-		NetowrkStatusVersion: c.NetowrkStatusVersion,
-		ValidAfter:           c.ValidAfter,
-		FreshUntil:           c.FreshUntil,
-		ValidUntil:           c.ValidUntil,
-		SharedCurrentValue:   base64.StdEncoding.EncodeToString(c.SharedCurrentValue[:]),
-		BandWidthWeight:      c.BandWidthWeight,
-		RelayInformation:     make([]dtoRouterStatus, len(c.RelayInformation)),
+		NetowrkStatusVersion:   c.NetowrkStatusVersion,
+		Flavor:                 c.Flavor,
+		RawDocument:            bytes.Clone(c.RawDocument),
+		AuthorityCertificates:  bytes.Clone(c.AuthorityCertificates),
+		Microdescriptors:       c.Microdescriptors,
+		SharedPreviousValue:    base64.StdEncoding.EncodeToString(c.SharedPreviousValue[:]),
+		HasSharedPreviousValue: c.HasSharedPreviousValue,
+		HasSharedCurrentValue:  c.HasSharedCurrentValue,
+		HsdirInterval:          c.HsdirInterval,
+		Params:                 c.Params,
+		ValidAfter:             c.ValidAfter,
+		FreshUntil:             c.FreshUntil,
+		ValidUntil:             c.ValidUntil,
+		SharedCurrentValue:     base64.StdEncoding.EncodeToString(c.SharedCurrentValue[:]),
+		BandWidthWeight:        c.BandWidthWeight,
+		RelayInformation:       make([]dtoRouterStatus, len(c.RelayInformation)),
 	}
 	for i := range c.RelayInformation {
 		rs := &c.RelayInformation[i]
@@ -79,7 +108,9 @@ func dtoFromConsensus(c *common.Consensus) *dtoConsensus {
 			Ipv4Addr:              rs.Ipv4Addr,
 			ORPort:                rs.ORPort,
 			IPLevel:               rs.IPLevel,
+			DescriptorDigest:      rs.DescriptorDigest,
 			MicrodescriptorDigest: rs.MicrodescriptorDigest,
+			MicrodescriptorLoaded: rs.MicrodescriptorLoaded,
 			DirPort:               rs.DirPort,
 			BandWidth:             rs.BandWidth,
 			Ipv6Addr:              rs.Ipv6Addr,
@@ -99,18 +130,36 @@ func dtoFromConsensus(c *common.Consensus) *dtoConsensus {
 }
 
 func (d *dtoConsensus) toConsensus() (*common.Consensus, error) {
+	if len(d.RelayInformation) > common.MaxConsensusRelays {
+		return nil, fmt.Errorf("json: too many relays")
+	}
 	c := &common.Consensus{
-		NetowrkStatusVersion: d.NetowrkStatusVersion,
-		ValidAfter:           d.ValidAfter,
-		FreshUntil:           d.FreshUntil,
-		ValidUntil:           d.ValidUntil,
-		BandWidthWeight:      d.BandWidthWeight,
-		RelayInformation:     make([]common.RouterStatus, len(d.RelayInformation)),
+		NetowrkStatusVersion:   d.NetowrkStatusVersion,
+		Flavor:                 d.Flavor,
+		RawDocument:            bytes.Clone(d.RawDocument),
+		AuthorityCertificates:  bytes.Clone(d.AuthorityCertificates),
+		Microdescriptors:       d.Microdescriptors,
+		HasSharedPreviousValue: d.HasSharedPreviousValue,
+		HasSharedCurrentValue:  d.HasSharedCurrentValue,
+		HsdirInterval:          d.HsdirInterval,
+		Params:                 d.Params,
+		ValidAfter:             d.ValidAfter,
+		FreshUntil:             d.FreshUntil,
+		ValidUntil:             d.ValidUntil,
+		BandWidthWeight:        d.BandWidthWeight,
+		RelayInformation:       make([]common.RouterStatus, len(d.RelayInformation)),
+	}
+	if d.SharedPreviousValue != "" {
+		b, err := base64.StdEncoding.Strict().DecodeString(d.SharedPreviousValue)
+		if err != nil || len(b) != 32 {
+			return nil, fmt.Errorf("json: invalid shared-rand-previous-value")
+		}
+		copy(c.SharedPreviousValue[:], b)
 	}
 	if d.SharedCurrentValue != "" {
 		b, err := base64.StdEncoding.DecodeString(d.SharedCurrentValue)
-		if err != nil {
-			return nil, fmt.Errorf("json: shared-rand-current-value: %w", err)
+		if err != nil || len(b) != 32 {
+			return nil, fmt.Errorf("json: invalid shared-rand-current-value")
 		}
 		c.SharedCurrentValue = [32]byte(b)
 	}
@@ -121,7 +170,9 @@ func (d *dtoConsensus) toConsensus() (*common.Consensus, error) {
 		rs.Ipv4Addr = ds.Ipv4Addr
 		rs.ORPort = ds.ORPort
 		rs.IPLevel = ds.IPLevel
+		rs.DescriptorDigest = ds.DescriptorDigest
 		rs.MicrodescriptorDigest = ds.MicrodescriptorDigest
+		rs.MicrodescriptorLoaded = ds.MicrodescriptorLoaded
 		rs.DirPort = ds.DirPort
 		rs.BandWidth = ds.BandWidth
 		rs.Ipv6Addr = ds.Ipv6Addr
@@ -133,14 +184,20 @@ func (d *dtoConsensus) toConsensus() (*common.Consensus, error) {
 		var err error
 		if ds.NodeID != "" {
 			var b []byte
-			b, err = base64.RawStdEncoding.DecodeString(ds.NodeID)
+			b, err = base64.RawStdEncoding.Strict().DecodeString(ds.NodeID)
+			if err == nil && len(b) != 20 {
+				err = fmt.Errorf("invalid relay identity length")
+			}
 			if err == nil {
 				rs.NodeID = [20]byte(b)
 			}
 		}
 		if err == nil && ds.Ports != "" {
 			var b []byte
-			b, err = base64.StdEncoding.DecodeString(ds.Ports)
+			b, err = base64.StdEncoding.Strict().DecodeString(ds.Ports)
+			if err == nil && len(b) != len(rs.Ports) {
+				err = fmt.Errorf("invalid ports bitmap length")
+			}
 			if err == nil {
 				copy(rs.Ports[:], b)
 			}
@@ -161,6 +218,9 @@ func (d *dtoConsensus) toConsensus() (*common.Consensus, error) {
 		if err != nil {
 			return nil, fmt.Errorf("json: router %d (%s): %w", i, ds.Nickname, err)
 		}
+	}
+	if err := c.Validate(); err != nil {
+		return nil, err
 	}
 	return c, nil
 }

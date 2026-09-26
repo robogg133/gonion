@@ -1,0 +1,30 @@
+network-status-version 3 microdesc
+vote-status consensus
+consensus-method 35
+valid-after 2026-08-22 17:00:00
+fresh-until 2026-08-22 18:00:00
+valid-until 2026-08-22 20:00:00
+r Quintex152 AAjZZA/klH9z41X2fiDC0pC7xyw 2038-01-01 00:00:00 204.8.96.141 444 0
+a [2620:7:6003::141]:81
+m fXPextdkQnmBDwYmo0UHLbUhaU6C0slh/NQVtZn1VU0
+s Exit Fast Guard HSDir Running Stable V2Dir Valid
+v Tor 0.4.9.11
+pr Conflux=1 Cons=1-2 Desc=1-4 DirCache=2 FlowCtrl=1-2 HSDir=2 HSIntro=4-5 HSRend=1-2 Link=3-5 LinkAuth=3 Microdesc=1-3 Padding=2 Relay=2-6
+w Bandwidth=5900
+r seele AAoQ1DAR6kkoo19hBAX5K0QztNw 2038-01-01 00:00:00 104.53.221.159 9001 0
+m xqtBGgHfpPjJFk3yMWGOZGfNYYpw4SlqIn0pOE0IngQ
+s Fast Running Stable V2Dir Valid
+v Tor 0.4.9.8
+pr Conflux=1 Cons=1-2 Desc=1-4 DirCache=2 FlowCtrl=1-2 HSDir=2 HSIntro=4-5 HSRend=1-2 Link=3-5 LinkAuth=3 Microdesc=1-3 Padding=2 Relay=2-6
+w Bandwidth=290
+directory-footer
+bandwidth-weights Wbd=0 Wbe=0 Wbg=4089 Wbm=10000 Wdb=10000 Web=10000 Wed=10000 Wee=10000 Weg=10000 Wem=10000 Wgb=10000 Wgd=0 Wgg=5911 Wgm=5911 Wmb=10000 Wmd=0 Wme=0 Wmg=4089 Wmm=10000
+directory-signature sha256 0232AF901C31A04EE9848595AF9BB7620D4C5B2E 79ABAEE942F8F0F6E5FEB989D2539B05AB86DD8B
+-----BEGIN SIGNATURE-----
+BXBwK2edj3E3B3vqV781C3diZN3sbLWXg85kYopOlTrWLt7B79fy0djyFMFEHNnE
+8gDCibIZYwKI5Gt9PqfOWXMuQ2ucYcrH4imYL3K3qqC8O3G3FVg4SGgCwVo4RDIU
+Yr6QNR+toCTkhuSVphSodRF3WH7Yxidem4Z/v61qeTnFGwMc56avV6rQmwVtpimm
+nqiZ0WnsTvOhjZljooKYhD5Y/BuIXHjKjLwZP5Rjk3XYOtaEdj83iAb7vP102gEw
+YT1EZSlKlO/NvzAdMnMUJVIAlgci3QIcWVnLYG0TcOYwgWihssEDY135TCCDLJYU
+UudAmaUROi499Z5YoKWHyA==
+-----END SIGNATURE-----
