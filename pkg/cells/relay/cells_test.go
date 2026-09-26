@@ -56,7 +56,7 @@ func TestBeginCell_EncodeDecode(t *testing.T) {
 	if err := out.Decode(bytes.NewReader(buf.Bytes())); err != nil {
 		t.Fatal(err)
 	}
-	if out.Addrport != "example.com:80\x00" {
+	if out.Addrport != "example.com:80" {
 		t.Fatalf("addrport=%q", out.Addrport)
 	}
 	if out.Flags != relay.BEGIN_FLAG_IPV6_OK {
@@ -76,6 +76,10 @@ func TestBeginCell_ZeroFlags_OmitsFlagsField(t *testing.T) {
 	}
 	if got := buf.String(); got != ":443\x00" {
 		t.Fatalf("body=%q", got)
+	}
+	var out relay.BeginCell
+	if err := out.Decode(bytes.NewReader(buf.Bytes())); err != nil || out.Addrport != ":443" || out.Flags != 0 {
+		t.Fatalf("BEGIN without FLAGS: %+v, %v", out, err)
 	}
 }
 

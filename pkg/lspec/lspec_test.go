@@ -98,9 +98,13 @@ func TestLspec_Read_RoundTrip_IPv4(t *testing.T) {
 
 func TestLspec_Read_UnknownType(t *testing.T) {
 	raw := []byte{99, 1, 0x00}
-	_, err := lspec.Read(bytes.NewReader(raw))
-	if err == nil {
-		t.Fatal("expected error")
+	spec, err := lspec.Read(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := spec.Write(&out); err != nil || !bytes.Equal(out.Bytes(), raw) {
+		t.Fatalf("unknown specifier was not preserved: %x, %v", out.Bytes(), err)
 	}
 }
 

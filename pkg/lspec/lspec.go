@@ -1,6 +1,7 @@
 package lspec
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"fmt"
 	"io"
@@ -32,6 +33,23 @@ type Lspec struct {
 	spec spec
 }
 
+// Unknown specifiers must survive descriptor-to-EXTEND2 forwarding verbatim.
+type opaqueSpec struct {
+	kind uint8
+	body []byte
+}
+
+func (s *opaqueSpec) Type() uint8              { return s.kind }
+func (s *opaqueSpec) Len() uint8               { return uint8(len(s.body)) }
+func (s *opaqueSpec) Marshal() ([]byte, error) { return bytes.Clone(s.body), nil }
+func (s *opaqueSpec) Unmarshal(b []byte) error {
+	if len(b) > 255 {
+		return fmt.Errorf("lspec: oversized specifier")
+	}
+	s.body = bytes.Clone(b)
+	return nil
+}
+
 type ip struct {
 	ip   netip.Addr
 	port uint16
@@ -46,7 +64,9 @@ type (
 )
 
 func (lspec *Lspec) Write(w io.Writer) error {
-
+	if lspec.spec == nil {
+		return fmt.Errorf("lspec: missing specifier")
+	}
 	if _, err := w.Write([]byte{lspec.spec.Type(), lspec.spec.Len()}); err != nil {
 		return err
 	}
@@ -65,17 +85,16 @@ func (lspec *Lspec) Type() uint8 {
 
 // Bytes returns the bare specifier body (no TYPE/LEN header).
 func (lspec *Lspec) Bytes() ([]byte, error) {
+	if lspec.spec == nil {
+		return nil, fmt.Errorf("lspec: missing specifier")
+	}
 	return lspec.spec.Marshal()
 }
 
 func Read(r io.Reader) (Lspec, error) {
 	header := make([]byte, 2)
-	if _, err := r.Read(header); err != nil {
+	if _, err := io.ReadFull(r, header); err != nil {
 		return Lspec{}, err
-	}
-
-	if header[1] > LEN_LSTYPE_ED25519_ID {
-		return Lspec{}, fmt.Errorf("lspec: too big %d", header[1])
 	}
 
 	specBuffer := make([]byte, header[1])
@@ -83,22 +102,14 @@ func Read(r io.Reader) (Lspec, error) {
 		return Lspec{}, err
 	}
 
-	spec := lspecType(header[0])
-	if spec == nil {
-		return Lspec{}, fmt.Errorf("lspec: unknown type %d", header[0])
-	}
-
-	if err := spec.Unmarshal(specBuffer); err != nil {
-		return Lspec{}, err
-	}
-	return Lspec{spec: spec}, nil
+	return FromWire(header[0], specBuffer)
 }
 
 func (LegacyID) Type() uint8                 { return LSTYPE_LEGACY_ID }
 func (LegacyID) Len() uint8                  { return LEN_LSTYPE_LEGACY_ID }
 func (id LegacyID) Marshal() ([]byte, error) { return id[:], nil }
 func (id *LegacyID) Unmarshal(b []byte) error {
-	if len(b) > int(LEN_LSTYPE_LEGACY_ID) {
+	if len(b) != int(LEN_LSTYPE_LEGACY_ID) {
 		return fmt.Errorf("lspec: too big expecting len %d", LEN_LSTYPE_LEGACY_ID)
 	}
 	*id = [20]byte(b)
@@ -109,7 +120,7 @@ func (Ed25519ID) Type() uint8                 { return LSTYPE_ED25519_ID }
 func (Ed25519ID) Len() uint8                  { return LEN_LSTYPE_ED25519_ID }
 func (id Ed25519ID) Marshal() ([]byte, error) { return id[:], nil }
 func (id *Ed25519ID) Unmarshal(b []byte) error {
-	if len(b) > int(LEN_LSTYPE_ED25519_ID) {
+	if len(b) != int(LEN_LSTYPE_ED25519_ID) {
 		return fmt.Errorf("lspec: too big expecting len %d", LEN_LSTYPE_ED25519_ID)
 	}
 	*id = b
@@ -161,7 +172,11 @@ func lspecType(lstype uint8) spec {
 func FromWire(lsType uint8, body []byte) (Lspec, error) {
 	s := lspecType(lsType)
 	if s == nil {
-		return Lspec{}, fmt.Errorf("lspec: unknown type %d", lsType)
+		raw := &opaqueSpec{kind: lsType}
+		if err := raw.Unmarshal(body); err != nil {
+			return Lspec{}, err
+		}
+		return Lspec{spec: raw}, nil
 	}
 	if len(body) != int(s.Len()) {
 		return Lspec{}, fmt.Errorf("lspec: type %d body len %d want %d", lsType, len(body), s.Len())

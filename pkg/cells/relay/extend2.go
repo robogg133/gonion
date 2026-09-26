@@ -3,6 +3,7 @@ package relay
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"io"
 
 	"github.com/robogg133/gonion/pkg/handshakes"
@@ -12,10 +13,8 @@ import (
 const COMMAND_EXTEND2 uint8 = 14
 
 type Extend2Cell struct {
-	StreamID uint16
-
-	Lspecs []lspec.Lspec
-
+	StreamID  uint16
+	Lspecs    []lspec.Lspec
 	HType     uint16
 	Handshake handshakes.Handshake
 }
@@ -25,67 +24,31 @@ func (c *Extend2Cell) GetStreamID() uint16  { return c.StreamID }
 func (c *Extend2Cell) SetStreamID(n uint16) { c.StreamID = n }
 
 func (c *Extend2Cell) Encode(w io.Writer) error {
-	if err := binary.Write(w, binary.BigEndian, uint8(len(c.Lspecs))); err != nil {
-		return err
+	if c.StreamID != 0 || len(c.Lspecs) == 0 || len(c.Lspecs) > 255 || c.Handshake == nil {
+		return fmt.Errorf("invalid EXTEND2 fields")
 	}
-
-	rearrangeList(c.Lspecs)
-	for _, v := range c.Lspecs {
-		if err := v.Write(w); err != nil {
+	var payload bytes.Buffer
+	payload.WriteByte(byte(len(c.Lspecs)))
+	// rend-spec-v3 2.5.2.2: retain descriptor/RP specifiers and their order.
+	for _, spec := range c.Lspecs {
+		if err := spec.Write(&payload); err != nil {
 			return err
 		}
 	}
-
-	var buffer bytes.Buffer
-	c.Handshake.Encode(&buffer)
-
-	binary.Write(w, binary.BigEndian, c.HType)
-	binary.Write(w, binary.BigEndian, uint16(buffer.Len()))
-
-	_, err := w.Write(buffer.Bytes())
+	var handshake bytes.Buffer
+	if err := c.Handshake.Encode(&handshake); err != nil {
+		return err
+	}
+	if handshake.Len() > 65535 || payload.Len()+4+handshake.Len() > RELAY_BODY_LEN {
+		return fmt.Errorf("EXTEND2 payload too large")
+	}
+	binary.Write(&payload, binary.BigEndian, c.HType)
+	binary.Write(&payload, binary.BigEndian, uint16(handshake.Len()))
+	payload.Write(handshake.Bytes())
+	_, err := w.Write(payload.Bytes())
 	return err
 }
 
-func rearrangeList(specs []lspec.Lspec) {
-	for _, v := range specs {
-		rearrangeLspec(specs, v)
-	}
-}
-func rearrangeLspec(specs []lspec.Lspec, spec lspec.Lspec) {
-	switch spec.Type() {
-	case lspec.LSTYPE_IPV4:
-		v := specs[0]
-		if v.Type() != spec.Type() {
-			specs[0] = spec
-			rearrangeLspec(specs, v)
-		}
-
-	case lspec.LSTYPE_IPV6:
-		v := specs[3]
-		if v.Type() != spec.Type() {
-			specs[3] = spec
-			rearrangeLspec(specs, v)
-		}
-
-	case lspec.LSTYPE_LEGACY_ID:
-		v := specs[1]
-		if v.Type() != spec.Type() {
-			specs[1] = spec
-			rearrangeLspec(specs, v)
-		}
-
-	case lspec.LSTYPE_ED25519_ID:
-		v := specs[2]
-		if v.Type() != spec.Type() {
-			specs[2] = spec
-			rearrangeLspec(specs, v)
-		}
-	default:
-		panic("invalid lstype")
-	}
-}
-
 func (*Extend2Cell) Decode(r io.Reader) error {
-	// TODO
-	return nil
+	return fmt.Errorf("received EXTEND2 on a client circuit")
 }
