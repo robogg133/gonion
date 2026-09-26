@@ -25,4 +25,10 @@ func TestStoreGet(t *testing.T) {
 	if !reflect.DeepEqual(got, c) {
 		t.Fatalf("got %+v, want %+v", got, c)
 	}
+	c.ValidUntil = time.Time{}
+	got.ValidUntil = time.Time{}
+	again, _ := st.GetConsensus()
+	if again.ValidUntil.IsZero() {
+		t.Fatal("store aliases caller snapshots")
+	}
 }

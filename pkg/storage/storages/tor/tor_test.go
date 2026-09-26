@@ -1,54 +1,71 @@
 package tor
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
-	"time"
 
-	"github.com/robogg133/gonion/pkg/common"
+	"github.com/robogg133/gonion/pkg/parsers/usual"
 )
 
 func TestStoreReload(t *testing.T) {
-	dir := t.TempDir()
-
-	st := New(dir)
-	c := &common.Consensus{
-		NetowrkStatusVersion: 3,
-		ValidAfter:           time.Date(2026, 1, 30, 22, 0, 0, 0, time.UTC),
-		FreshUntil:           time.Date(2026, 1, 30, 23, 0, 0, 0, time.UTC),
-		ValidUntil:           time.Date(2026, 1, 31, 1, 0, 0, 0, time.UTC),
-		BandWidthWeight:      common.BandWidthWeight{Wgg: 1},
-		RelayInformation: []common.RouterStatus{{
-			Nickname: "relay1",
-			NodeID:   [20]byte{1},
-			Ipv4Addr: "1.2.3.4",
-			ORPort:   9001,
-		}},
+	for _, tc := range []struct{ fixture, name string }{{"consensus.txt", cachedConsensusFile}, {"consensus-microdesc.txt", cachedMicrodescConsensusFile}} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			data, err := os.ReadFile("../../../../internal/tests/" + tc.fixture)
+			if err != nil {
+				t.Fatal(err)
+			}
+			c, err := (usual.Parser{}).Parse(bytes.NewReader(data))
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Keep the storage check small; parser tests cover the full relay set.
+			c.RelayInformation = c.RelayInformation[:min(3, len(c.RelayInformation))]
+			if err := New(dir).StoreConsensus(c); err != nil {
+				t.Fatal(err)
+			}
+			got, err := New(dir).GetConsensus()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(c, got) {
+				t.Fatal("snapshot lost fields")
+			}
+			raw, err := os.ReadFile(filepath.Join(dir, tc.name))
+			if err != nil || !bytes.Equal(raw, data) {
+				t.Fatal("wrong raw document", err)
+			}
+			for _, name := range []string{tc.name, snapshotFile} {
+				fi, err := os.Stat(filepath.Join(dir, name))
+				if err != nil || fi.Mode().Perm() != 0600 {
+					t.Fatal("wrong permissions", err)
+				}
+			}
+			if err := os.WriteFile(filepath.Join(dir, snapshotFile), []byte("truncated"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := New(dir).GetConsensus(); err != nil {
+				t.Fatal("raw fallback failed", err)
+			}
+		})
 	}
+}
 
-	if err := st.StoreConsensus(c); err != nil {
-		t.Fatal(err)
-	}
-
-	got, err := New(dir).GetConsensus()
+func TestRejectMislabeledCache(t *testing.T) {
+	data, err := os.ReadFile("../../../../internal/tests/consensus-microdesc.txt")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(got, c) {
-		t.Fatalf("reloaded consensus mismatch:\ngot  %+v\nwant %+v", got, c)
-	}
-
-	fi, err := os.Stat(filepath.Join(dir, cachedConsensusFile))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if fi.Mode().Perm() != 0o600 {
-		t.Fatalf("cached-consensus mode = %o, want 600", fi.Mode().Perm())
-	}
-
-	if _, err := New(dir + "/missing").GetConsensus(); err == nil {
-		t.Fatal("expected error for missing dir")
+	for _, data := range [][]byte{data, []byte(`{"NetowrkStatusVersion":3}`)} {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, cachedConsensusFile), data, 0600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := New(dir).GetConsensus(); err == nil {
+			t.Fatal("accepted mislabeled or legacy JSON cache")
+		}
 	}
 }

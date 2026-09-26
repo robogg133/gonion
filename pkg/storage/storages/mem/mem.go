@@ -21,12 +21,12 @@ func New() storage.Storage {
 func (s *store) StoreConsensus(c *common.Consensus) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.c = c
+	s.c = c.Clone()
 	return nil
 }
 
 func (s *store) GetConsensus() (*common.Consensus, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.c, nil
+	return s.c.Clone(), nil
 }
