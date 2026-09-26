@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 
@@ -63,8 +64,10 @@ func NewDataCellCoder(backwards, forward *crypto.RunningValues) *RelayCellCoder 
 	}
 }
 
+var ErrUnrecognized = errors.New("relay cell is not recognized by this hop")
+
 func IsDecrypted(data []byte) bool {
-	return bytes.Equal(data[1:3], []byte{0, 0})
+	return len(data) >= 3 && data[1] == 0 && data[2] == 0
 }
 
 // Marshal Encodes the given cell, aply all relay headers, apply digest to the header and returns []byte with encrypted data
@@ -109,7 +112,9 @@ func (d *RelayCellCoder) Marshal(c Cell) ([]byte, error) {
 		return nil, err
 	}
 
-	d.applyPadding(&payload)
+	if err := d.applyPadding(&payload); err != nil {
+		return nil, err
+	}
 
 	if _, err := buffer.Write(payload.Bytes()); err != nil {
 		return nil, err
@@ -149,12 +154,20 @@ func (d *RelayCellCoder) Unmarshal(b []byte) (Cell, error) {
 }
 
 func (d *RelayCellCoder) UnmarshalPlain(plain []byte) (Cell, error) {
-	// [1:3] Recognized, must be 0
-	// If the recognized is not 0, something is wrong, the data is still encrypted
-	if !bytes.Equal(plain[1:3], []byte{0, 0}) {
-		return nil, fmt.Errorf("recognized is not 0")
+	if len(plain) != 509 {
+		return nil, fmt.Errorf("invalid relay cell length")
 	}
-
+	if !IsDecrypted(plain) {
+		return nil, ErrUnrecognized
+	}
+	digest, err := d.backwardCheck(plain)
+	if err != nil {
+		return nil, err
+	}
+	payloadLen := int(binary.BigEndian.Uint16(plain[9:11]))
+	if payloadLen > RELAY_BODY_LEN {
+		return nil, fmt.Errorf("invalid relay payload length")
+	}
 	factory, ok := AllKnownRellayCells[plain[0]]
 	if !ok {
 		return nil, fmt.Errorf("unknown relay command: %d", plain[0])
@@ -163,13 +176,6 @@ func (d *RelayCellCoder) UnmarshalPlain(plain []byte) (Cell, error) {
 
 	// StreamID [3:5]
 	c.SetStreamID(binary.BigEndian.Uint16(plain[3:5]))
-
-	digest, err := d.backwardCheck(plain)
-	if err != nil {
-		return nil, err
-	}
-
-	payloadLen := binary.BigEndian.Uint16(plain[9:11])
 
 	reader := bytes.NewReader(plain[11 : payloadLen+11])
 	if c, ok := c.(*DataCell); ok {
@@ -209,23 +215,16 @@ func (d *RelayCellCoder) applyPadding(buffer *bytes.Buffer) error {
 }
 
 func (d *RelayCellCoder) backwardCheck(b []byte) ([20]byte, error) {
-	// [5:9] Digest position (4 bytes)
-
-	// Saving the original value
-	originalD := make([]byte, 4)
-	copy(originalD, b[5:9])
-
-	// Replacing the original value with 0's
-	copy(b[5:9], []byte{0, 0, 0, 0})
-
-	if err := d.Backwards.Write(b); err != nil {
+	original := [4]byte(b[5:9])
+	clear(b[5:9])
+	sum, recognized, err := d.Backwards.CheckDigest(b, original[:])
+	copy(b[5:9], original[:])
+	if err != nil {
 		return [20]byte{}, err
 	}
-	sum := d.Backwards.Sum()
-
-	if !bytes.Equal(originalD[:], sum[0:4]) {
-		return [20]byte{}, fmt.Errorf("error doing backward check, expected result: (%x), but got: (%x)", originalD, sum[0:4])
+	if !recognized {
+		return [20]byte{}, ErrUnrecognized
 	}
-
+	// SENDME v1 carries the first 20 digest bytes, including for HS hops.
 	return [20]byte(sum), nil
 }

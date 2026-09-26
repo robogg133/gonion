@@ -1,6 +1,9 @@
 package relay
 
-import "io"
+import (
+	"fmt"
+	"io"
+)
 
 // Rendezvous1Cell, sent by the service to the rendezvous point to join its
 // circuit (rendezvous-protocol §JOIN_REND).
@@ -41,11 +44,16 @@ func (c *Rendezvous2Cell) GetStreamID() uint16  { return c.StreamID }
 func (c *Rendezvous2Cell) SetStreamID(n uint16) { c.StreamID = n }
 
 func (c *Rendezvous2Cell) Encode(w io.Writer) error {
+	if len(c.HandshakeInfo) != 64 {
+		return fmt.Errorf("relay: HS-ntor rendezvous reply must be 64 bytes")
+	}
 	_, err := w.Write(c.HandshakeInfo)
 	return err
 }
 func (c *Rendezvous2Cell) Decode(r io.Reader) error {
+	// C Tor still pads RENDEZVOUS1 to 168 bytes; the relay forwards the
+	// padding after stripping the cookie. It is not part of HANDSHAKE_INFO.
 	var err error
-	c.HandshakeInfo, err = io.ReadAll(r)
+	c.HandshakeInfo, err = readExact(r, 64)
 	return err
 }

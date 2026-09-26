@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"encoding/binary"
 	"fmt"
@@ -43,6 +44,16 @@ type introHead struct {
 	LegacyKeyID [20]byte
 	AuthKey     ed25519.PublicKey
 	Exts        []Ext
+}
+
+// Header returns the exact parsed prefix. Do not sort or discard extensions:
+// all of these bytes participate in the INTRODUCE1/2 authentication MAC.
+func (h *introHead) Header() ([]byte, error) {
+	var out bytes.Buffer
+	if err := h.encodeIntroHead(&out); err != nil {
+		return nil, err
+	}
+	return out.Bytes(), nil
 }
 
 func (h *introHead) encodeIntroHead(w io.Writer) error {
@@ -163,7 +174,11 @@ func readLenP(r io.Reader) ([]byte, error) {
 	if _, err := io.ReadFull(r, p[:]); err != nil {
 		return nil, err
 	}
-	b := make([]byte, binary.BigEndian.Uint16(p[:]))
+	size := int(binary.BigEndian.Uint16(p[:]))
+	if size > RELAY_BODY_LEN {
+		return nil, fmt.Errorf("relay: oversized length-prefixed field")
+	}
+	b := make([]byte, size)
 	if _, err := io.ReadFull(r, b); err != nil {
 		return nil, err
 	}

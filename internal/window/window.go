@@ -51,6 +51,8 @@ func (w *Window) Subtract(n int32) {
 	}
 }
 
+func (w *Window) Value() int32 { return atomic.LoadInt32(&w.v) }
+
 func (w *Window) IsZero() bool {
 	return atomic.LoadInt32(&w.v) <= 0
 }

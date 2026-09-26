@@ -2,19 +2,25 @@ package hops
 
 import (
 	"fmt"
+	"sync"
 
 	"github.com/robogg133/gonion/pkg/cells/relay"
 )
 
 type Chain struct {
+	mu   sync.RWMutex
 	Hops []*Hop
 }
 
 func (c *Chain) Len() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	return len(c.Hops)
 }
 
 func (c *Chain) At(i int) *Hop {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	if i < 0 || i >= len(c.Hops) {
 		return nil
 	}
@@ -22,6 +28,8 @@ func (c *Chain) At(i int) *Hop {
 }
 
 func (c *Chain) Guard() *Hop {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	if len(c.Hops) == 0 {
 		return nil
 	}
@@ -29,6 +37,8 @@ func (c *Chain) Guard() *Hop {
 }
 
 func (c *Chain) Exit() *Hop {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	if len(c.Hops) == 0 {
 		return nil
 	}
@@ -36,13 +46,17 @@ func (c *Chain) Exit() *Hop {
 }
 
 func (c *Chain) Append(h *Hop) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.Hops = append(c.Hops, h)
 }
 
 // UnmarshalMessage peels onion layers from guard toward exit until a hop recognizes the cell.
 // msg is modified in place.
 func (c *Chain) UnmarshalMessage(msg []byte) (fromHop int, rc relay.Cell, err error) {
-	if len(c.Hops) == 0 {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if len(msg) != 509 || len(c.Hops) == 0 {
 		return -1, nil, ErrCantDecrypt
 	}
 	for id, hop := range c.Hops {
@@ -60,6 +74,8 @@ func (c *Chain) UnmarshalMessage(msg []byte) (fromHop int, rc relay.Cell, err er
 
 // MarshalMessage encodes rc at hop dst and applies forward layers dst-1..0.
 func (c *Chain) MarshalMessage(rc relay.Cell, dst int) ([]byte, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	if dst < 0 || dst >= len(c.Hops) {
 		return nil, fmt.Errorf("invalid destination: %d", dst)
 	}

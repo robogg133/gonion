@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"encoding/binary"
+	"encoding/hex"
 	"reflect"
 	"testing"
 )
@@ -56,6 +57,27 @@ func TestHSCellsRoundTrip(t *testing.T) {
 		}
 		if !reflect.DeepEqual(c, dec) {
 			t.Fatalf("%T round-trip mismatch:\n got %#v\n want %#v", c, dec, c)
+		}
+	}
+}
+
+func TestRendezvous2TorPadding(t *testing.T) {
+	// Appendix G.1 HANDSHAKE_INFO, followed by the padding emitted by
+	// C Tor hs_circ_service_rp_has_opened. The parser reads 64 bytes only.
+	reply, err := hex.DecodeString("8FBE0DB4D4A9C7FF46701E3E0EE7FD05CD28BE4F302460ADDEEC9E93354EE7004A92E8437B8424D5E5EC279245D5C72B25A0327ACF6DAF902079FCB643D8B208")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, size := range []int{64, 148, RELAY_BODY_LEN} {
+		padded := append(bytes.Clone(reply), bytes.Repeat([]byte{0xa5}, size-64)...)
+		var cell Rendezvous2Cell
+		if err := cell.Decode(bytes.NewReader(padded)); err != nil || !bytes.Equal(cell.HandshakeInfo, reply) {
+			t.Fatalf("size=%d reply=%x err=%v", size, cell.HandshakeInfo, err)
+		}
+	}
+	for n := 0; n < 64; n++ {
+		if err := (&Rendezvous2Cell{}).Decode(bytes.NewReader(reply[:n])); err == nil {
+			t.Fatalf("accepted %d bytes", n)
 		}
 	}
 }

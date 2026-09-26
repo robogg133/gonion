@@ -63,7 +63,11 @@ func (h *Hop) Marshal(rc relay.Cell) ([]byte, error) {
 func (h *Hop) ReadMessage(body []byte) (relay.Cell, error) {
 	h.coder.Backwards.XORKeyStream(body[0:], body)
 	if relay.IsDecrypted(body) {
-		return h.coder.UnmarshalPlain(body)
+		cell, err := h.coder.UnmarshalPlain(body)
+		if errors.Is(err, relay.ErrUnrecognized) {
+			return nil, ErrCantDecrypt
+		}
+		return cell, err
 	}
 	return nil, ErrCantDecrypt
 }

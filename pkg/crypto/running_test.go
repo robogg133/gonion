@@ -2,6 +2,9 @@ package crypto_test
 
 import (
 	"bytes"
+	"crypto/sha1"
+	"crypto/sha3"
+	"hash"
 	"testing"
 
 	"github.com/robogg133/gonion/pkg/crypto"
@@ -49,6 +52,46 @@ func TestRunningValues_DigestAdvances(t *testing.T) {
 	s1 := rv.Sum()
 	if bytes.Equal(s0, s1) {
 		t.Fatal("digest should change after Write")
+	}
+}
+
+func TestUnrecognizedDigestRollsBack(t *testing.T) {
+	// tor-spec 6.1: a candidate with recognized=0 and a mismatched digest
+	// must not advance state. Check against the standard hash, not our writer.
+	for _, hs := range []bool{false, true} {
+		var rv *crypto.RunningValues
+		var reference hash.Hash
+		var err error
+		seed := bytes.Repeat([]byte{0x42}, 20)
+		if hs {
+			seed = bytes.Repeat([]byte{0x42}, 32)
+			rv, err = crypto.NewHSRunningValues(bytes.Repeat([]byte{1}, 32), seed)
+			reference = sha3.New256()
+		} else {
+			rv, err = crypto.NewRunningValues(bytes.Repeat([]byte{1}, 16), seed)
+			reference = sha1.New()
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		reference.Write(seed)
+		before := bytes.Clone(rv.Sum())
+		plain := make([]byte, 509)
+		plain[0], plain[4], plain[10], plain[11] = 2, 1, 1, 42
+		reference.Write(plain)
+		want := reference.Sum(nil)
+		wrong := bytes.Clone(want[:4])
+		wrong[0] ^= 1
+		if _, ok, err := rv.CheckDigest(plain, wrong); err != nil || ok {
+			t.Fatalf("wrong digest: %v", err)
+		}
+		if !bytes.Equal(rv.Sum(), before) {
+			t.Fatal("unrecognized cell changed digest state")
+		}
+		got, ok, err := rv.CheckDigest(plain, want[:4])
+		if err != nil || !ok || !bytes.Equal(got, want) || !bytes.Equal(rv.Sum(), want) {
+			t.Fatalf("valid digest after rollback: %v", err)
+		}
 	}
 }
 
