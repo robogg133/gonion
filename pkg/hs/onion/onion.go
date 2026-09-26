@@ -22,9 +22,13 @@ type OnionHostname struct {
 }
 
 func NewFromString(addr string) (*OnionHostname, error) {
-	host, err := Host(addr)
-	if err != nil {
-		return nil, err
+	host := addr
+	if strings.Contains(addr, ":") {
+		var err error
+		host, err = Host(addr)
+		if err != nil {
+			return nil, err
+		}
 	}
 	addr = strings.TrimSuffix(strings.ToLower(host), HostnameSufix)
 	if len(addr) != 56 {
@@ -58,8 +62,8 @@ func NewFromString(addr string) (*OnionHostname, error) {
 	return o, nil
 }
 
-// Host extracts the hostname accepted by the dial APIs. Bare onion hostnames
-// remain accepted for existing direct Circuit.Dial callers.
+// Host extracts the hostname from a host:port dial address.
+// NewFromString also accepts bare onion hostnames for identity parsing.
 func Host(addr string) (string, error) {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {

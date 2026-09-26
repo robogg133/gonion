@@ -34,6 +34,7 @@ func TestSearchKeysOffEd25519Identity(t *testing.T) {
 				common.FLAG_HIDDEN_SERVICE_DIR: true,
 			},
 		})
+		relays[i].ProtoVersions.HSDir.SetValue(common.VERSION_2, true)
 	}
 
 	// Oracle: relays sorted by ed25519-based index, then take the first 3
