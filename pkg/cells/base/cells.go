@@ -52,25 +52,54 @@ func NewCellCoder(knownCells map[uint8]func() Cell) *CellCoder {
 	}
 }
 
-// ReadCell reads a cell from the reader.
-// The first 4 bytes (circuit id) are discarded; callers that need it must parse the header themselves.
+// ReadFrame consumes exactly one cell, including unknown commands. Passing
+// version 3 is appropriate before the initial VERSIONS exchange (tor-spec 3).
+func ReadFrame(reader io.Reader, version uint16) ([]byte, error) {
+	if version < 1 || version > 5 {
+		return nil, fmt.Errorf("unsupported link version %d", version)
+	}
+	idLen := 2
+	if version >= 4 {
+		idLen = 4
+	}
+	header := make([]byte, idLen+1, idLen+3)
+	if _, err := io.ReadFull(reader, header); err != nil {
+		return nil, err
+	}
+	cmd := header[idLen]
+	length := CELL_BODY_LEN
+	if version >= 2 && cmd == COMMAND_VERSIONS || version >= 3 && cmd >= 128 {
+		header = header[:idLen+3]
+		if _, err := io.ReadFull(reader, header[idLen+1:]); err != nil {
+			return nil, err
+		}
+		length = int(binary.BigEndian.Uint16(header[idLen+1:]))
+	}
+	frame := make([]byte, len(header)+length)
+	copy(frame, header)
+	_, err := io.ReadFull(reader, frame[len(header):])
+	return frame, err
+}
+
+// ReadCell decodes a complete post-negotiation v4/v5 frame. Decode methods only
+// see their own payload, so a malformed parser cannot consume the next frame.
 func (r *CellCoder) ReadCell(reader io.Reader) (Cell, error) {
-	if _, err := io.CopyN(io.Discard, reader, 4); err != nil {
+	frame, err := ReadFrame(reader, 4)
+	if err != nil {
 		return nil, err
 	}
-
-	cmd := make([]byte, 1)
-	if _, err := io.ReadFull(reader, cmd); err != nil {
-		return nil, err
-	}
-
-	factory, ok := r.knownCells[cmd[0]]
+	cmd := frame[4]
+	factory, ok := r.knownCells[cmd]
 	if !ok {
-		return nil, fmt.Errorf("%w: %d", ErrUnknownCommandID, cmd[0])
+		return nil, fmt.Errorf("%w: %d", ErrUnknownCommandID, cmd)
 	}
 	cell := factory()
-
-	if err := cell.Decode(reader); err != nil {
+	cell.SetCircuitID(binary.BigEndian.Uint32(frame[:4]))
+	offset := 5
+	if cmd == COMMAND_VERSIONS || cmd >= 128 {
+		offset = 7
+	}
+	if err := cell.Decode(bytes.NewReader(frame[offset:])); err != nil {
 		return nil, err
 	}
 	return cell, nil
@@ -83,26 +112,29 @@ func (r *CellCoder) MarshalCell(cell Cell) ([]byte, error) {
 }
 
 func (r *CellCoder) WriteCell(cell Cell, writer io.Writer) error {
-	circID := make([]byte, 4)
-	binary.BigEndian.PutUint32(circID, cell.GetCircuitID())
-
-	if _, err := writer.Write(circID); err != nil {
+	var payload bytes.Buffer
+	if err := cell.Encode(&payload); err != nil {
 		return err
 	}
-
-	if _, err := writer.Write([]byte{cell.ID()}); err != nil {
-		return err
+	length, headerLen := r.cellBodyLen, 5
+	if cell.ID() == COMMAND_VERSIONS || cell.ID() >= 128 {
+		length, headerLen = payload.Len(), 7
+		if length > 65535 {
+			return fmt.Errorf("variable cell payload too large")
+		}
+	} else if payload.Len() > length {
+		return fmt.Errorf("fixed cell payload too large")
 	}
-
-	var buffer bytes.Buffer
-	if err := cell.Encode(&buffer); err != nil {
-		return err
+	frame := make([]byte, headerLen+length)
+	binary.BigEndian.PutUint32(frame, cell.GetCircuitID())
+	frame[4] = cell.ID()
+	if headerLen == 7 {
+		binary.BigEndian.PutUint16(frame[5:], uint16(length))
 	}
-
-	for range r.cellBodyLen - buffer.Len() {
-		buffer.WriteByte(0)
+	copy(frame[headerLen:], payload.Bytes())
+	n, err := writer.Write(frame)
+	if err == nil && n != len(frame) {
+		err = io.ErrShortWrite
 	}
-
-	_, err := writer.Write(buffer.Bytes())
 	return err
 }

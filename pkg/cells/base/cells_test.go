@@ -8,6 +8,43 @@ import (
 	cells "github.com/robogg133/gonion/pkg/cells/base"
 )
 
+func TestReadFrameCommandAndVersion(t *testing.T) {
+	// Literal layouts from tor-spec sections 3 and 4.1, independent of Marshal.
+	versions := []byte{0, 0, 7, 0, 4, 0, 4, 0, 5}
+	unknown := []byte{0, 0, 0, 0, 255, 0, 3, 1, 2, 3}
+	destroy := make([]byte, 514)
+	copy(destroy, []byte{128, 0, 0, 1, 4, 3})
+	wire := append(append(bytes.Clone(versions), unknown...), destroy...)
+	r := bytes.NewReader(wire)
+	for i, want := range [][]byte{versions, unknown, destroy} {
+		version := uint16(5)
+		if i == 0 {
+			version = 3
+		}
+		got, err := cells.ReadFrame(r, version)
+		if err != nil || !bytes.Equal(got, want) {
+			t.Fatalf("frame %d: %x %v", i, got, err)
+		}
+		for n := 0; n < len(want); n++ {
+			if _, err := cells.ReadFrame(bytes.NewReader(want[:n]), version); err == nil {
+				t.Fatalf("accepted frame %d truncated at %d", i, n)
+			}
+		}
+	}
+	if r.Len() != 0 {
+		t.Fatal("framing left bytes unread")
+	}
+	coder := cells.NewCellCoder(cells.AllKnownCells)
+	r = bytes.NewReader(append(bytes.Clone(unknown), destroy...))
+	if _, err := coder.ReadCell(r); err == nil {
+		t.Fatal("unknown command decoded")
+	}
+	cell, err := coder.ReadCell(r)
+	if err != nil || cell.GetCircuitID() != 0x80000001 || cell.ID() != cells.COMMAND_DESTROY {
+		t.Fatalf("unknown command desynchronized next frame: %v", err)
+	}
+}
+
 func TestCellCoder_CreateFast_RoundTrip(t *testing.T) {
 	coder := cells.NewCellCoder(cells.AllKnownCells)
 	var x [20]byte
