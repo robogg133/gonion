@@ -1,6 +1,7 @@
 package gonion
 
 import (
+	"bytes"
 	"crypto/ecdh"
 	"crypto/rand"
 	"fmt"
@@ -8,14 +9,16 @@ import (
 
 	"github.com/robogg133/gonion/pkg/common"
 	"github.com/robogg133/gonion/pkg/handshakes"
-	"github.com/robogg133/gonion/pkg/hs"
-	"github.com/robogg133/gonion/pkg/hs/crypto"
+
 	"github.com/robogg133/gonion/pkg/hs/onion"
 	"github.com/robogg133/gonion/pkg/lspec"
 )
 
 // NewCircuitTo creates a 1-hop ntor circuit to guard.
 func (c *Conn) NewCircuitTo(id uint32, guard *common.RouterStatus) (*Circuit, error) {
+	if err := c.CheckRelayIdentity(guard); err != nil {
+		return nil, err
+	}
 	hs, err := newNTorHandshake(guard)
 	if err != nil {
 		return nil, fail(c.ctx, ErrCircuit, "build ntor handshake failed", err)
@@ -75,38 +78,12 @@ func (c *Circuit) Dial(addr string) (net.Conn, error) {
 }
 
 func (c *Circuit) dialOnion(addr string) (net.Conn, error) {
-	var cns *common.Consensus
-	if c.conn.storage != nil {
-		cns, _ = c.conn.storage.GetConsensus()
-	}
-	if cns == nil {
-		cns = common.GetGlobalConsensus()
-	}
-	hostname, err := onion.NewFromString(addr)
-	if err != nil {
+	if _, err := onion.NewFromString(addr); err != nil {
 		return nil, err
 	}
-	periodNum := cns.CalcPeriodNum()
-	periodLen := cns.CalcPeriodLength()
-
-	// ponytail: only the current SRV is used for hsdir indexing; tail-of-period
-	// clients would need to fall back to SharedPreviousValue (rend-spec [SRV-TIMING]).
-	// Add when a live-network onion dial actually routes.
-	routers, err := hs.Search(cns.SharedCurrentValue[:], periodNum, periodLen, cns.RelayInformation, crypto.BlindPk(hostname.Pk[:], periodNum, periodLen).ServiceIndex(1))
-	if err != nil {
-		return nil, err
-	}
-	if len(routers) < 3 {
-		return nil, Publicf(ErrCircuit, "not enough hsdir relays for onion circuit (found %d, need 3)", len(routers))
-	}
-	log := logger(c.conn.ctx).With().Str("job", "dialOnion").Logger()
-
-	log.Debug().Str("route", routers[0].Nickname).Str("route_ip", routers[0].Ipv4Addr).Msg("hsdir")
-	log.Debug().Str("route", routers[1].Nickname).Str("route_ip", routers[1].Ipv4Addr).Msg("hsdir")
-	log.Debug().Str("route", routers[2].Nickname).Str("route_ip", routers[2].Ipv4Addr).Msg("hsdir")
-
-	client := &hs.Client{}
-	return client.Connect(c.conn.ctx, NewConnBuilder(c.conn), cns, addr)
+	// One existing circuit cannot provide the separate directory, introduction
+	// and rendezvous circuits or dial their selected guards.
+	return nil, Public(ErrCircuit, "onion dialing requires embed.Client.DialContext")
 }
 
 func newNTorHandshake(r *common.RouterStatus) (*handshakes.Client_NTorHandshake, error) {
@@ -129,6 +106,24 @@ func newNTorHandshake(r *common.RouterStatus) (*handshakes.Client_NTorHandshake,
 }
 
 func linkSpecsFor(r *common.RouterStatus) ([]lspec.Lspec, error) {
+	if r == nil {
+		return nil, Public(ErrExtend, "nil extension target")
+	}
+	if len(r.LinkSpecifiers) != 0 {
+		reader := bytes.NewReader(r.LinkSpecifiers[1:])
+		var specs []lspec.Lspec
+		for i := 0; i < int(r.LinkSpecifiers[0]); i++ {
+			spec, err := lspec.Read(reader)
+			if err != nil {
+				return nil, err
+			}
+			specs = append(specs, spec)
+		}
+		if reader.Len() != 0 || len(specs) == 0 {
+			return nil, Public(ErrExtend, "invalid link specifier block")
+		}
+		return specs, nil
+	}
 	if r.Ipv4Addr == "" || r.ORPort == 0 {
 		return nil, Publicf(ErrExtend, "relay %s missing OR address", r.Nickname)
 	}

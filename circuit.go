@@ -29,16 +29,27 @@ type Circuit struct {
 
 	SendMeVersion uint8
 
-	streams      *streams
-	nextStreamID uint16
+	streams       *streams
+	nextStreamID  uint32
+	streamMu      sync.Mutex
+	usedStreamIDs [65536 / 8]byte
 
 	Coder *cells.CellCoder
 
 	WriteRelayCell chan RelayOut
+	writeControl   chan RelayOut
 	Inbound        chan []byte
 	Ctx            context.Context
 	ctxCancel      context.CancelCauseFunc
 	closeOnce      sync.Once
+	relayMu        sync.Mutex
+	controlMu      sync.RWMutex
+	extendMu       sync.Mutex
+	extensions     int
+	lastKH         []byte // final physical hop nonce, protected by extendMu
+	e2e            bool
+	intro          bool
+	service        *serviceCircuitState // protected by controlMu
 
 	extended2Received chan *relay.Extended2Cell
 
@@ -52,6 +63,7 @@ type Circuit struct {
 type RelayOut struct {
 	Cell relay.Cell
 	Dst  int
+	sent chan error // optional, buffered acknowledgement after the link write
 }
 
 func (c *Conn) NewCircuit(id uint32, htype uint16, hs handshakes.Handshake) (*Circuit, error) {
@@ -71,6 +83,7 @@ func (c *Conn) NewCircuit(id uint32, htype uint16, hs handshakes.Handshake) (*Ci
 		ID:                circID,
 		Inbound:           make(chan []byte, 2048),
 		WriteRelayCell:    make(chan RelayOut, 512),
+		writeControl:      make(chan RelayOut, 32),
 		Ctx:               ctx,
 		ctxCancel:         cancel,
 		extended2Received: make(chan *relay.Extended2Cell, 1),
@@ -153,6 +166,7 @@ func (c *Conn) NewCircuit(id uint32, htype uint16, hs handshakes.Handshake) (*Ci
 
 	go circuit.writeLoop()
 	go circuit.readloop()
+	circuit.lastKH = bytes.Clone(keys.KH)
 	suc = true
 	log.Info().Int("hops", circuit.hops.Len()).Msg("circuit created")
 	return circuit, nil
@@ -174,6 +188,7 @@ func (c *Conn) NewFastCircuit(id uint32) (*Circuit, error) {
 		ID:                circID,
 		Inbound:           make(chan []byte, 512),
 		WriteRelayCell:    make(chan RelayOut, 128),
+		writeControl:      make(chan RelayOut, 32),
 		Ctx:               ctx,
 		ctxCancel:         cancel,
 		extended2Received: make(chan *relay.Extended2Cell, 1),
@@ -264,6 +279,18 @@ func (c *Conn) NewFastCircuit(id uint32) (*Circuit, error) {
 }
 
 func (c *Circuit) Extend(lspecs []lspec.Lspec, htype uint16, handshake handshakes.Handshake) error {
+	c.extendMu.Lock()
+	defer c.extendMu.Unlock()
+	if c.e2e {
+		return Public(ErrExtend, "cannot extend a rendezvous circuit")
+	}
+	if c.extensions >= 8 {
+		return Public(ErrExtend, "RELAY_EARLY limit exhausted")
+	}
+	nths, ok := handshake.(*handshakes.Client_NTorHandshake)
+	if htype != handshakes.HTYPE_NTOR || !ok || nths == nil {
+		return Public(ErrHandshake, "unsupported extension handshake")
+	}
 	log := logger(c.Ctx)
 	if c.hops.Len() == 0 {
 		return fail(c.Ctx, ErrExtend, "cannot extend empty circuit", nil)
@@ -280,13 +307,9 @@ func (c *Circuit) Extend(lspecs []lspec.Lspec, htype uint16, handshake handshake
 	}
 
 	dst := c.hops.Len() - 1
-	body, err := c.hops.MarshalMessage(extend2, dst)
-	if err != nil {
-		return fail(c.Ctx, ErrExtend, "encrypt EXTEND2 failed", err)
-	}
-	if err := c.SendCell(&cells.RelayEarlyCell{
-		C: &cells.RelayCell{Body: body},
-	}); err != nil {
+	var err error
+	c.extensions++
+	if err := c.sendRelay(extend2, dst, true); err != nil {
 		return fail(c.Ctx, ErrExtend, "send EXTEND2 failed", err)
 	}
 
@@ -324,6 +347,7 @@ func (c *Circuit) Extend(lspecs []lspec.Lspec, htype uint16, handshake handshake
 		return fail(c.Ctx, ErrExtend, "init hop crypto failed", err)
 	}
 
+	c.lastKH = bytes.Clone(keys.KH)
 	hop := hops.NewHop(c.Ctx, relay.NewDataCellCoder(backwards, forwards), rcvWindow, sndWindow)
 	c.hops.Append(hop)
 	go c.sendmeManage(c.hops.Len()-1, hop)
@@ -338,26 +362,35 @@ func (c *Circuit) HopCount() int {
 // AppendE2EHop attaches an end-to-end (hidden-service) hop as the last hop of
 // the circuit. Unlike Extend/ExtendTo it does NOT send an EXTEND2: the crypto
 // keys are computed locally from the already-established rendezvous key seed
-// (rend-spec-v3 §JOIN_REND). Kf/Kb are the forward/backward AES-128-CTR keys
-// and Df/Db the SHA-1 digest seeds used to layer the e2e encryption on top of
-// the existing circuit hops. The new hop inherits the same SENDME windows as
-// the current exit hop.
+// (rend-spec-v3 §JOIN_REND). Kf/Kb are AES-256-CTR keys; Df/Db seed SHA3-256.
+// The virtual hop owns independent flow-control and digest state.
 func (c *Circuit) AppendE2EHop(Kf, Kb, Df, Db []byte) error {
+	c.extendMu.Lock()
+	defer c.extendMu.Unlock()
+	return c.appendE2EHop(Kf, Kb, Df, Db)
+}
+
+func (c *Circuit) appendE2EHop(Kf, Kb, Df, Db []byte) error {
+	if c.e2e {
+		return Public(ErrProtocolViolation, "E2E hop already installed")
+	}
 	if c.hops.Len() == 0 {
 		return fail(c.Ctx, ErrExtend, "cannot append e2e hop to empty circuit", nil)
 	}
-	last := c.hops.At(c.hops.Len() - 1)
-	back, err := crypto.NewRunningValues(Kb, Db)
+	back, err := crypto.NewHSRunningValues(Kb, Db)
 	if err != nil {
 		return fail(c.Ctx, ErrExtend, "init e2e hop crypto failed", err)
 	}
-	forwards, err := crypto.NewRunningValues(Kf, Df)
+	forwards, err := crypto.NewHSRunningValues(Kf, Df)
 	if err != nil {
 		return fail(c.Ctx, ErrExtend, "init e2e hop crypto failed", err)
 	}
-	hop := hops.NewHop(c.Ctx, relay.NewDataCellCoder(back, forwards), last.Recv(), last.Send())
+	hop := hops.NewHop(c.Ctx, relay.NewDataCellCoder(back, forwards), window.NewWindow(1000, 100), window.NewWindow(1000, 100))
 	c.hops.Append(hop)
 	go c.sendmeManage(c.hops.Len()-1, hop)
+	c.e2e = true
+	clear(c.lastKH)
+	c.lastKH = nil
 	logger(c.Ctx).Info().Int("hops", c.hops.Len()).Msg("e2e hop appended")
 	return nil
 }
@@ -367,17 +400,33 @@ func (c *Circuit) AppendE2EHop(Kf, Kb, Df, Db []byte) error {
 // exactly like any other relay cell; the e2e hop (if present) supplies the
 // outermost encryption layer.
 func (c *Circuit) SendHSControl(cell relay.Cell) error {
-	return c.SendCell(&cells.RelayCell{Body: mustMarshalRelay(c, cell)})
+	if cell == nil || cell.GetStreamID() != 0 {
+		return Public(ErrProtocolViolation, "HS control requires StreamID zero")
+	}
+	return c.sendRelay(cell, c.hops.Len()-1, false)
 }
 
-// mustMarshalRelay encrypts a relay cell for the circuit's outermost hop.
-func mustMarshalRelay(c *Circuit, cell relay.Cell) []byte {
-	dst := c.hops.Len() - 1
+// Serialize encryption with enqueueing: CTR/digest order must be wire order,
+// including EXTEND2 and control cells sent outside the stream write loop.
+func (c *Circuit) sendRelay(cell relay.Cell, dst int, early bool) error {
+	c.relayMu.Lock()
+	defer c.relayMu.Unlock()
+	if c.Ctx.Err() != nil {
+		return context.Cause(c.Ctx)
+	}
 	body, err := c.hops.MarshalMessage(cell, dst)
 	if err != nil {
-		return nil
+		return err
 	}
-	return body
+	if data, ok := cell.(*relay.DataCell); ok {
+		hop := c.hops.At(dst)
+		hop.Send().SetDigest(data.Digest())
+		hop.Send().Subtract(1)
+	}
+	if early {
+		return c.SendCell(&cells.RelayEarlyCell{C: &cells.RelayCell{Body: body}})
+	}
+	return c.SendCell(&cells.RelayCell{Body: body})
 }
 
 func (c *Circuit) Close() error {
@@ -410,11 +459,16 @@ func (c *Circuit) SendCell(cell cells.Cell) error {
 		return pub
 	}
 
+	done := make(chan error, 1)
 	select {
-	case c.conn.writeCall <- b:
+	case c.conn.writeCall <- cellWrite{data: b, done: done}:
 	case <-c.Ctx.Done():
 		return fail(c.Ctx, ErrClosed, "circuit closed", context.Cause(c.Ctx))
 	}
-
-	return nil
+	select {
+	case err := <-done:
+		return err
+	case <-c.Ctx.Done():
+		return fail(c.Ctx, ErrClosed, "circuit closed", context.Cause(c.Ctx))
+	}
 }

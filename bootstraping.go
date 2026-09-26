@@ -1,245 +1,264 @@
 package gonion
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdh"
-	"math/rand"
+	"crypto/rand"
+	"math/big"
 	"time"
 
 	"github.com/robogg133/gonion/pkg/common"
+	"github.com/robogg133/gonion/pkg/parsers/microdesc"
 )
 
-// StartConsensusRefresh schedules periodic consensus re-fetch on circuit.
-// It runs until ctx is cancelled. Safe to call once after bootstrap.
+// StartConsensusRefresh schedules refreshes until ctx or the circuit is closed.
+// Call once per bootstrap circuit. The supplied snapshot is never modified.
 func (circuit *Circuit) StartConsensusRefresh(ctx context.Context, cns *common.Consensus) {
 	if cns == nil {
 		return
 	}
-	go circuit.nextConsensus(ctx, cns)
+	go circuit.nextConsensus(ctx, cns.Clone())
 }
 
-// nextConsensus will refresh the consensus when needed (Tor client schedule).
-func (circuit *Circuit) nextConsensus(ctx context.Context, cns *common.Consensus) {
+func (circuit *Circuit) nextConsensus(parent context.Context, cns *common.Consensus) {
+	ctx, cancel := context.WithCancel(parent)
+	defer cancel()
+	stop := context.AfterFunc(circuit.Ctx, cancel)
+	defer stop()
 	log := logger(ctx).With().Str("job", "consensus_refresh").Logger()
-
-	for {
-		select {
-		case <-ctx.Done():
-			log.Debug().Msg("consensus refresh stopped")
-			return
-		default:
-		}
-
+	for ctx.Err() == nil {
 		fetchTime, err := nextConsensusFetchTime(cns, time.Now().UTC())
 		if err != nil {
-			log.Error().Err(err).Msg("compute consensus fetch window failed")
-			// Retry later instead of spinning.
-			if err := sleepCtx(ctx, time.Hour); err != nil {
-				return
-			}
-			continue
-		}
-
-		log.Info().Time("fetch_at", fetchTime).Msg("scheduled consensus refresh")
-
-		if err := sleepCtx(ctx, time.Until(fetchTime)); err != nil {
-			log.Debug().Err(err).Msg("consensus refresh cancelled")
+			log.Error().Err(err).Msg("invalid consensus refresh window")
 			return
 		}
-
-		cnsPtr, err := circuit.GetConsensus(ConsensusFlavorMicrodesc)
+		if sleepCtx(ctx, time.Until(fetchTime)) != nil {
+			return
+		}
+		candidate, err := circuit.getConsensus(ctx, ConsensusFlavorMicrodesc)
+		if err == nil && !candidate.ValidAfter.After(cns.ValidAfter) {
+			err = Public(ErrDirectory, "downloaded consensus is not newer")
+		}
+		if err == nil {
+			candidate, err = hydrateConsensus(ctx, candidate, cns, func(d []string) ([]*common.Microdesc, error) { return circuit.getMicrodescriptors(ctx, d) })
+		}
 		if err != nil {
-			log.Error().Err(err).Msg("consensus refresh failed; retrying in 30m")
-			if err := sleepCtx(ctx, 30*time.Minute); err != nil {
+			log.Warn().Err(err).Msg("consensus refresh failed; retaining previous snapshot and retrying in 30m")
+			if sleepCtx(ctx, 30*time.Minute) != nil {
 				return
 			}
 			continue
 		}
-
-		// Keep microdesc keys from previous consensus where digests match;
-		// full re-bootstrap of microdescs is left to a higher-level client later.
-		*cns = *cnsPtr
-		common.SetGlobalConsensus(cns)
-		if circuit.conn.storage != nil {
-			if err := circuit.conn.storage.StoreConsensus(cns); err != nil {
-				log.Warn().Err(err).Msg("store refreshed consensus failed")
-			}
+		if ctx.Err() != nil {
+			return
 		}
-		log.Info().Int("relays", len(cns.RelayInformation)).Msg("consensus refreshed")
+		circuit.publishConsensus(ctx, candidate)
+		cns = candidate
 	}
 }
 
-// NextConsensusFetchTimeForTest exposes nextConsensusFetchTime for unit tests.
 func NextConsensusFetchTimeForTest(cns *common.Consensus, now time.Time) (time.Time, error) {
 	return nextConsensusFetchTime(cns, now)
 }
 
-// nextConsensusFetchTime picks a random time in the Tor client download window:
-// [FreshUntil + 3/4*(FreshUntil-ValidAfter), FreshUntil + 7/8*(ValidUntil-FreshUntil)].
+// dir-spec 5.1: start = FU + 3/4*(FU-VA), end = start + 7/8*(VU-start).
 func nextConsensusFetchTime(cns *common.Consensus, now time.Time) (time.Time, error) {
-	if cns.FreshUntil.IsZero() || cns.ValidAfter.IsZero() || cns.ValidUntil.IsZero() {
-		return time.Time{}, Public(ErrDirectory, "consensus timestamps missing")
+	if cns == nil || cns.ValidAfter.IsZero() || !cns.FreshUntil.After(cns.ValidAfter) || !cns.ValidUntil.After(cns.FreshUntil) {
+		return time.Time{}, Public(ErrDirectory, "invalid consensus timestamps")
 	}
-
-	freshWindow := cns.FreshUntil.Sub(cns.ValidAfter)
-	if freshWindow <= 0 {
-		freshWindow = time.Hour
-	}
-	validSpan := cns.ValidUntil.Sub(cns.FreshUntil)
-	if validSpan <= 0 {
-		validSpan = 2 * time.Hour
-	}
-
-	start := cns.FreshUntil.Add(freshWindow * 3 / 4)
-	end := cns.FreshUntil.Add(validSpan * 7 / 8)
-
-	if !end.After(start) {
+	start := cns.FreshUntil.Add(cns.FreshUntil.Sub(cns.ValidAfter) / 4 * 3)
+	if !start.Before(cns.ValidUntil) {
 		return time.Time{}, Public(ErrDirectory, "invalid consensus refresh window")
 	}
-
-	// If we are already past the window, schedule soon (jittered).
-	if now.After(end) {
-		return now.Add(time.Duration(rand.Int63n(int64(5 * time.Minute)))), nil
+	end := start.Add(cns.ValidUntil.Sub(start) / 8 * 7)
+	if !now.Before(end) {
+		return now, nil
 	}
 	if now.After(start) {
 		start = now
 	}
-	if !end.After(start) {
-		return now.Add(time.Minute), nil
-	}
-
-	ns, ne := start.Unix(), end.Unix()
-	span := ne - ns
+	span := end.Sub(start)
 	if span <= 0 {
 		return start, nil
 	}
-	return time.Unix(ns+rand.Int63n(span), 0).UTC(), nil
+	n, err := rand.Int(rand.Reader, big.NewInt(int64(span)))
+	if err != nil {
+		return time.Time{}, err
+	}
+	return start.Add(time.Duration(n.Int64())), nil
 }
 
-// BootstrapOneConn fetches consensus and microdescriptors using one OR connection.
-// On success it starts the consensus refresh scheduler on the bootstrap circuit.
+// BootstrapOneConn hydrates a private candidate before publishing or persisting.
+// Cached documents are reauthenticated; cache hits also start refresh.
 func BootstrapOneConn(conn *Conn) error {
 	ctx := conn.ctx
-	log := logger(ctx).With().Str("job", "bootstrap").Logger()
-	ctx = withLogger(ctx, log)
-	log.Info().Msg("bootstrap starting")
-
+	var cached *common.Consensus
 	if conn.storage != nil {
-		if cached, err := conn.storage.GetConsensus(); err == nil && cached != nil && cached.ValidUntil.After(time.Now().UTC()) {
-			log.Info().Int("relays", len(cached.RelayInformation)).Time("valid_until", cached.ValidUntil).Msg("using cached consensus")
-			common.SetGlobalConsensus(cached)
-			return nil
+		var err error
+		cached, err = conn.storage.GetConsensus()
+		if err != nil {
+			logger(ctx).Debug().Err(err).Msg("consensus cache unavailable")
 		}
 	}
-
 	circuit, err := conn.NewFastCircuit(1)
 	if err != nil {
 		return fail(ctx, ErrBootstrap, "create bootstrap circuit failed", err)
 	}
-
-	cns, err := circuit.GetConsensus(ConsensusFlavorMicrodesc)
-	if err != nil {
-		return fail(ctx, ErrBootstrap, "fetch consensus failed", err)
-	}
-	log.Info().Int("relays", len(cns.RelayInformation)).Msg("consensus fetched")
-
-	if conn.storage != nil {
-		if err := conn.storage.StoreConsensus(cns); err != nil {
-			log.Warn().Err(err).Msg("store cached consensus failed")
+	success := false
+	defer func() {
+		if !success {
+			_ = circuit.Close()
 		}
+	}()
+	var candidate *common.Consensus
+	if cached != nil && cached.Flavor == ConsensusFlavorMicrodesc {
+		candidate, err = circuit.authenticateConsensus(ctx, cached)
 	}
-
-	common.SetGlobalConsensus(cns)
-
-	var allDigests []string
-	for _, relay := range cns.RelayInformation {
-		allDigests = append(allDigests, relay.MicrodescriptorDigest)
-	}
-
-	applied := 0
-	for i := 0; i < len(allDigests); i += 91 {
-		end := min(i+91, len(allDigests))
-		chunk := allDigests[i:end]
-		log.Debug().Int("offset", i).Int("count", len(chunk)).Msg("fetching microdescriptor chunk")
-		n, err := circuit.fetchAndApplyMicrodescriptors(ctx, cns, chunk, i)
+	if candidate == nil {
+		candidate, err = circuit.getConsensus(ctx, ConsensusFlavorMicrodesc)
 		if err != nil {
-			return err
-		}
-		applied += n
-	}
-
-	withKeys := 0
-	exitPort80 := 0
-	for i := range cns.RelayInformation {
-		r := &cns.RelayInformation[i]
-		if r.NTorOnionKey != nil && len(r.IdEd25519) > 0 {
-			withKeys++
-		}
-		if r.StatusFlags[common.FLAG_EXIT] && !r.StatusFlags[common.FLAG_BAD_EXIT] && r.Ports.IsAllowed(80) {
-			exitPort80++
+			return fail(ctx, ErrBootstrap, "fetch consensus failed", err)
 		}
 	}
-	log.Info().
-		Int("relays", len(cns.RelayInformation)).
-		Int("microdescs_applied", applied).
-		Int("with_keys", withKeys).
-		Int("exits_port_80", exitPort80).
-		Msg("bootstrap complete")
-
-	// Keep refreshing consensus until the connection is closed.
-	circuit.StartConsensusRefresh(conn.ctx, cns)
+	candidate, err = hydrateConsensus(ctx, candidate, cached, func(d []string) ([]*common.Microdesc, error) { return circuit.getMicrodescriptors(ctx, d) })
+	if err != nil {
+		return fail(ctx, ErrBootstrap, "hydrate consensus failed", err)
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	circuit.publishConsensus(ctx, candidate)
+	circuit.StartConsensusRefresh(ctx, candidate)
+	success = true
 	return nil
 }
 
-func (circuit *Circuit) fetchAndApplyMicrodescriptors(ctx context.Context, cons *common.Consensus, digestsSlice []string, offset int) (int, error) {
-	desc, err := circuit.GetMicrodescriptors(digestsSlice)
-	if err != nil {
-		return 0, fail(ctx, ErrDirectory, "fetch microdescriptors failed", err)
+func (circuit *Circuit) publishConsensus(ctx context.Context, c *common.Consensus) {
+	if !c.IsAuthenticated() || !c.IsLive(time.Now().UTC()) || !c.IsHydrated() {
+		logger(ctx).Error().Msg("refusing to publish unverified or incomplete consensus")
+		return
 	}
-
-	curve := ecdh.X25519()
-	applied := 0
-	for i, v := range desc {
-		if v == nil {
-			continue
+	if circuit.conn.storage != nil {
+		if err := circuit.conn.storage.StoreConsensus(c); err != nil {
+			logger(ctx).Warn().Err(err).Msg("store hydrated consensus failed")
 		}
-		idx := offset + i
-		if idx >= len(cons.RelayInformation) {
-			logger(ctx).Error().Int("idx", idx).Int("len", len(cons.RelayInformation)).Msg("microdesc index out of bounds")
-			return applied, Public(ErrDirectory, "microdescriptor index out of bounds")
-		}
+	}
+	circuit.conn.mu.Lock()
+	circuit.conn.consensus = c.Clone()
+	circuit.conn.mu.Unlock()
+	common.SetGlobalConsensus(c)
+	logger(ctx).Info().Int("relays", len(c.RelayInformation)).Msg("authenticated hydrated consensus published")
+}
 
-		cons.RelayInformation[idx].OnionKey = v.OnionKey
-		if len(v.NTorOnionKey) > 0 {
-			ntor, err := curve.NewPublicKey(v.NTorOnionKey)
-			if err != nil {
-				logger(ctx).Debug().Err(err).Int("idx", idx).Msg("skip invalid ntor key")
-				continue
+// Hydration is all-or-nothing. Cached descriptor bytes must match a digest in
+// the current consensus; cached flags, addresses, keys and booleans are ignored.
+func hydrateConsensus(ctx context.Context, candidate, previous *common.Consensus, fetch func([]string) ([]*common.Microdesc, error)) (*common.Consensus, error) {
+	if err := candidate.Validate(); err != nil {
+		return nil, err
+	}
+	if candidate.Flavor != ConsensusFlavorMicrodesc || !candidate.IsLive(time.Now().UTC()) {
+		return nil, Public(ErrDirectory, "expected a live microdesc consensus")
+	}
+	out := candidate.Clone()
+	old := previous.Clone()
+	out.Microdescriptors = make(map[string][]byte)
+	var missing []string
+	indices := make(map[string][]int)
+	for i := range out.RelayInformation {
+		r := &out.RelayInformation[i]
+		// Never trust the presence of a key alone as evidence of hydration.
+		r.OnionKey, r.NTorOnionKey, r.IdEd25519, r.Family, r.Familys = nil, nil, nil, nil, nil
+		r.Ports, r.MicrodescriptorLoaded = common.Ports{}, false
+
+		if _, found := indices[r.MicrodescriptorDigest]; !found {
+			missing = append(missing, r.MicrodescriptorDigest)
+		}
+		indices[r.MicrodescriptorDigest] = append(indices[r.MicrodescriptorDigest], i)
+	}
+	for offset := 0; offset < len(missing); offset += 91 {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		digests := missing[offset:min(offset+91, len(missing))]
+		descriptors := make([]*common.Microdesc, len(digests))
+		var need []string
+		for i, digest := range digests {
+			if old != nil {
+				if raw := old.Microdescriptors[digest]; len(raw) > 0 {
+					parsed, err := (microdesc.Parser{}).Parse(bytes.NewReader(raw), []string{digest})
+					if err == nil {
+						descriptors[i] = parsed[0]
+					}
+				}
 			}
-			cons.RelayInformation[idx].NTorOnionKey = ntor
+			if descriptors[i] == nil {
+				need = append(need, digest)
+			}
 		}
-		if v.ExitRules != nil {
-			cons.RelayInformation[idx].Ports = *v.ExitRules
+		if len(need) != 0 {
+			fetched, err := fetch(need)
+			if err != nil {
+				return nil, err
+			}
+			if len(fetched) != len(need) {
+				return nil, Public(ErrDirectory, "microdescriptor response count mismatch")
+			}
+			j := 0
+			for i := range descriptors {
+				if descriptors[i] == nil {
+					descriptors[i] = fetched[j]
+					j++
+				}
+			}
 		}
-		cons.RelayInformation[idx].Family = v.Family
-		cons.RelayInformation[idx].Familys = v.Familys
-		if len(v.IdEd25519) > 0 {
-			cons.RelayInformation[idx].IdEd25519 = v.IdEd25519
+		for i, md := range descriptors {
+			if md == nil {
+				return nil, Publicf(ErrDirectory, "missing microdescriptor %s", digests[i])
+			}
+			// A parsed cached model is not evidence: authenticate its original bytes.
+			checked, err := (microdesc.Parser{}).Parse(bytes.NewReader(md.RawDocument), []string{digests[i]})
+			if err != nil || checked[0] == nil {
+				return nil, Public(ErrDirectory, "microdescriptor digest verification failed")
+			}
+			md = checked[0]
+			out.Microdescriptors[digests[i]] = bytes.Clone(md.RawDocument)
+			key, err := ecdh.X25519().NewPublicKey(md.NTorOnionKey)
+			if err != nil || (len(md.IdEd25519) != 0 && len(md.IdEd25519) != 32) {
+				return nil, Public(ErrDirectory, "invalid microdescriptor key")
+			}
+			for _, index := range indices[digests[i]] {
+				r := &out.RelayInformation[index]
+				r.OnionKey, r.NTorOnionKey, r.IdEd25519 = md.OnionKey, key, md.IdEd25519
+				r.Family, r.Familys = md.Family, md.Familys
+				if md.ExitRules != nil {
+					r.Ports = *md.ExitRules
+				}
+				if r.StatusFlags[common.FLAG_NO_ED_CONSENSUS] {
+					r.IdEd25519 = nil
+				}
+				r.MicrodescriptorLoaded = true
+			}
 		}
-		applied++
 	}
-
-	return applied, nil
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	if !out.IsHydrated() || !out.IsLive(time.Now().UTC()) {
+		return nil, Public(ErrDirectory, "consensus is empty, incomplete, or expired during hydration")
+	}
+	return out.Clone(), nil
 }
 
 func sleepCtx(ctx context.Context, d time.Duration) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
 	if d <= 0 {
 		return nil
 	}
-
 	timer := time.NewTimer(d)
 	defer timer.Stop()
-
 	select {
 	case <-ctx.Done():
 		return ctx.Err()

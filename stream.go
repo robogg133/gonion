@@ -1,9 +1,11 @@
 package gonion
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"net"
+	"os"
 	"sync"
 	"time"
 
@@ -20,140 +22,135 @@ const (
 )
 
 const (
-	STREAM_BUFFER_SIZE            = 256 << 10 // 256KB
-	STREAM_SENDME_AMMOUNT_TRIGGER = 5 << 10   // 5KB
+	STREAM_BUFFER_SIZE            = 256 << 10
+	STREAM_SENDME_AMMOUNT_TRIGGER = 10 * relay.RELAY_BODY_LEN
 )
 
 type Stream struct {
-	ID uint16
-
+	ID               uint16
 	myHopDestination int
 	circuit          *Circuit
 	addr             net.Addr
+	localAddr        net.Addr
 
 	InboundControl chan relay.Cell
 	Ctx            context.Context
-	freeCtx        context.Context
 	ctxCancel      context.CancelCauseFunc
-	freeCtxCancel  context.CancelCauseFunc
+	outbound       chan RelayOut
+	Reader         io.ReadCloser
+	buffer         *ringbuffer.RingBuffer
+	readReady      chan struct{}
+	SendWindow     *window.Window
+	ReceiveWindow  *window.Window
 
-	outbound chan relay.Cell
-
-	Reader io.ReadCloser
-	buffer *ringbuffer.RingBuffer
-
-	SendWindow    *window.Window
-	ReceiveWindow *window.Window
-
-	State uint8
-
-	mu        sync.RWMutex
-	closeOnce sync.Once
-
+	// State is retained for source compatibility. Concurrent callers must use
+	// the connection methods rather than reading or writing this field.
+	State         uint8
+	mu            sync.RWMutex
+	writeMu       sync.Mutex
+	closeOnce     sync.Once
+	stopParent    func() bool
+	readDeadline  streamDeadline
+	writeDeadline streamDeadline
 	receiveSendMe chan struct{}
 }
 
+// newStream installs a stream before BEGIN/CONNECTED, so optimistic DATA can
+// already be buffered. The caller reserves its ID under Circuit.streamMu.
+func (c *Circuit) newStream(id uint16, target string, hopDest int) *Stream {
+	log := logger(c.Ctx).With().Str("component", "stream").Uint16("stream_id", id).Int("hop", hopDest).Logger()
+	ctx, cancel := context.WithCancelCause(withLogger(c.Ctx, log))
+	s := &Stream{
+		ID: id, circuit: c, myHopDestination: hopDest, addr: shared.NewAddr("tcp", target),
+		InboundControl: make(chan relay.Cell, 16), outbound: make(chan RelayOut, 32),
+		Ctx: ctx, ctxCancel: cancel, receiveSendMe: make(chan struct{}, 1),
+		SendWindow: window.NewWindow(500, 50), ReceiveWindow: window.NewWindow(500, 50),
+		State: STREAM_OPENING, buffer: ringbuffer.New(STREAM_BUFFER_SIZE), readReady: make(chan struct{}, 1),
+	}
+	s.Reader = &readCloserWrapper{buff: s.buffer, stream: s}
+	c.streams.Set(id, s)
+	s.mu.Lock()
+	s.stopParent = context.AfterFunc(c.Ctx, func() { _ = s.Close() })
+	s.mu.Unlock()
+	return s
+}
+
 func (c *Circuit) NewStream(target string, hopDest int) (*Stream, error) {
-	var suc bool
-
-	id := c.nextStreamID
+	if c.Ctx.Err() != nil {
+		return nil, context.Cause(c.Ctx)
+	}
+	if hopDest < 0 || hopDest >= c.hops.Len() {
+		return nil, ErrInvalidHop
+	}
+	c.streamMu.Lock()
+	// IDs may not be reused, even after a stream is closed (tor-spec 6.2).
+	for c.nextStreamID <= 65535 && (c.nextStreamID == 0 || c.usedStreamIDs[c.nextStreamID/8]&(1<<(c.nextStreamID%8)) != 0) {
+		c.nextStreamID++
+	}
+	if c.nextStreamID > 65535 {
+		c.streamMu.Unlock()
+		return nil, Public(ErrStream, "circuit stream IDs exhausted")
+	}
+	id := uint16(c.nextStreamID)
 	c.nextStreamID++
-
-	baseLog := logger(c.Ctx).With().
-		Str("component", "stream").
-		Uint16("stream_id", id).
-		Str("target", target).
-		Int("hop", hopDest).
-		Logger()
-
-	freeCtx, freeCtxCancel := context.WithCancelCause(withLogger(c.Ctx, baseLog))
-	ctx, ctxCancel := context.WithCancelCause(freeCtx)
-
-	buffer := ringbuffer.New(STREAM_BUFFER_SIZE).SetBlocking(true).WithNoCloseOnTimeout()
-
-	stream := &Stream{
-		ID:               id,
-		circuit:          c,
-		InboundControl:   make(chan relay.Cell, 512),
-		outbound:         make(chan relay.Cell, 2048),
-		Ctx:              ctx,
-		ctxCancel:        ctxCancel,
-		freeCtx:          freeCtx,
-		freeCtxCancel:    freeCtxCancel,
-		receiveSendMe:    make(chan struct{}, 1),
-		SendWindow:       window.NewWindow(500, 50),
-		ReceiveWindow:    window.NewWindow(500, 50),
-		myHopDestination: hopDest,
-		State:            STREAM_OPENING,
-		buffer:           buffer,
+	c.usedStreamIDs[id/8] |= 1 << (id % 8)
+	s := c.newStream(id, target, hopDest)
+	c.streamMu.Unlock()
+	var err error
+	if target == "dir" {
+		err = s.beginDir()
+	} else {
+		err = s.begin(target)
 	}
-	stream.Reader = &readCloserWrapper{
-		buff:   buffer,
-		stream: stream,
+	if err != nil {
+		_ = s.Free()
+		return nil, err
 	}
-
-	defer func() {
-		if !suc {
-			c.streams.Delete(stream.ID)
-			stream.Free()
-		}
-	}()
-
-	c.streams.Set(stream.ID, stream)
-	log := logger(ctx)
-	log.Info().Msg("opening stream")
-
-	switch target {
-	case "dir":
-		stream.addr = shared.NewAddr("tcp", "")
-		if err := stream.beginDir(); err != nil {
-			return nil, err
-		}
-	default:
-		stream.addr = shared.NewAddr("tcp", target)
-		if err := stream.begin(target); err != nil {
-			return nil, err
-		}
+	if !s.open() {
+		_ = s.Free()
+		return nil, net.ErrClosed
 	}
-	stream.mu.Lock()
-	stream.State = STREAM_OPEN
-	stream.mu.Unlock()
-	go stream.controlLoop()
-	go stream.sendController()
-	suc = true
-	log.Info().Msg("stream open")
-	return stream, nil
+	return s, nil
+}
+
+func (s *Stream) open() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.State != STREAM_OPENING || s.Ctx.Err() != nil {
+		return false
+	}
+	s.State = STREAM_OPEN
+	go s.controlLoop()
+	go s.sendController()
+	return true
 }
 
 func (s *Stream) controlLoop() {
-	log := logger(s.Ctx)
 	for {
 		select {
-		case cell, ok := <-s.InboundControl:
-			if !ok {
-				return
-			}
+		case cell := <-s.InboundControl:
 			switch cell.ID() {
 			case relay.COMMAND_SENDME:
-				sendme := cell.(*relay.SendMeCell)
-				if err := verifySendMe(s.Ctx, sendme, s.circuit.SendMeVersion, s.SendWindow); err != nil {
-					log.Error().Err(err).Msg("stream SENDME failed")
-					s.circuit.ctxCancel(err)
-					s.Free()
+				// Stream SENDMEs have no digest/version. Require an outstanding
+				// group of 50 DATA cells before granting more credit.
+				select {
+				case <-s.SendWindow.Get():
+					s.SendWindow.Increase()
+					select {
+					case s.receiveSendMe <- struct{}{}:
+					default:
+					}
+				default:
+					s.circuit.ctxCancel(Public(ErrSendMe, "unsolicited stream SENDME"))
 					return
 				}
-				log.Debug().Msg("stream SENDME accepted")
-				select {
-				case s.receiveSendMe <- struct{}{}:
-				default:
-				}
 			case relay.COMMAND_RELAY_END:
-				log.Info().Msg("RELAY_END received")
-				s.Close()
+				_ = s.Close()
+				return
 			default:
-				log.Debug().Uint8("relay_cmd", cell.ID()).Msg("unhandled stream control cell")
+				s.circuit.ctxCancel(Public(ErrProtocolViolation, "unexpected stream control cell"))
+				return
 			}
-
 		case <-s.Ctx.Done():
 			return
 		}
@@ -161,181 +158,215 @@ func (s *Stream) controlLoop() {
 }
 
 func (s *Stream) sendController() {
-	log := logger(s.Ctx)
 	for {
 		select {
-		case cell, ok := <-s.outbound:
-			if !ok {
-				return
-			}
-
-			if cell.ID() == relay.COMMAND_DATA {
-				s.SendWindow.SetDigest(cell.(*relay.DataCell).Digest())
-				s.SendWindow.Subtract(1)
-
-				if s.SendWindow.IsZero() {
-					log.Debug().Msg("stream send window exhausted, waiting SENDME")
+		case out := <-s.outbound:
+			if out.Cell.ID() == relay.COMMAND_DATA {
+				for s.SendWindow.IsZero() {
 					select {
 					case <-s.receiveSendMe:
-						s.SendWindow.Increase()
-						log.Debug().Msg("stream send window restored")
 					case <-s.Ctx.Done():
 						return
 					}
 				}
+				s.SendWindow.Subtract(1)
 			}
 			select {
-			case s.circuit.WriteRelayCell <- RelayOut{Cell: cell, Dst: s.myHopDestination}:
+			case s.circuit.WriteRelayCell <- out:
 			case <-s.Ctx.Done():
-				s.Close()
 				return
 			}
 		case <-s.Ctx.Done():
-			s.Close()
 			return
 		}
 	}
 }
 
-func (s *Stream) Write(b []byte) (n int, err error) {
+func (s *Stream) Write(b []byte) (int, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	if s.State != STREAM_OPEN {
-		return 0, ErrStreamClosed
+	open := s.State == STREAM_OPEN
+	s.mu.RUnlock()
+	if !open {
+		return 0, net.ErrClosed
 	}
-	var wrote int
-
-	for len(b) > 0 {
+	wrote := 0
+	sent := make(chan error, 1)
+	for len(b) != 0 {
 		n := min(len(b), relay.RELAY_BODY_LEN)
-		payload := b[:n]
-		b = b[n:]
-		wrote += n
-
-		err := s.SendCell(&relay.DataCell{
-			StreamID: s.ID,
-			Payload:  payload,
-		})
-		if err != nil {
+		cell := &relay.DataCell{StreamID: s.ID, Payload: bytes.Clone(b[:n])}
+		if err := s.sendCell(cell, sent); err != nil {
 			return wrote, err
 		}
+		// A completed Write must not leave DATA behind a later END or circuit
+		// shutdown. Acknowledge the actual link write, not just queue insertion.
+		select {
+		case err := <-sent:
+			if err != nil {
+				return wrote, err
+			}
+		case <-s.writeDeadline.wait():
+			return wrote, os.ErrDeadlineExceeded
+		case <-s.Ctx.Done():
+			return wrote, net.ErrClosed
+		}
+		b, wrote = b[n:], wrote+n
 	}
 	return wrote, nil
 }
 
-func (s *Stream) SendCell(cell relay.Cell) error {
-	if s.State == STREAM_CLOSED {
-		return ErrStreamClosed
-	}
+func (s *Stream) SendCell(cell relay.Cell) error { return s.sendCell(cell, nil) }
 
+func (s *Stream) sendCell(cell relay.Cell, sent chan error) error {
+	if cell == nil {
+		return Public(ErrProtocolViolation, "nil stream cell")
+	}
+	if s.Ctx.Err() != nil {
+		return net.ErrClosed
+	}
+	cell.SetStreamID(s.ID)
+	deadline := s.writeDeadline.wait()
+	select {
+	case <-deadline:
+		return os.ErrDeadlineExceeded
+	default:
+	}
+	select {
+	case s.outbound <- RelayOut{Cell: cell, Dst: s.myHopDestination, sent: sent}:
+		return nil
+	case <-deadline:
+		return os.ErrDeadlineExceeded
+	case <-s.Ctx.Done():
+		return net.ErrClosed
+	}
+}
+
+// queueControl cannot block a circuit's receive loop behind DATA flow control.
+// On local queue exhaustion we fail the circuit, never silently lose control.
+func (s *Stream) queueControl(cell relay.Cell) {
 	cell.SetStreamID(s.ID)
 	select {
-	case s.outbound <- cell:
-		return nil
-	case <-s.Ctx.Done():
-		s.Close()
-		return fail(s.Ctx, ErrStreamClosed, "stream closed", context.Cause(s.Ctx))
+	case s.circuit.writeControl <- RelayOut{Cell: cell, Dst: s.myHopDestination}:
+	case <-s.circuit.Ctx.Done():
+	default:
+		s.circuit.ctxCancel(Public(ErrCircuit, "stream control queue exhausted"))
 	}
 }
 
 func (s *Stream) End(reason uint8) error {
-	logger(s.Ctx).Info().Uint8("reason", reason).Msg("ending stream")
-	if err := s.SendCell(&relay.RelayEndCell{Reason: reason}); err != nil {
-		return err
+	if s.Ctx.Err() == nil {
+		s.queueControl(&relay.RelayEndCell{Reason: reason})
 	}
 	return s.Free()
 }
 
 func (s *Stream) Free() error {
-	if s.State != STREAM_CLOSED {
-		if err := s.Close(); err != nil {
-			return err
-		}
-	}
-	if s.freeCtx.Err() == nil {
-		s.freeCtxCancel(ErrClosed)
-	}
-
-	if err := s.Reader.Close(); err != nil {
-		logger(s.Ctx).Debug().Err(err).Msg("stream reader close")
-		return fail(s.Ctx, ErrIO, "stream reader close failed", err)
-	}
-	s.circuit.streams.Delete(s.ID)
-	logger(s.Ctx).Debug().Msg("stream freed")
-	return nil
+	_ = s.Close()
+	return s.Reader.Close()
 }
 
+// Close handles remote END too: queued input remains readable through EOF.
 func (s *Stream) Close() error {
-	var err error
 	s.closeOnce.Do(func() {
-		logger(s.Ctx).Debug().Msg("stream closing")
 		s.mu.Lock()
 		s.State = STREAM_CLOSED
+		stop := s.stopParent
 		s.mu.Unlock()
-
-		if s.Ctx.Err() == nil {
-			s.ctxCancel(ErrStreamClosed)
+		if stop != nil {
+			stop()
 		}
-		if s.freeCtx.Err() != nil {
-			defer s.Free()
-		}
-
-		close(s.ReceiveWindow.Trigged)
-		close(s.SendWindow.Trigged)
-		close(s.receiveSendMe)
+		s.ctxCancel(ErrStreamClosed)
 		s.buffer.CloseWriter()
+		select {
+		case s.readReady <- struct{}{}:
+		default:
+		}
+		s.circuit.streams.Delete(s.ID)
+		s.circuit.closeServiceIfIdle()
 	})
-	return err
+	return nil
 }
 
 func (s *Stream) writeDataCell(cell *relay.DataCell) error {
-	s.ReceiveWindow.SetDigest(cell.Digest())
+	if s.ReceiveWindow.Value() <= 0 {
+		return Public(ErrProtocolViolation, "stream receive window exceeded")
+	}
 	s.ReceiveWindow.Subtract(1)
-
 	if _, err := s.buffer.Write(cell.Payload); err != nil {
 		return err
+	}
+	select {
+	case s.readReady <- struct{}{}:
+	default:
 	}
 	return nil
 }
 
-func (s *Stream) Conn() net.Conn {
-	return &netWrapper{s: s}
-}
+func (s *Stream) Conn() net.Conn { return &netWrapper{s: s} }
 
-type netWrapper struct {
-	s *Stream
-}
+type netWrapper struct{ s *Stream }
 
-func (w *netWrapper) Write(p []byte) (int, error) {
-	return w.s.Write(p)
-}
-
-func (w *netWrapper) Read(p []byte) (int, error) {
-	return w.s.Reader.Read(p)
-}
-
-func (w *netWrapper) SetWriteDeadline(t time.Time) error {
-	w.s.buffer.WithWriteTimeout(time.Until(t))
-	return nil
-}
-
+func (w *netWrapper) Write(p []byte) (int, error)        { return w.s.Write(p) }
+func (w *netWrapper) Read(p []byte) (int, error)         { return w.s.Reader.Read(p) }
+func (w *netWrapper) SetWriteDeadline(t time.Time) error { w.s.writeDeadline.set(t); return nil }
+func (w *netWrapper) SetReadDeadline(t time.Time) error  { w.s.readDeadline.set(t); return nil }
 func (w *netWrapper) SetDeadline(t time.Time) error {
-	w.s.buffer.WithTimeout(time.Until(t))
+	w.s.readDeadline.set(t)
+	w.s.writeDeadline.set(t)
 	return nil
 }
-
-func (w *netWrapper) SetReadDeadline(t time.Time) error {
-	w.s.buffer.WithReadTimeout(time.Until(t))
-	return nil
-}
-
 func (w *netWrapper) LocalAddr() net.Addr {
-	return w.s.circuit.conn.socket.LocalAddr()
+	if w.s.localAddr != nil {
+		return w.s.localAddr
+	}
+	return shared.NewAddr("tor", "client")
 }
-func (w *netWrapper) RemoteAddr() net.Addr {
-	return w.s.addr
+func (w *netWrapper) RemoteAddr() net.Addr { return w.s.addr }
+func (w *netWrapper) Close() error         { return w.s.End(relay.END_REASON_DONE) }
+
+// Like net.Pipe, a deadline is a replaceable closed channel. Changing it wakes
+// operations already blocked on that deadline; zero removes the deadline.
+type streamDeadline struct {
+	mu     sync.Mutex
+	timer  *time.Timer
+	cancel chan struct{}
 }
 
-func (w *netWrapper) Close() error {
-	return w.s.End(relay.END_REASON_MISC)
+func (d *streamDeadline) wait() <-chan struct{} {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.cancel == nil {
+		d.cancel = make(chan struct{})
+	}
+	return d.cancel
+}
+
+func (d *streamDeadline) set(t time.Time) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.timer != nil && !d.timer.Stop() {
+		<-d.cancel
+	}
+	d.timer = nil
+	closed := false
+	if d.cancel == nil {
+		d.cancel = make(chan struct{})
+	}
+	select {
+	case <-d.cancel:
+		closed = true
+	default:
+	}
+	if t.IsZero() || time.Until(t) > 0 {
+		if closed {
+			d.cancel = make(chan struct{})
+		}
+		if !t.IsZero() {
+			ch := d.cancel
+			d.timer = time.AfterFunc(time.Until(t), func() { close(ch) })
+		}
+	} else if !closed {
+		close(d.cancel)
+	}
 }

@@ -2,6 +2,7 @@ package gonion
 
 import (
 	"context"
+	"crypto/ed25519"
 	"net"
 
 	"github.com/robogg133/gonion/pkg/cells/relay"
@@ -13,14 +14,21 @@ import (
 // *gonion.Circuit / *gonion.Conn so that pkg/hs (which must not import
 // pkg/gonion to avoid an import cycle) can drive hidden-service operations.
 
+// SetHSControl registers a caller-owned buffered channel. The caller must not
+// close or replace it until the circuit is closed.
 func (c *Circuit) SetHSControl(ch chan relay.Cell) {
+	c.controlMu.Lock()
+	defer c.controlMu.Unlock()
 	c.HSControl = ch
 }
 
 // RecvHSControl blocks until an HS control cell arrives on the registered
 // HSControl channel, or the circuit/context is cancelled.
 func (c *Circuit) RecvHSControl(ctx context.Context) (relay.Cell, error) {
-	if c.HSControl == nil {
+	c.controlMu.RLock()
+	ch := c.HSControl
+	c.controlMu.RUnlock()
+	if ch == nil {
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
@@ -29,7 +37,10 @@ func (c *Circuit) RecvHSControl(ctx context.Context) (relay.Cell, error) {
 		}
 	}
 	select {
-	case cell := <-c.HSControl:
+	case cell, ok := <-ch:
+		if !ok {
+			return nil, ErrClosed
+		}
 		return cell, nil
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -64,7 +75,17 @@ func (a circAdapter) AppendE2EHop(Kf, Kb, Df, Db []byte) error {
 	return a.c.AppendE2EHop(Kf, Kb, Df, Db)
 }
 
-func (a circAdapter) Close() error { return a.c.Close() }
+func (a circAdapter) Close() error                                 { return a.c.Close() }
+func (a circAdapter) EstablishIntro(auth ed25519.PrivateKey) error { return a.c.EstablishIntro(auth) }
+func (a circAdapter) JoinRendezvous(cookie [20]byte, reply, Kf, Kb, Df, Db []byte, address string) error {
+	return a.c.JoinRendezvous(cookie, reply, Kf, Kb, Df, Db, address)
+}
+func (a circAdapter) AcceptStream(ctx context.Context) (net.Conn, error) {
+	return a.c.AcceptStream(ctx)
+}
+func (a circAdapter) StopAccepting() error { return a.c.StopAccepting() }
+
+var _ capi.ServiceCirc = circAdapter{}
 
 // NewCircAdapter wraps a *Circuit as a capi.Circ.
 func NewCircAdapter(c *Circuit) capi.Circ { return circAdapter{c} }

@@ -1,7 +1,6 @@
 package gonion
 
 import (
-	"bytes"
 	"encoding/binary"
 	"io"
 
@@ -13,17 +12,15 @@ func (c *Conn) readLoop() {
 	log.Debug().Msg("read loop started")
 	defer log.Debug().Msg("read loop stopped")
 
-	header := make([]byte, 5)
-	cellBuff := make([]byte, cells.CELL_BODY_LEN)
 	for {
-		_, err := io.ReadFull(c.socket, header)
+		frame, err := cells.ReadFrame(c.socket, c.ProtcolVersion)
 		if err != nil {
 			log.Error().Err(err).Msg("read cell header failed")
 			c.ctxCancel(fail(c.ctx, ErrIO, "connection read failed", err))
 			return
 		}
-		circuitID := binary.BigEndian.Uint32(header[:4])
-		cmd := header[4]
+		circuitID := binary.BigEndian.Uint32(frame[:4])
+		cmd := frame[4]
 
 		circuit := c.circuits.Get(circuitID)
 		if circuit == nil {
@@ -31,26 +28,8 @@ func (c *Conn) readLoop() {
 			continue
 		}
 
-		buffer := bytes.NewBuffer(make([]byte, 0, 514))
-		if _, err := buffer.Write(header); err != nil {
-			log.Error().Err(err).Msg("buffer header failed")
-			c.ctxCancel(fail(c.ctx, ErrIO, "connection read failed", err))
-			return
-		}
-
-		if _, err := io.ReadFull(c.socket, cellBuff); err != nil {
-			log.Error().Err(err).Uint8("cmd", cmd).Msg("read cell body failed")
-			c.ctxCancel(fail(c.ctx, ErrIO, "connection read failed", err))
-			return
-		}
-		if _, err := buffer.Write(cellBuff); err != nil {
-			log.Error().Err(err).Msg("buffer body failed")
-			c.ctxCancel(fail(c.ctx, ErrIO, "connection read failed", err))
-			return
-		}
-
 		select {
-		case circuit.Inbound <- buffer.Bytes():
+		case circuit.Inbound <- frame:
 		case <-circuit.Ctx.Done():
 			log.Debug().Uint32("circ_id", circuitID).Msg("drop cell: circuit done")
 			continue
@@ -68,8 +47,13 @@ func (c *Conn) writeLoop() {
 	for {
 		select {
 		case cell := <-c.writeCall:
-			if _, err := c.socket.Write(cell); err != nil {
-				log.Error().Err(err).Int("len", len(cell)).Msg("write cell failed")
+			n, err := c.socket.Write(cell.data)
+			if err == nil && n != len(cell.data) {
+				err = io.ErrShortWrite
+			}
+			cell.done <- err
+			if err != nil {
+				log.Error().Err(err).Int("len", len(cell.data)).Msg("write cell failed")
 				c.ctxCancel(fail(c.ctx, ErrIO, "connection write failed", err))
 				return
 			}

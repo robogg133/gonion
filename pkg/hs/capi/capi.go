@@ -6,6 +6,7 @@ package capi
 
 import (
 	"context"
+	"crypto/ed25519"
 	"net"
 
 	"github.com/robogg133/gonion/pkg/cells/relay"
@@ -25,10 +26,24 @@ type Circ interface {
 	SetHSControl(ch chan relay.Cell)
 	// RecvHSControl blocks until an HS control cell arrives or ctx ends.
 	RecvHSControl(ctx context.Context) (relay.Cell, error)
-	// AppendE2EHop attaches the end-to-end hop from the rendezvous key seed.
+	// AppendE2EHop attaches an HS-v3 client hop: AES-256-CTR, SHA3-256,
+	// with four 32-byte inputs. It must not use ordinary AES-128/SHA-1 hop
+	// state. Send and receive digest/window state must be independent of
+	// the rendezvous relay's state.
 	AppendE2EHop(Kf, Kb, Df, Db []byte) error
 	// Close tears the circuit down.
 	Close() error
+}
+
+// ServiceCirc adds the service-side operations. The adapter owns the incoming
+// stream queue and the circuit nonce; applications cannot replace either.
+type ServiceCirc interface {
+	Circ
+	EstablishIntro(auth ed25519.PrivateKey) error
+	JoinRendezvous(cookie [20]byte, reply, Kf, Kb, Df, Db []byte, address string) error
+	AcceptStream(ctx context.Context) (net.Conn, error)
+	// StopAccepting rejects new/pending streams without closing accepted ones.
+	StopAccepting() error
 }
 
 // Stream is the subset of a stream needed to fetch descriptors and send
@@ -45,4 +60,11 @@ type Stream interface {
 // CircuitBuilder builds circuits (implemented by *gonion.Conn in pkg/embed).
 type CircuitBuilder interface {
 	BuildPath(id uint32, relays []*common.RouterStatus) (Circ, error)
+}
+
+// ContextCircuitBuilder is required by services so renewal and shutdown can
+// interrupt circuit construction without cancelling unrelated connections.
+type ContextCircuitBuilder interface {
+	CircuitBuilder
+	BuildPathContext(ctx context.Context, id uint32, relays []*common.RouterStatus) (Circ, error)
 }

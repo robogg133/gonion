@@ -13,11 +13,17 @@ import (
 	"time"
 
 	cells "github.com/robogg133/gonion/pkg/cells/base"
+	"github.com/robogg133/gonion/pkg/common"
 	"github.com/robogg133/gonion/pkg/crypto"
 	"github.com/robogg133/gonion/pkg/storage"
 )
 
 const CONNECTION_TIMEOUT = 60 * time.Second
+
+type cellWrite struct {
+	data []byte
+	done chan error // buffered: cancellation must not block the writer
+}
 
 type Conn struct {
 	socket         net.Conn
@@ -26,14 +32,17 @@ type Conn struct {
 
 	netInfo cells.NetInfoCell
 
-	Cert *x509.Certificate
+	Cert      *x509.Certificate
+	relayRSA  [20]byte
+	relayEd   [32]byte
+	consensus *common.Consensus
 
 	userDataPipeWriter *io.PipeWriter
 	userDataPipeReader *io.PipeReader
 
 	mu sync.RWMutex
 
-	writeCall chan []byte
+	writeCall chan cellWrite
 	ctx       context.Context
 	ctxCancel context.CancelCauseFunc
 
@@ -54,6 +63,15 @@ func (c *Conn) SetStorage(st storage.Storage) {
 // NewConn performs the Tor link handshake on c.
 // logOut receives structured logs when debug is false; when debug is true, logs go to stderr in console form.
 func NewConn(c net.Conn, logOut io.Writer, debug bool) (*Conn, error) {
+	if c == nil {
+		return nil, Public(ErrIO, "nil OR connection")
+	}
+	success := false
+	defer func() {
+		if !success {
+			_ = c.Close()
+		}
+	}()
 	base := newLogger(logOut, debug)
 	remote := ""
 	if ra := c.RemoteAddr(); ra != nil {
@@ -66,7 +84,7 @@ func NewConn(c net.Conn, logOut io.Writer, debug bool) (*Conn, error) {
 
 	ctx, cancel := context.WithCancelCause(withLogger(context.Background(), base))
 	conn := &Conn{
-		writeCall: make(chan []byte, 4096),
+		writeCall: make(chan cellWrite, 4096),
 		ctx:       ctx,
 		ctxCancel: cancel,
 		circuits: &circuits{
@@ -118,27 +136,20 @@ func NewConn(c net.Conn, logOut io.Writer, debug bool) (*Conn, error) {
 	}
 
 	certs := pkg.(*cells.CertsCell)
-	var cert4 *crypto.TorCert
-	var cert5 *crypto.TorCert
+	certData := make(map[uint8][]byte)
 	for _, v := range certs.Certificates {
-		switch v.Type {
-		case 4:
-			cert4, err = crypto.ParseIdentityVSigningCert(v.Cert)
-			if err != nil {
-				cancel(err)
-				return nil, fail(ctx, ErrHandshake, "parse identity cert failed", err)
-			}
-		case 5:
-			cert5, err = crypto.ParseIdentityVSigningCert(v.Cert)
-			if err != nil {
-				cancel(err)
-				return nil, fail(ctx, ErrHandshake, "parse signing cert failed", err)
-			}
-		}
+		certData[v.Type] = v.Cert
 	}
-	if err := crypto.VerifyConnection(cert4, cert5, conn.Cert.Raw); err != nil {
+	conn.relayRSA, conn.relayEd, err = crypto.VerifyRelayCertificates(certData, conn.Cert.Raw)
+	if err != nil {
 		cancel(err)
 		return nil, fail(ctx, ErrHandshake, "certificate verification failed", err)
+	}
+	if pinned, ok := c.(interface{ ExpectedRelayIdentity() [20]byte }); ok {
+		if err := conn.CheckRelayFingerprint(pinned.ExpectedRelayIdentity()); err != nil {
+			cancel(err)
+			return nil, err
+		}
 	}
 	log.Debug().Msg("certs verified")
 
@@ -182,7 +193,32 @@ func NewConn(c net.Conn, logOut io.Writer, debug bool) (*Conn, error) {
 	go conn.readLoop()
 	go conn.writeLoop()
 
+	success = true
 	return conn, nil
+}
+
+// Consensus returns this connection's authenticated directory snapshot, not a
+// process-global consensus that another embedded client can replace.
+func (conn *Conn) Consensus() *common.Consensus {
+	conn.mu.RLock()
+	defer conn.mu.RUnlock()
+	return conn.consensus.Clone()
+}
+
+// CheckRelayFingerprint matches the CERTS-authenticated RSA identity against
+// a caller-selected fallback/bridge pin. Zero is never an identity wildcard.
+func (conn *Conn) CheckRelayFingerprint(expected [20]byte) error {
+	if expected == [20]byte{} || expected != conn.relayRSA {
+		return Public(ErrHandshake, "relay identity does not match expected fingerprint")
+	}
+	return nil
+}
+
+func (conn *Conn) CheckRelayIdentity(relay *common.RouterStatus) error {
+	if relay == nil || conn.CheckRelayFingerprint(relay.NodeID) != nil || len(relay.IdEd25519) != 32 || !slices.Equal(relay.IdEd25519, conn.relayEd[:]) {
+		return Public(ErrHandshake, "relay identity does not match selected consensus relay")
+	}
+	return nil
 }
 
 func parseRemoteAddr(addr net.Addr) netip.Addr {
@@ -261,7 +297,7 @@ func negotiateVersion(ctx context.Context, r io.Reader, w io.Writer) (uint16, er
 	}
 
 	initialBuffer := make([]byte, 5)
-	n, err := r.Read(initialBuffer)
+	n, err := io.ReadFull(r, initialBuffer)
 	if err != nil {
 		return 0, fail(ctx, ErrIO, "read VERSIONS header failed", err)
 	}
@@ -277,7 +313,10 @@ func negotiateVersion(ctx context.Context, r io.Reader, w io.Writer) (uint16, er
 		return 0, Publicf(ErrVersion, "expected VERSIONS, got command %d", initialBuffer[2])
 	}
 
-	length := binary.BigEndian.Uint16(initialBuffer[3:5])
+	length := int(binary.BigEndian.Uint16(initialBuffer[3:5]))
+	if initialBuffer[0] != 0 || initialBuffer[1] != 0 || length == 0 || length%2 != 0 {
+		return 0, Public(ErrVersion, "invalid VERSIONS circuit ID or payload length")
+	}
 	versions := make([]byte, 5+length)
 	if _, err := io.ReadFull(r, versions[5:]); err != nil {
 		return 0, fail(ctx, ErrIO, "read VERSIONS body failed", err)

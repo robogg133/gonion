@@ -10,10 +10,7 @@ import (
 )
 
 func verifySendMe(ctx context.Context, sendme *relay.SendMeCell, sendmeVersion uint8, win *window.Window) error {
-	if sendmeVersion == 0 {
-		return nil
-	}
-	if sendme.Version != sendmeVersion {
+	if sendme.Version < sendmeVersion || sendme.Version > 1 {
 		logger(ctx).Error().
 			Uint8("got", sendme.Version).
 			Uint8("want", sendmeVersion).
@@ -23,7 +20,7 @@ func verifySendMe(ctx context.Context, sendme *relay.SendMeCell, sendmeVersion u
 
 	select {
 	case digest := <-win.Get():
-		if digest != sendme.Sha1ForLastCell {
+		if sendme.Version == 1 && digest != sendme.Sha1ForLastCell {
 			// Digests stay in logs only — not in the public error string.
 			logger(ctx).Error().
 				Str("got", hex.EncodeToString(sendme.Sha1ForLastCell[:])).
@@ -53,13 +50,9 @@ func (c *Circuit) sendmeManage(i int, hop *hops.Hop) {
 				Version:         c.SendMeVersion,
 				Sha1ForLastCell: digest,
 			}
-			select {
-			case c.WriteRelayCell <- RelayOut{Cell: sendMeCell, Dst: i}:
-				win.Increase()
-				log.Debug().Msg("circuit SENDME sent")
-			case <-ctx.Done():
-				return
-			case <-c.Ctx.Done():
+			win.Increase()
+			if err := c.sendRelay(sendMeCell, i, false); err != nil {
+				c.ctxCancel(err)
 				return
 			}
 		case <-ctx.Done():
