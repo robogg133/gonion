@@ -2,8 +2,7 @@ package embed
 
 import (
 	"context"
-	"crypto/ecdh"
-	"crypto/rand"
+
 	"fmt"
 	"net"
 	"net/http"
@@ -11,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/robogg133/gonion/internal/testutil"
 	"github.com/robogg133/gonion/pkg/cells/relay"
 	"github.com/robogg133/gonion/pkg/common"
 	"github.com/robogg133/gonion/pkg/hs"
@@ -89,67 +89,23 @@ func (n *nopConn) SetDeadline(time.Time) error      { return nil }
 func (n *nopConn) SetReadDeadline(time.Time) error  { return nil }
 func (n *nopConn) SetWriteDeadline(time.Time) error { return nil }
 
-func testRelay(name string, port uint16) common.RouterStatus {
-	flags := [15]bool{}
-	flags[common.FLAG_EXIT] = true
-	flags[common.FLAG_GUARD] = true
-	flags[common.FLAG_FAST] = true
-	flags[common.FLAG_STABLE] = true
-	flags[common.FLAG_V2DIR] = true
-	flags[common.FLAG_RUNNING] = true
-	flags[common.FLAG_VALID] = true
-	// NodeID, IdEd25519, NtorOnionKey required by haveAllKeys. IPLevel must be
-	// unique so the path selector's family/16 check doesn't reject all.
-	var nodeID [20]byte
-	copy(nodeID[:], name)
-	p := common.Ports{}
-	p.SetPort(80, true) // allow exiting to :80, the port used by the dial tests
-	p.SetPort(port, true)
-	return common.RouterStatus{
-		Nickname:     name,
-		ORPort:       port,
-		BandWidth:    1000,
-		StatusFlags:  flags,
-		NodeID:       nodeID,
-		IdEd25519:    make([]byte, 32),
-		NTorOnionKey: mustNtor(),
-		IPLevel:      uint32(port), // distinct per relay
-		Ports:        p,
-	}
-}
-
-func mustNtor() *ecdh.PublicKey {
-	sk, err := ecdh.X25519().GenerateKey(rand.Reader)
-	if err != nil {
-		panic(err)
-	}
-	return sk.PublicKey()
-}
-
-func newTestClient(b capi.CircuitBuilder) *Client {
-	return &Client{
-		cns: &common.Consensus{
-			RelayInformation: []common.RouterStatus{
-				testRelay("a", 1),
-				testRelay("b", 2),
-				testRelay("c", 3),
-				testRelay("d", 4),
-			},
-		},
-		builder: b,
-		hs:      nil, // not exercised by pool tests
-	}
+func newTestClient(t *testing.T, b capi.CircuitBuilder) *Client {
+	t.Helper()
+	c := &Client{cns: testutil.Consensus(t, time.Now()), builder: b}
+	t.Cleanup(func() { _ = c.Close() })
+	return c
 }
 
 func TestAllocateCircuitPool(t *testing.T) {
 	b := &stubBuilder{}
-	c := newTestClient(b)
+	c := newTestClient(t, b)
 
 	ctx := context.Background()
 	pc1, err := c.allocateCircuit(ctx, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
+	pc1.active = false // release the allocation before reusing it
 	// Second call should reuse the live circuit (under use cap).
 	pc2, err := c.allocateCircuit(ctx, 0)
 	if err != nil {
@@ -181,12 +137,13 @@ func TestAllocateCircuitPool(t *testing.T) {
 
 func TestReapExpired(t *testing.T) {
 	b := &stubBuilder{}
-	c := newTestClient(b)
+	c := newTestClient(t, b)
 
 	pc, err := c.allocateCircuit(context.Background(), 0)
 	if err != nil {
 		t.Fatal(err)
 	}
+	pc.active = false
 	pc.expiresAt = time.Now().Add(-time.Minute)
 	c.reapOnce()
 	if !pc.circ.(*stubCirc).closed {
@@ -198,7 +155,7 @@ func TestReapExpired(t *testing.T) {
 }
 
 func TestHTTPClientWiring(t *testing.T) {
-	c := newTestClient(&stubBuilder{})
+	c := newTestClient(t, &stubBuilder{})
 	hc := c.HTTPClient()
 	if hc == nil || hc.Transport == nil {
 		t.Fatal("HTTPClient must return a configured *http.Client")
@@ -210,28 +167,12 @@ func TestHTTPClientWiring(t *testing.T) {
 	}
 }
 
-// reapOnce runs a single passive reap pass (test helper; reuses reapLoop logic
-// without the ticker).
-func (c *Client) reapOnce() {
-	c.mu.Lock()
-	kept := c.circuits[:0]
-	for _, pc := range c.circuits {
-		if pc.invalid.Load() || time.Now().After(pc.expiresAt) {
-			_ = pc.circ.Close()
-			continue
-		}
-		kept = append(kept, pc)
-	}
-	c.circuits = kept
-	c.mu.Unlock()
-}
-
 // TestDialNonOnion exercises the full DialContext path for a plain address: it
 // must allocate a pooled circuit, open a stream, and return a net.Conn whose
 // writes go to that stream's cell sink.
 func TestDialNonOnion(t *testing.T) {
 	b := &stubBuilder{}
-	c := newTestClient(b)
+	c := newTestClient(t, b)
 
 	conn, err := c.DialContext(context.Background(), "tcp", "example.com:80")
 	if err != nil {
@@ -251,7 +192,7 @@ func TestDialNonOnion(t *testing.T) {
 
 func TestDialOnionHostPortUsesHSPath(t *testing.T) {
 	b := &stubBuilder{}
-	c := newTestClient(b)
+	c := newTestClient(t, b)
 	c.hs = &hs.Client{}
 
 	_, err := c.DialContext(context.Background(), "tcp", "2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion:80")
@@ -269,7 +210,7 @@ func TestDialOnionHostPortUsesHSPath(t *testing.T) {
 // circuit's stream open, then succeeds on the second.
 func TestDialRetryOnCircuitFailure(t *testing.T) {
 	b := &stubBuilder{failFirstStream: true}
-	c := newTestClient(b)
+	c := newTestClient(t, b)
 
 	conn, err := c.DialContext(context.Background(), "tcp", "example.com:80")
 	if err != nil {

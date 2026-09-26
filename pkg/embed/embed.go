@@ -11,11 +11,9 @@ import (
 func (c *Client) HTTPClient() *http.Client {
 	return &http.Client{
 		Transport: &http.Transport{
-			DialContext:    c.DialContext,
-			DialTLSContext: c.DialTLSContext,
-			// Hidden services and exit streams are already end-to-end through
-			// Tor; let the transport skip its own TLS verification only when the
-			// caller explicitly opts in via a custom Transport.
+			DialContext: c.DialContext,
+			// Leave TLS to net/http so caller TLSClientConfig and handshake
+			// timeouts are honored. Proxy is nil: never use environment proxies.
 		},
 	}
 }
