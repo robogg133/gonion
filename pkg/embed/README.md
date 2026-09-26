@@ -10,9 +10,11 @@ interoperability results and remaining limitations.
 ## Defaults and caller-owned policy
 
 `DefaultOptions()` sets a 10-minute circuit reuse lifetime and 100 successful
-streams per circuit. Zero option values use those defaults; negative limits are
-rejected. These are local pool policies, not Tor's complete guard/dirtiness
-algorithm. No dialer, disk directory, identity or listener is chosen implicitly.
+streams per circuit, and supplies two **direct TCP** dialers: a fallback
+directory connection for bootstrap and a connection to the selected traffic
+guard. Zero option values use the pool defaults; negative limits are rejected.
+These are local pool policies, not Tor's complete guard/dirtiness algorithm.
+`Storage`, identity and listener policy are never chosen implicitly.
 
 - `ORDialer(ctx)` opens **only the bootstrap connection** and must honor ctx.
 - `BootstrapIdentity` is its expected 20-byte RSA relay fingerprint. It is
@@ -22,10 +24,12 @@ algorithm. No dialer, disk directory, identity or listener is chosen implicitly.
 - `GuardDialer(ctx, guard)` opens the selected first relay for every traffic
   circuit, including onion directory, introduction and rendezvous circuits. It
   must honor cancellation and must not substitute another relay.
-- There is **no implicit direct TCP fallback**. With nil `GuardDialer`, directory
-  bootstrap can finish but traffic circuit construction fails. A fixed bridge
-  requires bridge-aware guard selection, which is not implemented; a bootstrap
-  transport alone is not a bridge policy for the rest of the client.
+- The default `GuardDialer` dials direct TCP to the relay path selection chose.
+  A caller that needs a different policy replaces or clears it; a cleared
+  dialer fails closed, because construction returns an error instead of opening
+  a socket on the caller's behalf. A fixed bridge requires bridge-aware guard
+  selection, which is not implemented; a bootstrap transport alone is not a
+  bridge policy for the rest of the client.
 - `Storage` is optional and caller-owned. The client neither closes it nor
   chooses an application data directory. The caller owns any key/revision store
   separately from the public consensus cache.
@@ -36,9 +40,11 @@ pin requirement applies. Constructors and Listen use their context for
 initialization, not the lifetime of successfully returned objects.
 
 **Migration:** raw OR/custom transport callers must supply `BootstrapIdentity`;
-callers that only supplied `ORDialer` must now explicitly supply `GuardDialer` to
-allow traffic. The fallback dialer carries its selected relay's pin automatically.
-Do not replace identity validation with an insecure TLS setting.
+callers that only supplied `ORDialer` no longer need to add `GuardDialer` for
+direct traffic, because `DefaultOptions()` now supplies one, and must clear it
+when the client must not reach a guard directly. The fallback dialer carries its
+selected relay's pin automatically. Do not replace identity validation with an
+insecure TLS setting.
 
 ## Dial and HTTP
 

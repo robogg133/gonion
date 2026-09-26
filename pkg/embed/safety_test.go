@@ -15,10 +15,34 @@ import (
 
 func TestDefaultsAndNoDirectFallback(t *testing.T) {
 	o := DefaultOptions()
-	if o.Storage != nil || o.ORDialer != nil || o.GuardDialer != nil || o.CircuitTTL != 10*time.Minute || o.MaxCircuitUses != 100 {
+	if o.Storage != nil || o.CircuitTTL != 10*time.Minute || o.MaxCircuitUses != 100 {
 		t.Fatal("unexpected policy defaults")
 	}
-	_, err := (gonionBuilder{}).BuildPath(1, []*common.RouterStatus{{}})
+	// The direct-TCP bootstrap and guard dialers are ordinary visible options,
+	// not a fallback the library reinstates after a caller clears one.
+	if o.ORDialer == nil || o.GuardDialer == nil {
+		t.Fatal("default dialers must be supplied in the options")
+	}
+	// The default guard dialer must reach the relay that was selected for this
+	// circuit, never a substitute.
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	guard := &common.RouterStatus{Ipv4Addr: "127.0.0.1", ORPort: uint16(listener.Addr().(*net.TCPAddr).Port)}
+	conn, err := o.GuardDialer(context.Background(), guard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	accepted, err := listener.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.Close()
+	_ = accepted.Close()
+	// A caller that clears the dialers must fail closed.
+	_, err = (gonionBuilder{}).BuildPath(1, []*common.RouterStatus{{}})
 	if err == nil || !strings.Contains(err.Error(), "refusing direct fallback") {
 		t.Fatalf("missing fail-closed guard: %v", err)
 	}

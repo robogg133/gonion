@@ -66,8 +66,12 @@ type Options struct {
 	MaxCircuitUses int64
 }
 
-// DefaultOptions returns local pool defaults without choosing network or disk policy.
-// The caller supplies dialers and, optionally, Storage; embed never closes Storage.
+// DefaultOptions returns the local pool defaults plus two direct TCP dialers:
+// a fallback directory connection for bootstrap and a connection to the selected
+// traffic guard. Both are ordinary visible options, so a caller that needs a
+// different policy replaces or clears them; a cleared dialer fails closed
+// instead of falling back to direct TCP. Storage stays caller-owned and embed
+// never closes it.
 func DefaultOptions() Options {
 	return Options{
 		CircuitTTL:     circuitTTL,

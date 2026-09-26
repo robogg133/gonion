@@ -93,11 +93,14 @@ claim that the current tree is fully validated.
 
 ## Accepted Embedding And Service Contracts
 
-- `DefaultOptions()` chooses local defaults only. Network, storage, identity and
-  durable revision policy belong to the caller; do not add hidden disk writes.
+- `DefaultOptions()` chooses local pool defaults and supplies two **direct TCP**
+  dialers: a fallback directory connection for bootstrap and a connection to the
+  selected traffic guard. Storage, identity, durable revision and bridge-aware
+  networking policy belong to the caller; do not add hidden disk writes.
 - Bootstrap and traffic networking are separate. `ORDialer` opens bootstrap only;
-  `GuardDialer` must connect to the selected traffic guard. No silent direct TCP
-  fallback or substitution of an unrelated bridge is permitted.
+  `GuardDialer` must connect to the selected traffic guard. The default dialers
+  are visible options, not a hidden fallback: once a caller clears one, that
+  path fails closed. Substitution of an unrelated bridge is never permitted.
 - Match bootstrap CERTS against an explicit expected RSA identity, supplied by
   `BootstrapIdentity` or connection metadata. A transport certificate alone is
   not a replacement for the Tor relay identity check.
