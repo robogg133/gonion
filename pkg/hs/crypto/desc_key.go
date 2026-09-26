@@ -1,19 +1,17 @@
 package crypto
 
 import (
-	"crypto/hmac"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
 	"crypto/sha3"
 	"crypto/subtle"
 	"encoding/binary"
 	"errors"
-	"hash"
 )
 
-var errNilBlindPk = errors.New("hs/crypto: nil blinded public key")
-
-// CircuitKeys is the end-to-end relay key set (matches gonion's crypto import so
-// E2EKeys can hand keys straight to Circuit.AppendE2EHop). Df/Db are the
-// SHA-1 digest seeds, Kf/Kb the AES-128-CTR keys.
+// CircuitKeys is the HS-v3 end-to-end relay key set. Df/Db seed SHA3-256
+// digests; Kf/Kb are AES-256-CTR keys. All four values are 32 bytes.
 type CircuitKeys struct {
 	Df []byte
 	Db []byte
@@ -21,136 +19,107 @@ type CircuitKeys struct {
 	Kb []byte
 }
 
-// E2EKeys derives the hidden-service end-to-end relay keys from the ntor key
-// seed produced by HsClientFinishRendezvous (rend-spec-v3 §3.3.2):
-//
-//	K = SHAKE256(ntor_seed || (":hs_key_expand" || subcredential), 72)
-//	Df = K[0:20]; Db = K[20:40]; Kf = K[40:56]; Kb = K[56:72]
-//
-// The 72-byte layout matches crypto.CircuitKeys so the result feeds straight
-// into gonion.Circuit.AppendE2EHop.
-func E2EKeys(ntorSeed, subcred []byte) (CircuitKeys, error) {
+// E2EKeys implements rend-spec-v3 section 4.2.1:
+// SHAKE256(NTOR_KEY_SEED | PROTOID | ":hs_key_expand", 128).
+// The second argument is retained for source compatibility and is ignored:
+// the subcredential belongs to introduction key derivation, not this KDF.
+func E2EKeys(ntorSeed, _ []byte) (CircuitKeys, error) {
 	if len(ntorSeed) != HsNtorKeySeedLen {
 		return CircuitKeys{}, errors.New("hs/crypto: bad ntor seed length")
 	}
-	info := make([]byte, 0, len(mHsexpand)+len(subcred))
-	info = append(info, mHsexpand...)
-	info = append(info, subcred...)
-	raw := shsKDF(ntorSeed, info, 72)
-	return CircuitKeys{
-		Df: raw[0:20],
-		Db: raw[20:40],
-		Kf: raw[40:56],
-		Kb: raw[56:72],
-	}, nil
+	raw := shsKDF(ntorSeed, hsExpandProto, 128)
+	return CircuitKeys{Df: raw[0:32], Db: raw[32:64], Kf: raw[64:96], Kb: raw[96:128]}, nil
 }
 
-// EncryptDescriptor seals a descriptor plaintext with K_enc (AES-256-CTR,
-// zero IV) and prepends a SHA3-256 HMAC (K_mac) of the ciphertext. The blob
-// layout (MAC || ciphertext) matches rend-spec-v3 §2.4.
-func EncryptDescriptor(k KdfKeys, plaintext []byte) ([]byte, error) {
-	ct, err := aes256Ctr(k.KEnc, plaintext)
-	if err != nil {
+// DescriptorLayer selects the domain separator in rend-spec-v3 section 2.5.3.
+type DescriptorLayer string
+
+const (
+	SuperencryptedLayer DescriptorLayer = "hsdir-superencrypted-data"
+	EncryptedLayer      DescriptorLayer = "hsdir-encrypted-data"
+	MaxDescriptorSize                   = 50000
+	DescriptorCookieLen                 = 16 // C Tor's HS_DESC_DESCRIPTOR_COOKIE_LEN.
+)
+
+func descriptorKeys(secretData, subcredential []byte, revision uint64, salt []byte, layer DescriptorLayer) ([]byte, error) {
+	if len(subcredential) != 32 || len(salt) != 16 ||
+		(layer != SuperencryptedLayer && layer != EncryptedLayer) ||
+		(len(secretData) != 32 && !(layer == EncryptedLayer && len(secretData) == 32+DescriptorCookieLen)) {
+		return nil, errors.New("hs/crypto: invalid descriptor KDF input")
+	}
+	if err := ValidateEd25519PublicKey(secretData[:32]); err != nil {
 		return nil, err
 	}
-	mac := hmacSHA3(k.KMac, ct)
-	out := make([]byte, 0, len(mac)+len(ct))
-	out = append(out, mac...)
-	out = append(out, ct...)
-	return out, nil
+	h := sha3.NewSHAKE256()
+	h.Write(secretData)
+	h.Write(subcredential)
+	h.Write(binary.BigEndian.AppendUint64(nil, revision))
+	h.Write(salt)
+	h.Write([]byte(layer))
+	keys := make([]byte, 80)
+	h.Read(keys)
+	return keys, nil
 }
 
-// DecryptDescriptor verifies the HMAC and AES-256-CTR decrypts a descriptor
-// blob (rend-spec-v3 §2.4). Returns the plaintext on success.
-func DecryptDescriptor(k KdfKeys, blob []byte) ([]byte, error) {
-	if len(blob) < HsDescKeyLen {
-		return nil, errors.New("hs/crypto: descriptor blob shorter than MAC")
-	}
-	mac := blob[:HsDescKeyLen]
-	ct := blob[HsDescKeyLen:]
-	if subtle.ConstantTimeCompare(mac, hmacSHA3(k.KMac, ct)) != 1 {
-		return nil, errors.New("hs/crypto: descriptor MAC mismatch")
-	}
-	return aes256Ctr(k.KEnc, ct)
-}
-
-func hmacSHA3(key, data []byte) []byte {
-	h := macSHA3(key)
-	h.Write(data)
+func descriptorMAC(key, salt, ciphertext []byte) []byte {
+	h := sha3.New256()
+	h.Write(binary.BigEndian.AppendUint64(nil, uint64(len(key))))
+	h.Write(key)
+	h.Write(binary.BigEndian.AppendUint64(nil, uint64(len(salt))))
+	h.Write(salt)
+	h.Write(ciphertext)
 	return h.Sum(nil)
 }
 
-func macSHA3(key []byte) hash.Hash {
-	return hmac.New(func() hash.Hash { return sha3.New256() }, key)
-}
-
-// rend-spec-v3 §HSDESC-KEYS / §DESC-FETCH. The client only knows the blinded
-// public key, from which the descriptor encryption keys (K_enc/K_mac/K_id) and
-// the per-replica descriptor id are derived.
-
-const (
-	// descCertifyLabel seeds KEY_SEED (rend-spec-v3 §2.3.2 / §2.4).
-	descCertifyLabel = "tor-hs-desc-encryption-key-certify"
-	// descKeyExpandLabel expands KEY_SEED into K_enc||K_mac||K_id.
-	descKeyExpandLabel = "tor-hs-descriptor-encryption-keys"
-	// descReqLabel seeds the descriptor-id (rend-spec-v3 §2.3.1).
-	descReqLabel = "tor-hs-directory-hs-desc-request"
-
-	// HsDescKeyLen is the length of each derived descriptor key (AES-256 / SHA3-256).
-	HsDescKeyLen = 32
-)
-
-// KdfKeys holds the descriptor symmetric keys derived from the blinded key.
-type KdfKeys struct {
-	KEnc []byte // 32 bytes, AES-256-CTR key
-	KMac []byte // 32 bytes, HMAC-SHA3-256 key
-	KId  []byte // 32 bytes, descriptor id seed
-}
-
-// DescKeys derives (K_enc, K_mac, K_id) from the blinded public key following
-// rend-spec-v3 §HSDESC-KEYS:
-//
-//	KEY_SEED = SHA3-256("tor-hs-desc-encryption-key-certify" || blindPk)
-//	K        = SHAKE256(KEY_SEED || "tor-hs-descriptor-encryption-keys", 96)
-//	K_enc = K[0:32]; K_mac = K[32:64]; K_id = K[64:96]
-func DescKeys(blindPk *BlindedPublicKey) (KdfKeys, error) {
-	if blindPk == nil || len(blindPk.blindPk) == 0 {
-		return KdfKeys{}, errNilBlindPk
+// EncryptDescriptor encrypts one descriptor layer as SALT | ciphertext | MAC.
+// The caller supplies padding for the outer layer. A fresh hashed salt is used.
+func EncryptDescriptor(secretData, subcredential []byte, revision uint64, layer DescriptorLayer, plaintext []byte) ([]byte, error) {
+	if len(plaintext) == 0 || len(plaintext) > MaxDescriptorSize-48 {
+		return nil, errors.New("hs/crypto: invalid descriptor plaintext length")
 	}
-
-	seed := sha3.New256()
-	seed.Write([]byte(descCertifyLabel))
-	seed.Write(blindPk.blindPk)
-	keySeed := seed.Sum(nil)
-
-	raw := shsKDF(keySeed, []byte(descKeyExpandLabel), HsDescKeyLen*3)
-	return KdfKeys{
-		KEnc: raw[0:HsDescKeyLen],
-		KMac: raw[HsDescKeyLen : 2*HsDescKeyLen],
-		KId:  raw[2*HsDescKeyLen : 3*HsDescKeyLen],
-	}, nil
+	var entropy [32]byte
+	if _, err := rand.Read(entropy[:]); err != nil {
+		return nil, err
+	}
+	salt := sha3.Sum256(entropy[:])
+	return encryptDescriptorSalt(secretData, subcredential, revision, layer, plaintext, salt[:16])
 }
 
-// DescriptorID computes the v3 descriptor fetch id for a (period, replica):
-//
-//	H("tor-hs-directory-hs-desc-request" || blindPk ||
-//	  INT_8(periodLen) || INT_8(periodNum) || INT_8(replica))
-//
-// (rend-spec-v3 §2.3.1). INT_8 is an 8-byte big-endian integer.
-func DescriptorID(blindPk *BlindedPublicKey, periodNum, periodLen, replica uint64) [32]byte {
-	h := sha3.New256()
-	h.Write([]byte(descReqLabel))
-	h.Write(blindPk.blindPk)
+func encryptDescriptorSalt(secretData, subcredential []byte, revision uint64, layer DescriptorLayer, plaintext, salt []byte) ([]byte, error) {
+	keys, err := descriptorKeys(secretData, subcredential, revision, salt, layer)
+	if err != nil {
+		return nil, err
+	}
+	defer clear(keys)
+	block, err := aes.NewCipher(keys[:32])
+	if err != nil {
+		return nil, err
+	}
+	out := make([]byte, 16+len(plaintext), 48+len(plaintext))
+	copy(out, salt)
+	cipher.NewCTR(block, keys[32:48]).XORKeyStream(out[16:], plaintext)
+	return append(out, descriptorMAC(keys[48:], salt, out[16:])...), nil
+}
 
-	var b [8]byte
-	binary.BigEndian.PutUint64(b[:], periodLen)
-	h.Write(b[:])
-	binary.BigEndian.PutUint64(b[:], periodNum)
-	h.Write(b[:])
-	binary.BigEndian.PutUint64(b[:], replica)
-	h.Write(b[:])
-
-	var out [32]byte
-	copy(out[:], h.Sum(nil))
-	return out
+// DecryptDescriptor authenticates a layer before releasing any plaintext.
+func DecryptDescriptor(secretData, subcredential []byte, revision uint64, layer DescriptorLayer, blob []byte) ([]byte, error) {
+	if len(blob) <= 48 || len(blob) > MaxDescriptorSize {
+		return nil, errors.New("hs/crypto: invalid descriptor ciphertext length")
+	}
+	salt, ciphertext, mac := blob[:16], blob[16:len(blob)-32], blob[len(blob)-32:]
+	keys, err := descriptorKeys(secretData, subcredential, revision, salt, layer)
+	if err != nil {
+		return nil, err
+	}
+	defer clear(keys)
+	if subtle.ConstantTimeCompare(mac, descriptorMAC(keys[48:], salt, ciphertext)) != 1 {
+		return nil, errors.New("hs/crypto: descriptor MAC mismatch")
+	}
+	block, err := aes.NewCipher(keys[:32])
+	if err != nil {
+		return nil, err
+	}
+	plaintext := make([]byte, len(ciphertext))
+	cipher.NewCTR(block, keys[32:48]).XORKeyStream(plaintext, ciphertext)
+	return plaintext, nil
 }

@@ -1,12 +1,13 @@
 package crypto
 
 import (
+	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/ecdh"
-	"crypto/hmac"
 	"crypto/rand"
 	"crypto/subtle"
+	"encoding/binary"
 	"errors"
 	"fmt"
 
@@ -38,10 +39,29 @@ var (
 	hsExpandProto = []byte(HsNtorProtoID + mHsexpand)
 )
 
+// hsMac implements rend-spec-v3 section 0.3, not HMAC.
 func hsMac(key, data []byte) []byte {
-	h := hmac.New(sha3.New256, key)
+	h := sha3.New256()
+	var size [8]byte
+	binary.BigEndian.PutUint64(size[:], uint64(len(key)))
+	h.Write(size[:])
+	h.Write(key)
 	h.Write(data)
 	return h.Sum(nil)
+}
+
+// introMACBody covers the entire canonical INTRODUCE1 header, including its
+// zero legacy ID and extension count (rend-spec-v3 Appendix G.1). These helpers
+// support headers without extensions only; an extended header must not be
+// stripped and passed here, since it is part of the authenticated transcript.
+func introMACBody(authKey, clientKey, ciphertext []byte) []byte {
+	body := make([]byte, 23, 56+len(clientKey)+len(ciphertext))
+	body[20] = 2
+	body[22] = 32
+	body = append(body, authKey...)
+	body = append(body, 0)
+	body = append(body, clientKey...)
+	return append(body, ciphertext...)
 }
 
 // shsKDF is the SHAKE256-based KDF used for the hs-ntor key streams.
@@ -62,10 +82,20 @@ type HsClientKeys struct {
 
 // HsClientIntro encrypts plaintext (rendezvous cookie + link specifiers etc.)
 // for an INTRODUCE1 message. B is the intro point encryption key, authKey the
-// intro auth key, subcred the service subcredential.
+// intro auth key, subcred the service subcredential. The outer INTRODUCE1
+// header must have a zero legacy ID and no extensions.
 func HsClientIntro(privX *ecdh.PrivateKey, B *ecdh.PublicKey, authKey, subcred, plaintext []byte) (*HsClientKeys, []byte, error) {
+	if privX == nil || B == nil || privX.Curve() != ecdh.X25519() || B.Curve() != ecdh.X25519() || len(authKey) != 32 || len(subcred) != 32 {
+		return nil, nil, errors.New("hs-ntor: invalid introduction keys")
+	}
+	if len(plaintext) > 498-56-32-HsNtorMacLen {
+		return nil, nil, errors.New("hs-ntor: introduction exceeds relay payload")
+	}
 	X := privX.PublicKey()
 	expBx, err := privX.ECDH(B)
+	if err != nil {
+		return nil, nil, err
+	}
 
 	secret := make([]byte, 0, 32+len(authKey)+32+32+len(HsNtorProtoID))
 	secret = append(secret, expBx...)
@@ -87,12 +117,7 @@ func HsClientIntro(privX *ecdh.PrivateKey, B *ecdh.PublicKey, authKey, subcred, 
 		return nil, nil, err
 	}
 
-	macBody := make([]byte, 0, len(authKey)+32+32+len(encData))
-	macBody = append(macBody, authKey...)
-	macBody = append(macBody, B.Bytes()...)
-	macBody = append(macBody, X.Bytes()...)
-	macBody = append(macBody, encData...)
-	mac := hsMac(macKey, macBody)
+	mac := hsMac(macKey, introMACBody(authKey, X.Bytes(), encData))
 
 	out := make([]byte, 0, 32+len(encData)+HsNtorMacLen)
 	out = append(out, X.Bytes()...)
@@ -103,8 +128,25 @@ func HsClientIntro(privX *ecdh.PrivateKey, B *ecdh.PublicKey, authKey, subcred, 
 }
 
 // HsServiceIntro decrypts a client's intro payload and returns the plaintext
-// plus the client public key X. b is the intro point secret key.
+// plus the client public key X. b is the service's introduction encryption
+// secret key. The caller must reject nonzero legacy IDs and outer extensions
+// before calling this canonical-header helper.
 func HsServiceIntro(b *ecdh.PrivateKey, authKey, subcred, blob []byte) (*ecdh.PublicKey, []byte, error) {
+	return HsServiceIntroWithHeader(b, authKey, subcred, introMACBody(authKey, nil, nil), blob)
+}
+
+// HsServiceIntroWithHeader authenticates the original outer header, including
+// unknown, repeated and zero-length extensions, without normalizing it.
+func HsServiceIntroWithHeader(b *ecdh.PrivateKey, authKey, subcred, header, blob []byte) (*ecdh.PublicKey, []byte, error) {
+	if err := validateIntroHeader(header, authKey); err != nil {
+		return nil, nil, err
+	}
+	if b == nil || b.Curve() != ecdh.X25519() || len(authKey) != 32 || len(subcred) != 32 {
+		return nil, nil, errors.New("hs-ntor: invalid introduction keys")
+	}
+	if len(header)+len(blob) > 498 {
+		return nil, nil, errors.New("hs-ntor: introduction exceeds relay payload")
+	}
 	if len(blob) < 32+HsNtorMacLen {
 		return nil, nil, errors.New("hs-ntor: short intro blob")
 	}
@@ -136,12 +178,7 @@ func HsServiceIntro(b *ecdh.PrivateKey, authKey, subcred, blob []byte) (*ecdh.Pu
 	encKey := keysRaw[:HsNtorKeySeedLen]
 	macKey := keysRaw[HsNtorKeySeedLen:]
 
-	macBody := make([]byte, 0, len(authKey)+32+32+len(encData))
-	macBody = append(macBody, authKey...)
-	macBody = append(macBody, B.Bytes()...)
-	macBody = append(macBody, X.Bytes()...)
-	macBody = append(macBody, encData...)
-	if subtle.ConstantTimeCompare(hsMac(macKey, macBody), theirMac) != 1 {
+	if subtle.ConstantTimeCompare(hsMac(macKey, append(bytes.Clone(header), blob[:len(blob)-HsNtorMacLen]...)), theirMac) != 1 {
 		return nil, nil, errors.New("hs-ntor: intro MAC mismatch")
 	}
 
@@ -152,16 +189,25 @@ func HsServiceIntro(b *ecdh.PrivateKey, authKey, subcred, blob []byte) (*ecdh.Pu
 	return X, plain, nil
 }
 
-// HsServiceRendezvousReply derives the service's rendezvous reply (SERVER_PK +
-// AUTH). y is the service's single-use keypair.
+// HsServiceRendezvousReply retains the reply-only API for existing callers.
 func HsServiceRendezvousReply(X, B *ecdh.PublicKey, authKey []byte, serviceSK *ecdh.PrivateKey, y *ecdh.PrivateKey) ([]byte, error) {
+	reply, _, err := HsServiceRendezvous(X, B, authKey, serviceSK, y)
+	return reply, err
+}
+
+// HsServiceRendezvous returns SERVER_PK|AUTH and the authenticated E2E key seed.
+// y must be a fresh single-use keypair for this rendezvous.
+func HsServiceRendezvous(X, B *ecdh.PublicKey, authKey []byte, serviceSK *ecdh.PrivateKey, y *ecdh.PrivateKey) ([]byte, []byte, error) {
+	if X == nil || B == nil || serviceSK == nil || y == nil || len(authKey) != 32 || X.Curve() != ecdh.X25519() || B.Curve() != ecdh.X25519() || serviceSK.Curve() != ecdh.X25519() || y.Curve() != ecdh.X25519() || !B.Equal(serviceSK.PublicKey()) {
+		return nil, nil, errors.New("hs-ntor: invalid rendezvous keys")
+	}
 	expXy, err := y.ECDH(X)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	expXb, err := serviceSK.ECDH(X)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	rend := make([]byte, 0, 32+32+len(authKey)+32+32+32+len(HsNtorProtoID))
@@ -173,7 +219,7 @@ func HsServiceRendezvousReply(X, B *ecdh.PublicKey, authKey []byte, serviceSK *e
 	rend = append(rend, y.PublicKey().Bytes()...)
 	rend = append(rend, HsNtorProtoID...)
 
-	verify := hsMac(hsVerifyProto, rend)
+	verify := hsMac(rend, hsVerifyProto)
 
 	auth := make([]byte, 0, len(verify)+len(authKey)+32+32+32+len(HsNtorProtoID)+6)
 	auth = append(auth, verify...)
@@ -183,18 +229,43 @@ func HsServiceRendezvousReply(X, B *ecdh.PublicKey, authKey []byte, serviceSK *e
 	auth = append(auth, X.Bytes()...)
 	auth = append(auth, HsNtorProtoID...)
 	auth = append(auth, "Server"...)
-	authMac := hsMac(hsMacProtoID, auth)
+	authMac := hsMac(auth, hsMacProtoID)
 
 	reply := make([]byte, 0, 32+HsNtorMacLen)
 	reply = append(reply, y.PublicKey().Bytes()...)
 	reply = append(reply, authMac...)
 
-	return reply, nil
+	return reply, hsMac(rend, hsEncProtoID), nil
+}
+
+func validateIntroHeader(header, authKey []byte) error {
+	if len(header) < 56 || len(header) > 498-64 || len(authKey) != 32 || !bytes.Equal(header[:20], make([]byte, 20)) || header[20] != 2 || binary.BigEndian.Uint16(header[21:23]) != 32 || !bytes.Equal(header[23:55], authKey) {
+		return errors.New("hs-ntor: invalid introduction header")
+	}
+	pos := 56
+	for n := 0; n < int(header[55]); n++ {
+		if len(header)-pos < 2 {
+			return errors.New("hs-ntor: truncated introduction extension")
+		}
+		size := int(header[pos+1])
+		pos += 2
+		if size > len(header)-pos {
+			return errors.New("hs-ntor: truncated introduction extension")
+		}
+		pos += size
+	}
+	if pos != len(header) {
+		return errors.New("hs-ntor: trailing introduction header bytes")
+	}
+	return nil
 }
 
 // HsClientFinishRendezvous validates the service reply and returns the shared
 // ntor key seed on the client side.
 func HsClientFinishRendezvous(privX *ecdh.PrivateKey, B *ecdh.PublicKey, authKey, reply []byte) ([]byte, error) {
+	if privX == nil || B == nil || privX.Curve() != ecdh.X25519() || B.Curve() != ecdh.X25519() || len(authKey) != 32 {
+		return nil, errors.New("hs-ntor: invalid rendezvous keys")
+	}
 	if len(reply) != 32+HsNtorMacLen {
 		return nil, errors.New("hs-ntor: short rendezvous reply")
 	}
@@ -223,8 +294,8 @@ func HsClientFinishRendezvous(privX *ecdh.PrivateKey, B *ecdh.PublicKey, authKey
 	rend = append(rend, Y.Bytes()...)
 	rend = append(rend, HsNtorProtoID...)
 
-	ntorKeySeed := hsMac(hsEncProtoID, rend)
-	verify := hsMac(hsVerifyProto, rend)
+	ntorKeySeed := hsMac(rend, hsEncProtoID)
+	verify := hsMac(rend, hsVerifyProto)
 
 	auth := make([]byte, 0, len(verify)+len(authKey)+32+32+32+len(HsNtorProtoID)+6)
 	auth = append(auth, verify...)
@@ -234,7 +305,7 @@ func HsClientFinishRendezvous(privX *ecdh.PrivateKey, B *ecdh.PublicKey, authKey
 	auth = append(auth, X.Bytes()...)
 	auth = append(auth, HsNtorProtoID...)
 	auth = append(auth, "Server"...)
-	authMac := hsMac(hsMacProtoID, auth)
+	authMac := hsMac(auth, hsMacProtoID)
 
 	if subtle.ConstantTimeCompare(authMac, theirAuth) != 1 {
 		return nil, errors.New("hs-ntor: rendezvous AUTH mismatch")

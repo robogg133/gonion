@@ -78,12 +78,12 @@ func TestHsNtorRendezvousEndToEnd(t *testing.T) {
 		t.Fatal("rendezvous seed not deterministic for fixed y")
 	}
 
-	// The derived e2e keys must be well-formed (16/20-byte layout).
+	// HS-v3 uses AES-256 keys and SHA3-256 digest seeds.
 	keys, err := E2EKeys(seed, subcred)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(keys.Kf) != 16 || len(keys.Kb) != 16 || len(keys.Df) != 20 || len(keys.Db) != 20 {
+	if len(keys.Kf) != 32 || len(keys.Kb) != 32 || len(keys.Df) != 32 || len(keys.Db) != 32 {
 		t.Fatal("e2e key sizes wrong")
 	}
 }
