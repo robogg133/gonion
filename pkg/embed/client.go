@@ -64,6 +64,8 @@ type Options struct {
 	// Zero selects the defaults. Negative values are invalid.
 	CircuitTTL     time.Duration
 	MaxCircuitUses int64
+
+	IgnoreRelayCheck bool
 }
 
 // DefaultOptions returns the local pool defaults plus two direct TCP dialers:
@@ -74,10 +76,11 @@ type Options struct {
 // never closes it.
 func DefaultOptions() Options {
 	return Options{
-		CircuitTTL:     circuitTTL,
-		MaxCircuitUses: maxCircuitUses,
-		ORDialer:       defaultORDialer,
-		GuardDialer:    defaultGuardDialer,
+		CircuitTTL:       circuitTTL,
+		MaxCircuitUses:   maxCircuitUses,
+		ORDialer:         defaultORDialer,
+		GuardDialer:      defaultGuardDialer,
+		IgnoreRelayCheck: false,
 	}
 }
 
@@ -144,10 +147,14 @@ func NewWithConn(ctx context.Context, orConn net.Conn, opts Options) (*Client, e
 		}
 		identity = pinned.ExpectedRelayIdentity()
 	}
-	if identity == [20]byte{} {
-		_ = orConn.Close()
-		return nil, fmt.Errorf("embed: bootstrap relay identity is required")
+
+	if !opts.IgnoreRelayCheck {
+		if identity == [20]byte{} {
+			_ = orConn.Close()
+			return nil, fmt.Errorf("embed: bootstrap relay identity is required")
+		}
 	}
+
 	stop := context.AfterFunc(ctx, func() { _ = orConn.Close() })
 	defer stop()
 	conn, err := gonion.NewConn(orConn, nil, false)
