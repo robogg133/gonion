@@ -1,21 +1,23 @@
 package snowflake
 
 import (
-	"io"
-	"log"
 	"net"
+	"os"
 
-	snowflake_client "gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/snowflake/v2/client/lib"
+	"github.com/rs/zerolog"
+
+	snowflake_client "gitlab.torproject.org/robogg133/snowflake-with-logging-setting/v2/client/lib"
 )
 
 const DefaultBroker string = "https://snowflake-broker.torproject.net/"
 
 func DefaultOptions() snowflake_client.ClientConfig {
-	log.SetOutput(io.Discard)
+	logger := zerolog.New(os.Stdout).With().Str("caller", "snowflake").Logger()
 	return snowflake_client.ClientConfig{
 		BrokerURL:          DefaultBroker,
 		KeepLocalAddresses: false,
 		UTLSClientID:       "hellofirefox_auto",
+		Log:                &logger,
 	}
 }
 
