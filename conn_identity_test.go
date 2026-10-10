@@ -3,10 +3,37 @@ package gonion
 import (
 	"bytes"
 	"encoding/hex"
+	"net"
+	"net/netip"
+
 	"testing"
+
+	cells "github.com/robogg133/gonion/pkg/cells/base"
 
 	"github.com/robogg133/gonion/pkg/common"
 )
+
+// tor-spec 4.5: transport addresses without an IP must not corrupt the
+// ATYPE/ALEN/AVAL/NMYADDR framing. This is not a relay identity fallback.
+func TestTransportNetinfoAddress(t *testing.T) {
+	for _, addr := range []net.Addr{nil, &net.UnixAddr{Name: "snowflake", Net: "snowflake"}} {
+		ip := parseRemoteAddr(addr)
+		if ip != netip.IPv4Unspecified() {
+			t.Fatal("missing transport endpoint not represented as unspecified IPv4")
+		}
+		var body bytes.Buffer
+		if err := (&cells.NetInfoCell{OtherAddr: ip}).Encode(&body); err != nil {
+			t.Fatal(err)
+		}
+		want, _ := hex.DecodeString("0000000004040000000000")
+		if !bytes.Equal(body.Bytes(), want) {
+			t.Fatalf("malformed NETINFO: %x", body.Bytes())
+		}
+	}
+	if ip := parseRemoteAddr(&net.TCPAddr{IP: net.ParseIP("192.0.2.1"), Port: 9001}); ip.String() != "192.0.2.1" {
+		t.Fatal("lost real transport endpoint")
+	}
+}
 
 func TestRelayIdentityPin(t *testing.T) {
 	// RSA/Ed25519 relay identities from the Tor/Chutney introduction capture

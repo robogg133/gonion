@@ -362,9 +362,14 @@ func (l *Listener) newDescriptor(ctx context.Context, cns *common.Consensus, per
 			l.retire(d)
 			return nil, err
 		}
+		guard, err := capi.CircuitGuard(ctx, l.builder)
+		if err != nil {
+			l.retire(d)
+			return nil, err
+		}
 		var target *common.RouterStatus
 		for attempt := 0; attempt < 32; attempt++ {
-			target, err = path.New(cns, true).SelectHSRelay(true)
+			target, err = path.NewWithGuard(cns, true, guard).SelectHSRelay(true)
 			if err != nil {
 				break
 			}

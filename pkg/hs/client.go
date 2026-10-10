@@ -147,7 +147,7 @@ func (c *Client) fetchDescriptor(ctx context.Context, builder capi.CircuitBuilde
 const circuitBuildRetries = 6
 
 // buildCircuitWithRetry selects a fresh random path and builds a circuit,
-// retrying with a new guard on each attempt. If tail is non-nil it is forced as
+// honoring the builder's fixed guard, if any. If tail is non-nil it is forced as
 // the last hop (used by the intro circuit to end at a specific intro point).
 func buildCircuitWithRetry(ctx context.Context, builder capi.CircuitBuilder, cns *common.Consensus, hops uint, port uint16, tail *common.RouterStatus) (capi.Circ, error) {
 	var last error
@@ -155,8 +155,11 @@ func buildCircuitWithRetry(ctx context.Context, builder capi.CircuitBuilder, cns
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		sel := path.New(cns, true)
-		var err error
+		guard, err := capi.CircuitGuard(ctx, builder)
+		if err != nil {
+			return nil, err
+		}
+		sel := path.NewWithGuard(cns, true, guard)
 		if tail == nil && port == 0 {
 			var target *common.RouterStatus
 			target, err = sel.SelectHSRelay(false)

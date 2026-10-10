@@ -82,6 +82,12 @@ func VerifyConnection(cert4, cert5 *TorCert, tlsCert []byte) error {
 	return nil
 }
 
+// Verify checks the certificate signature, expiry and signing-key extension.
+// The caller must additionally validate its purpose and certified key type.
+func (cert *TorCert) Verify(key []byte, now time.Time) error {
+	return verifyEdCertificate(cert, key, now)
+}
+
 func verifyEdCertificate(cert *TorCert, key []byte, now time.Time) error {
 	if cert == nil || len(key) != 32 || len(cert.rawCertificate) < 104 || len(cert.Signature) != 64 || !now.Before(time.Unix(int64(cert.ExpirationDate)*3600, 0)) {
 		return fmt.Errorf("certificate: incomplete or expired Ed25519 certificate")

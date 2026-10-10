@@ -32,9 +32,9 @@ func main() {
 	defer client.Close()
 
 	hc := client.HTTPClient()
-	resp, err := hc.Get("https://example.com")
+	resp, err := hc.Get("https://ipinfo.io/json")
 	if err != nil {
-		log.Fatalf("GET example.com: %v", err)
+		log.Fatalf("GET ipinfo.io: %v", err)
 	}
 	defer resp.Body.Close()
 

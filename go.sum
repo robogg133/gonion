@@ -161,6 +161,12 @@ gitlab.com/yawning/obfs4.git v0.0.0-20231012084234-c3e2d44b1033 h1:UmuE3KA7vwWLv
 gitlab.com/yawning/obfs4.git v0.0.0-20231012084234-c3e2d44b1033/go.mod h1:hWtv4VopVASgdVvnSbGB1EAC3zO+rHiauEnuNID9wT4=
 gitlab.torproject.org/robogg133/snowflake-with-logging-setting/v2 v2.14.2-0.20261001004351-71260c43d4cb h1:1i4+vnmR927Nbg5eFpw3qX250DRMgoYaQTcPVENC5tc=
 gitlab.torproject.org/robogg133/snowflake-with-logging-setting/v2 v2.14.2-0.20261001004351-71260c43d4cb/go.mod h1:ICZYlrQD8emSQ045WXlrp1jOLqE0CKPttPwtBfwpKKg=
+gitlab.torproject.org/robogg133/snowflake-with-logging-setting/v2 v2.14.2-0.20261001234810-25e4b8c8c384 h1:pnac9WV4T3WLR/BcXwttbJ+YmfnSH8fY3MOgnFE9R+k=
+gitlab.torproject.org/robogg133/snowflake-with-logging-setting/v2 v2.14.2-0.20261001234810-25e4b8c8c384/go.mod h1:ICZYlrQD8emSQ045WXlrp1jOLqE0CKPttPwtBfwpKKg=
+gitlab.torproject.org/robogg133/snowflake-with-logging-setting/v2 v2.14.2-0.20261002000609-361905400a6e h1:O3ZRvGwFQEFTlj+Yxzcj4OHKTJRsfu4i8XgiP6n5UxA=
+gitlab.torproject.org/robogg133/snowflake-with-logging-setting/v2 v2.14.2-0.20261002000609-361905400a6e/go.mod h1:ICZYlrQD8emSQ045WXlrp1jOLqE0CKPttPwtBfwpKKg=
+gitlab.torproject.org/robogg133/snowflake-with-logging-setting/v2 v2.14.2-0.20261002001353-aff631a5b504 h1:LGBXnNyQJrCx3FZ01aOTdln8w5yPiWIl7WFd8sYLxBk=
+gitlab.torproject.org/robogg133/snowflake-with-logging-setting/v2 v2.14.2-0.20261002001353-aff631a5b504/go.mod h1:ICZYlrQD8emSQ045WXlrp1jOLqE0CKPttPwtBfwpKKg=
 gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/goptlib v1.6.0 h1:KD9m+mRBwtEdqe94Sv72uiedMWeRdIr4sXbrRyzRiIo=
 gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/goptlib v1.6.0/go.mod h1:70bhd4JKW/+1HLfm+TMrgHJsUHG4coelMWwiVEJ2gAg=
 gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/ptutil v0.0.0-20250815012447-418f76dcf315 h1:9lmXguW9aH5sdZR5h5jOrdInCt0tQ9NRa7+wFD4MQBk=

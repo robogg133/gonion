@@ -50,6 +50,9 @@ func TestEmbedListenOnion(t *testing.T) {
 	opts.GuardDialer = func(ctx context.Context, r *common.RouterStatus) (net.Conn, error) {
 		return (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, "tcp", net.JoinHostPort(r.Ipv4Addr, strconv.Itoa(int(r.ORPort))))
 	}
+	if os.Getenv("GONION_TEST_SNOWFLAKE") == "1" {
+		opts = snowflakeTestOptions(t)
+	}
 	client, err := embed.New(ctx, opts)
 	if err != nil {
 		t.Fatal(err)

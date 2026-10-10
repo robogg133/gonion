@@ -232,7 +232,11 @@ func (c *Client) buildCircuit(ctx context.Context, cns *common.Consensus, port u
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	sel := path.New(cns, c.longLived)
+	guard, err := capi.CircuitGuard(ctx, c.builder)
+	if err != nil {
+		return nil, err
+	}
+	sel := path.NewWithGuard(cns, c.longLived, guard)
 	if err := sel.SelectRandomCircuit(3, port); err != nil {
 		return nil, fmt.Errorf("embed: select path: %w", err)
 	}
@@ -281,14 +285,24 @@ func (c *Client) reapLoop(ctx context.Context) {
 // matches tor-spec: the circuit's first hop is the guard we are actually
 // connected to, not whatever relay the bootstrap fallback happened to be.
 type gonionBuilder struct {
-	dial func(context.Context, *common.RouterStatus) (net.Conn, error)
-	ctx  context.Context
+	dial   func(context.Context, *common.RouterStatus) (net.Conn, error)
+	ctx    context.Context
+	bridge *bridgeState
+}
+
+func (b gonionBuilder) CircuitGuard(ctx context.Context) (*common.RouterStatus, error) {
+	if b.bridge == nil {
+		return nil, nil
+	}
+	return b.bridge.guard(ctx)
 }
 
 func (b gonionBuilder) BuildPathContext(ctx context.Context, id uint32, relays []*common.RouterStatus) (capi.Circ, error) {
 	b.ctx = ctx
 	return b.BuildPath(id, relays)
 }
+
+var CTXKeySkipRelayIdentityCheck = struct{}{}
 
 func (b gonionBuilder) BuildPath(id uint32, relays []*common.RouterStatus) (capi.Circ, error) {
 	if len(relays) == 0 {
@@ -307,6 +321,9 @@ func (b gonionBuilder) BuildPath(id uint32, relays []*common.RouterStatus) (capi
 	if relays[0] == nil {
 		return nil, fmt.Errorf("embed: nil guard")
 	}
+	if b.bridge != nil && relays[0].NodeID != b.bridge.identity {
+		return nil, fmt.Errorf("embed: path does not start at configured bridge")
+	}
 	raw, err := b.dial(ctx, relays[0])
 	if err != nil {
 		if raw != nil {
@@ -322,7 +339,15 @@ func (b gonionBuilder) BuildPath(id uint32, relays []*common.RouterStatus) (capi
 	}
 	stop := context.AfterFunc(ctx, func() { _ = raw.Close() })
 	defer stop()
-	conn, err := gonion.NewConn(raw, nil, false)
+
+	// Options for the connection
+	var connOpts []gonion.ConnOption
+	if b.bridge == nil && ctx.Value(CTXKeySkipRelayIdentityCheck) != nil {
+		connOpts = append(connOpts, gonion.ConnOptionSkipRelayFingerprintCheck)
+	}
+	//
+
+	conn, err := gonion.NewConn(raw, nil, false, connOpts...)
 	if err != nil {
 		_ = raw.Close()
 		if ctx.Err() != nil {
@@ -355,6 +380,10 @@ type contextBuilder struct {
 	ctx      context.Context
 	lifetime context.Context
 	builder  capi.CircuitBuilder
+}
+
+func (b contextBuilder) CircuitGuard(ctx context.Context) (*common.RouterStatus, error) {
+	return capi.CircuitGuard(ctx, b.builder)
 }
 
 func (b contextBuilder) BuildPathContext(ctx context.Context, id uint32, relays []*common.RouterStatus) (capi.Circ, error) {

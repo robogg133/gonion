@@ -10,7 +10,7 @@ import (
 )
 
 func newLogger(out io.Writer, debug bool) zerolog.Logger {
-	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
+
 	if out == nil {
 		return zerolog.Nop()
 	}
@@ -44,6 +44,7 @@ func fail(ctx context.Context, sentinel error, publicMsg string, err error) erro
 		ev = ev.Err(err)
 	}
 	ev.Msg("error")
+	publicMsg = publicMsg + ": " + err.Error()
 	return Public(sentinel, publicMsg)
 }
 

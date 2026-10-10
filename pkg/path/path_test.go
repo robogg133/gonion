@@ -10,6 +10,50 @@ import (
 	"github.com/robogg133/gonion/pkg/common"
 )
 
+// path-spec 6: a configured bridge replaces, rather than precedes, the guard.
+func TestFixedBridgeSelection(t *testing.T) {
+	cns := testutil.Consensus(t, time.Now())
+	bridge := cns.RelayInformation[0]
+	bridge.NodeID, bridge.Ipv4Addr = [20]byte{99}, "192.0.2.1"
+	bridge.StatusFlags = [15]bool{}
+	for i := 0; i < 20; i++ {
+		sel := NewWithGuard(cns, true, &bridge)
+		if err := sel.SelectRandomCircuit(3, 443); err != nil {
+			t.Fatal(err)
+		}
+		if len(sel.Circuit()) != 3 || sel.Guard() != &bridge {
+			t.Fatal("bridge was replaced or an extra hop was added")
+		}
+		for _, hop := range sel.Circuit()[1:] {
+			if sel.relaysConflict(&bridge, hop) {
+				t.Fatal("bridge diversity was ignored")
+			}
+		}
+		target, err := sel.SelectHSRelay(true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := sel.SelectCircuitTo(3, target); err != nil {
+			t.Fatal(err)
+		}
+		if sel.Guard() != &bridge || sel.Exit().NodeID != target.NodeID {
+			t.Fatal("explicit target path lost bridge or target")
+		}
+	}
+	sel := NewWithGuard(cns, false, &bridge)
+	if err := sel.SelectCircuitTo(3, &bridge); err == nil {
+		t.Fatal("bridge used twice")
+	}
+	bridge.Ipv4Addr = cns.RelayInformation[5].Ipv4Addr
+	if err := sel.SelectCircuitTo(3, &cns.RelayInformation[5]); err == nil {
+		t.Fatal("same-network target accepted")
+	}
+	bridge.NTorOnionKey = nil
+	if err := sel.SelectRandomCircuit(3, 443); err == nil {
+		t.Fatal("missing bridge key fell back to public guard")
+	}
+}
+
 func TestSelectRandomCircuit(t *testing.T) {
 	cns := testutil.Consensus(t, time.Now())
 	if cns.BandWidthWeight.Wgg != 10000 || cns.BandWidthWeight.Wme != 10000 {

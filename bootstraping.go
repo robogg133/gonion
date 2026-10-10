@@ -92,6 +92,19 @@ func nextConsensusFetchTime(cns *common.Consensus, now time.Time) (time.Time, er
 // BootstrapOneConn hydrates a private candidate before publishing or persisting.
 // Cached documents are reauthenticated; cache hits also start refresh.
 func BootstrapOneConn(conn *Conn) error {
+	return bootstrapOneConn(conn, nil)
+}
+
+// BootstrapOneConnTo uses ntor when a pinned first-hop descriptor is already
+// available, as with a bridge. It does not choose or dial another relay.
+func BootstrapOneConnTo(conn *Conn, guard *common.RouterStatus) error {
+	if guard == nil {
+		return Public(ErrBootstrap, "missing bootstrap guard")
+	}
+	return bootstrapOneConn(conn, guard)
+}
+
+func bootstrapOneConn(conn *Conn, guard *common.RouterStatus) error {
 	ctx := conn.ctx
 	var cached *common.Consensus
 	if conn.storage != nil {
@@ -101,7 +114,13 @@ func BootstrapOneConn(conn *Conn) error {
 			logger(ctx).Debug().Err(err).Msg("consensus cache unavailable")
 		}
 	}
-	circuit, err := conn.NewFastCircuit(1)
+	var circuit *Circuit
+	var err error
+	if guard == nil {
+		circuit, err = conn.NewFastCircuit(1)
+	} else {
+		circuit, err = conn.NewCircuitTo(1, guard)
+	}
 	if err != nil {
 		return fail(ctx, ErrBootstrap, "create bootstrap circuit failed", err)
 	}

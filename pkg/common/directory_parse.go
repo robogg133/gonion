@@ -1,6 +1,7 @@
 package common
 
 import (
+	"encoding/hex"
 	"fmt"
 	"io"
 	"strconv"
@@ -17,6 +18,29 @@ func ReadDirectoryDocument(r io.Reader, limit int64) ([]byte, error) {
 		return nil, fmt.Errorf("directory document exceeds %d bytes", limit)
 	}
 	return b, nil
+}
+
+// ParseRelayFamily parses the legacy family declaration shared by server
+// descriptors and microdescriptors (dir-spec 2.1.1 and 3.3).
+func ParseRelayFamily(s string) ([]Family, error) {
+	var family []Family
+	for _, name := range strings.Fields(s) {
+		var f Family
+		if digest, ok := strings.CutPrefix(name, "$"); ok {
+			if i := strings.IndexAny(digest, "=~"); i >= 0 {
+				digest = digest[:i]
+			}
+			var err error
+			f.Digest, err = hex.DecodeString(digest)
+			if err != nil || len(f.Digest) != 20 {
+				return nil, fmt.Errorf("directory: invalid family fingerprint")
+			}
+		} else {
+			f.Nickname = name
+		}
+		family = append(family, f)
+	}
+	return family, nil
 }
 
 // ParsePorts validates dir-spec 3.8.2 before calling the legacy bitmap parser.

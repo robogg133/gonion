@@ -49,6 +49,9 @@ type Client struct {
 // Options configures a Client.
 type Options struct {
 	Storage storage.Storage
+	// Bridge, when non-nil, overrides BOTH dialers with a pinned fixed bridge.
+	// There is no public-relay fallback, even when using DefaultOptions.
+	Bridge *BridgeOptions
 	// ORDialer opens only the bootstrap connection. It must honor ctx.
 	ORDialer func(ctx context.Context) (net.Conn, error)
 	// BootstrapIdentity is the expected RSA fingerprint of the bootstrap relay.
@@ -58,7 +61,7 @@ type Options struct {
 	// GuardDialer opens the selected guard for every traffic circuit, including
 	// onion circuits. It must honor ctx and must not substitute a different relay.
 	// Nil disables traffic circuit construction; there is no direct TCP fallback.
-	// A fixed bridge needs bridge-aware path selection, not this callback.
+	// To use a fixed bridge, set Bridge rather than substituting this callback.
 	GuardDialer func(ctx context.Context, guard *common.RouterStatus) (net.Conn, error)
 	LongLived   bool
 	// Zero selects the defaults. Negative values are invalid.
@@ -66,6 +69,9 @@ type Options struct {
 	MaxCircuitUses int64
 
 	IgnoreRelayCheck bool
+
+	ORConnectionSkipRelayFingerprintCheck    bool
+	GuardConnectionSkipRelayFingerprintCheck bool
 }
 
 // DefaultOptions returns the local pool defaults plus two direct TCP dialers:
@@ -96,6 +102,17 @@ func (o Options) validate() error {
 	if o.CircuitTTL < 0 || o.MaxCircuitUses < 0 {
 		return fmt.Errorf("embed: negative circuit pool limit")
 	}
+	if o.Bridge != nil {
+		if o.Bridge.Identity == [20]byte{} || o.Bridge.DialContext == nil {
+			return fmt.Errorf("embed: bridge identity and DialContext are required")
+		}
+		if o.BootstrapIdentity != [20]byte{} && o.BootstrapIdentity != o.Bridge.Identity {
+			return fmt.Errorf("embed: conflicting bridge and bootstrap identity pins")
+		}
+		if o.IgnoreRelayCheck || o.ORConnectionSkipRelayFingerprintCheck || o.GuardConnectionSkipRelayFingerprintCheck {
+			return fmt.Errorf("embed: bridge mode forbids skipping relay identity checks")
+		}
+	}
 	return nil
 }
 
@@ -109,10 +126,14 @@ func New(ctx context.Context, opts Options) (*Client, error) {
 	if err := opts.validate(); err != nil {
 		return nil, err
 	}
-	if opts.ORDialer == nil {
+	dial := opts.ORDialer
+	if opts.Bridge != nil {
+		dial = opts.Bridge.DialContext
+	}
+	if dial == nil {
 		return nil, fmt.Errorf("embed: ORDialer is required for New")
 	}
-	orConn, err := opts.ORDialer(ctx)
+	orConn, err := dial(ctx)
 	if err != nil {
 		if orConn != nil {
 			_ = orConn.Close()
@@ -140,6 +161,9 @@ func NewWithConn(ctx context.Context, orConn net.Conn, opts Options) (*Client, e
 		return nil, err
 	}
 	identity := opts.BootstrapIdentity
+	if opts.Bridge != nil {
+		identity = opts.Bridge.Identity
+	}
 	if pinned, ok := orConn.(interface{ ExpectedRelayIdentity() [20]byte }); ok {
 		if identity != [20]byte{} && identity != pinned.ExpectedRelayIdentity() {
 			_ = orConn.Close()
@@ -157,7 +181,15 @@ func NewWithConn(ctx context.Context, orConn net.Conn, opts Options) (*Client, e
 
 	stop := context.AfterFunc(ctx, func() { _ = orConn.Close() })
 	defer stop()
-	conn, err := gonion.NewConn(orConn, nil, false)
+
+	// Options for the connection
+	var connOpts []gonion.ConnOption
+	if opts.ORConnectionSkipRelayFingerprintCheck {
+		connOpts = append(connOpts, gonion.ConnOptionSkipRelayFingerprintCheck)
+	}
+	//
+
+	conn, err := gonion.NewConn(orConn, nil, false, connOpts...)
 	if err != nil {
 		_ = orConn.Close()
 		if ctx.Err() != nil {
@@ -174,7 +206,20 @@ func NewWithConn(ctx context.Context, orConn net.Conn, opts Options) (*Client, e
 	if opts.Storage != nil {
 		conn.SetStorage(opts.Storage)
 	}
-	if err := gonion.BootstrapOneConn(conn); err != nil {
+	builder := gonionBuilder{dial: opts.GuardDialer}
+	if opts.Bridge != nil {
+		bridge := *opts.Bridge // Do not retain caller-mutable configuration.
+		builder.bridge, err = newBridgeState(ctx, conn, bridge.Identity)
+		if err == nil {
+			builder.dial = func(ctx context.Context, _ *common.RouterStatus) (net.Conn, error) {
+				return bridge.DialContext(ctx)
+			}
+			err = gonion.BootstrapOneConnTo(conn, &builder.bridge.descriptor.Relay)
+		}
+	} else {
+		err = gonion.BootstrapOneConn(conn)
+	}
+	if err != nil {
 		_ = conn.Close()
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
@@ -194,7 +239,7 @@ func NewWithConn(ctx context.Context, orConn net.Conn, opts Options) (*Client, e
 		cns:       cns,
 		hs:        &hs.Client{},
 		longLived: opts.LongLived,
-		builder:   gonionBuilder{dial: opts.GuardDialer},
+		builder:   builder,
 		ttl:       opts.CircuitTTL,
 		maxUses:   opts.MaxCircuitUses,
 	}

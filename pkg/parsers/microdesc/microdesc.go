@@ -330,30 +330,6 @@ func parseFamilys(s string) (ids []*common.FamilyIDs, err error) {
 	return ids, nil
 }
 
-func parseFamily(s string) (family []common.Family, err error) {
-	split := strings.SplitSeq(s, " ")
-
-	for str := range split {
-		var f common.Family
-
-		str, ok := strings.CutPrefix(str, "$")
-		if !ok {
-			f.Nickname = str
-			family = append(family, f)
-			continue
-		}
-
-		if i := strings.IndexAny(str, "=~"); i >= 0 {
-			str = str[:i]
-		}
-		b, err := hex.DecodeString(str)
-		if err != nil || len(b) != 20 {
-			return nil, fmt.Errorf("microdescriptor: invalid family fingerprint")
-		}
-		f.Digest = b
-
-		family = append(family, f)
-	}
-
-	return family, nil
+func parseFamily(s string) ([]common.Family, error) {
+	return common.ParseRelayFamily(s)
 }

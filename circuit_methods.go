@@ -38,6 +38,29 @@ func consensusRequestPath(flavor string) (string, string, error) {
 	}
 }
 
+// GetBridgeDescriptor fetches this first hop's own descriptor, not a descriptor
+// from a public authority. The OR connection must already be identity-pinned.
+func (c *Circuit) GetBridgeDescriptor(ctx context.Context, identity [20]byte) (*common.BridgeDescriptor, error) {
+	if c.hops.Len() != 1 {
+		return nil, Public(ErrDirectory, "bridge descriptor requires a one-hop circuit")
+	}
+	if err := c.conn.CheckRelayFingerprint(identity); err != nil {
+		return nil, err
+	}
+	data, err := c.downloadDirectory(ctx, "/tor/server/authority.z", common.MaxBridgeDescriptorSize)
+	if err != nil {
+		return nil, err
+	}
+	d, err := common.ParseBridgeDescriptor(data, identity, time.Now())
+	if err != nil {
+		return nil, err
+	}
+	if err := c.conn.CheckRelayIdentity(&d.Relay); err != nil {
+		return nil, err
+	}
+	return d, nil
+}
+
 func (c *Circuit) GetConsensus(flavor string) (*common.Consensus, error) {
 	return c.getConsensus(c.Ctx, flavor)
 }

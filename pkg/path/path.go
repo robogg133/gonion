@@ -20,10 +20,11 @@ type Selector struct {
 	weight    common.BandWidthWeight
 	longLive  bool
 
-	guard    *common.RouterStatus
-	middles  []*common.RouterStatus
-	exit     *common.RouterStatus
-	fullPath []*common.RouterStatus
+	fixedGuard *common.RouterStatus
+	guard      *common.RouterStatus
+	middles    []*common.RouterStatus
+	exit       *common.RouterStatus
+	fullPath   []*common.RouterStatus
 }
 
 type value struct {
@@ -46,6 +47,15 @@ func New(cns *common.Consensus, longlive bool) *Selector {
 		weight:    cns.BandWidthWeight,
 		longLive:  longlive,
 	}
+}
+
+// NewWithGuard fixes a caller-authenticated bridge as the first hop. It does
+// not require public consensus flags for that bridge; all other hops still do.
+// The caller owns guard authentication, expiry and immutable snapshot lifetime.
+func NewWithGuard(cns *common.Consensus, longlive bool, guard *common.RouterStatus) *Selector {
+	sl := New(cns, longlive)
+	sl.fixedGuard, sl.guard = guard, guard
+	return sl
 }
 
 // SelectHSRelay selects a general relay with the required introduction or
@@ -102,12 +112,18 @@ func (sl *Selector) selectCircuit(hops uint, port uint16, target *common.RouterS
 	}
 
 	// Reset previous selection so retries are clean.
-	sl.guard = nil
+	sl.guard = sl.fixedGuard
+	if sl.fixedGuard != nil && (hops < 2 || !haveAllKeys(sl.fixedGuard)) {
+		return fmt.Errorf("path: invalid fixed guard or hop count")
+	}
 	sl.middles = nil
 	sl.exit = nil
 	sl.fullPath = nil
 
 	exitInfo := target
+	if target != nil && sl.relaysConflict(sl.guard, target) {
+		return fmt.Errorf("path: final relay conflicts with fixed guard")
+	}
 	if exitInfo == nil {
 		validator, weight := exitValidateFunc, exitWeightFunc
 		if port == 0 {
@@ -130,9 +146,13 @@ func (sl *Selector) selectCircuit(hops uint, port uint16, target *common.RouterS
 		return nil
 	}
 
-	guardInfo, err := sl.selectRelay(guardValideFunc, guardWeightFunc, 0)
-	if err != nil {
-		return fmt.Errorf("select guard: %w", err)
+	guardInfo := sl.fixedGuard
+	if guardInfo == nil {
+		var err error
+		guardInfo, err = sl.selectRelay(guardValideFunc, guardWeightFunc, 0)
+		if err != nil {
+			return fmt.Errorf("select guard: %w", err)
+		}
 	}
 	sl.guard = guardInfo
 	sl.fullPath = append(sl.fullPath, guardInfo)

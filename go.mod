@@ -7,7 +7,7 @@ require (
 	github.com/rs/zerolog v1.35.1
 	github.com/smallnest/ringbuffer v0.1.2-0.20260703033355-9d1708966377
 	gitlab.com/yawning/obfs4.git v0.0.0-20231012084234-c3e2d44b1033
-	gitlab.torproject.org/robogg133/snowflake-with-logging-setting/v2 v2.14.2-0.20261001004351-71260c43d4cb
+	gitlab.torproject.org/robogg133/snowflake-with-logging-setting/v2 v2.14.2-0.20261002001353-aff631a5b504
 	gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/goptlib v1.6.0
 	gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/webtunnel v0.0.6
 	golang.org/x/crypto v0.55.0

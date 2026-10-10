@@ -62,6 +62,19 @@ type CircuitBuilder interface {
 	BuildPath(id uint32, relays []*common.RouterStatus) (Circ, error)
 }
 
+// GuardProvider supplies a caller-authenticated fixed first hop (a bridge).
+// Nil means ordinary guard selection. Errors must not trigger a public fallback.
+type GuardProvider interface {
+	CircuitGuard(context.Context) (*common.RouterStatus, error)
+}
+
+func CircuitGuard(ctx context.Context, builder CircuitBuilder) (*common.RouterStatus, error) {
+	if b, ok := builder.(GuardProvider); ok {
+		return b.CircuitGuard(ctx)
+	}
+	return nil, nil
+}
+
 // ContextCircuitBuilder is required by services so renewal and shutdown can
 // interrupt circuit construction without cancelling unrelated connections.
 type ContextCircuitBuilder interface {

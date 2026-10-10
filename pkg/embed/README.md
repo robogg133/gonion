@@ -27,9 +27,8 @@ These are local pool policies, not Tor's complete guard/dirtiness algorithm.
 - The default `GuardDialer` dials direct TCP to the relay path selection chose.
   A caller that needs a different policy replaces or clears it; a cleared
   dialer fails closed, because construction returns an error instead of opening
-  a socket on the caller's behalf. A fixed bridge requires bridge-aware guard
-  selection, which is not implemented; a bootstrap transport alone is not a
-  bridge policy for the rest of the client.
+  a socket on the caller's behalf. To use a fixed bridge for all purposes,
+  configure `Bridge`, not an unrelated bridge inside `GuardDialer`.
 - `Storage` is optional and caller-owned. The client neither closes it nor
   chooses an application data directory. The caller owns any key/revision store
   separately from the public consensus cache.
@@ -45,6 +44,50 @@ direct traffic, because `DefaultOptions()` now supplies one, and must clear it
 when the client must not reach a guard directly. The fallback dialer carries its
 selected relay's pin automatically. Do not replace identity validation with an
 insecure TLS setting.
+
+## Fixed bridges
+
+`DefaultBridgeOptions(BridgeOptions{Identity: rsaFingerprint, DialContext: dial})`
+returns the ordinary pool limits with **both direct dialers cleared**. A non-nil
+`Options.Bridge` overrides both networking callbacks, including inherited direct
+`DefaultOptions()` callbacks. Its RSA identity and context-aware dialer are
+mandatory. The caller selects/persists the bridge identity and transport policy;
+Gonion neither discovers bridges nor chooses a replacement on failure.
+
+The same bridge is hop zero for surface exits, onion descriptor fetches,
+introductions, rendezvous, service publication and service joins. Only the two
+remaining hops come from the authenticated live consensus. Identity, family and
+subnet exclusions include the bridge's signed addresses, not a Snowflake proxy
+or dummy transport address. Each channel still matches both RSA and Ed25519
+CERTS identities and uses the bridge's verified ntor key. Bridge mode rejects
+all skip-identity options and ignores the legacy skip-check context key.
+
+Initialization fetches `/tor/server/authority.z` through a pinned one-hop
+CREATE_FAST directory circuit, only because the ntor key is not known yet.
+RSA/Ed25519 descriptor signatures, identity and ntor certificates, and optional
+TAP cross-certification are verified before bootstrap/traffic use. Consensus
+bootstrap and **every traffic circuit** use ntor, not CREATE_FAST. The bridge
+is not inserted into the public consensus or assigned invented consensus flags.
+
+Descriptors remain private, in memory, and refresh on demand every three hours.
+Transient refresh failure retains a still-valid snapshot; its 48-hour maximum
+age and certificate expiry fail closed for new circuit construction. Older
+publication times and changed identities are rejected. Refresh waiting honors
+cancellation. Loss/cancellation of the descriptor directory circuit is not yet
+automatically recovered; recreate the client under the same bridge policy.
+
+**Scope:** one caller-selected bridge, not the persistent multi-bridge guard,
+reachability/path-bias or randomized-backoff algorithms. Descriptor `family-cert`
+is explicitly unsupported and rejected rather than ignored. No anonymity or
+censorship-resistance guarantee follows from this API.
+
+See [`../../examples/embed/snowflake`](../../examples/embed/snowflake) for an
+end-to-end bridge example and configurable public Snowflake defaults. Snowflake
+broker/proxy discovery involves HTTPS and ICE/STUN/TURN/WebRTC, potentially UDP
+and third parties; “no direct Tor guard fallback” is not “no direct networking”.
+The upstream transport has no context/Close API for in-flight NAT probes:
+`DialContext` bounds waiting and closes late connections, but cannot cancel all
+upstream work. Its returned connection is not owned by the dial context.
 
 ## Dial and HTTP
 
@@ -146,7 +189,8 @@ still needs implementation. Full `ns` server-descriptor hydration is not support
 ## Runnable examples and validation
 
 See [`../../examples/embed`](../../examples/embed): direct-network HTTP, raw TCP,
-onion Dial, ephemeral HTTP onion Listen, and obfs4 **bootstrap-only** examples.
+onion Dial, ephemeral HTTP onion Listen, full Snowflake bridge routing, and
+pluggable-transport **bootstrap-only** examples.
 They deliberately select networking policy in the application. Their use of
 repository `internal` fallback data is for examples within this module; external
 applications supply their own approved bootstrap endpoints/transport policy.

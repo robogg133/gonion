@@ -101,6 +101,12 @@ claim that the current tree is fully validated.
   `GuardDialer` must connect to the selected traffic guard. The default dialers
   are visible options, not a hidden fallback: once a caller clears one, that
   path fails closed. Substitution of an unrelated bridge is never permitted.
+- `Options.Bridge` selects one pinned bridge for bootstrap and every traffic
+  purpose, overriding both direct dialers. `DefaultBridgeOptions` clears those
+  dialers. Never enable skip-identity options in bridge mode, insert a bridge
+  into the consensus, or claim this is persistent multi-bridge guard selection.
+  Authenticate its server descriptor and use ntor for traffic; CREATE_FAST is
+  reserved for the one-hop directory fetch before its ntor key is known.
 - Match bootstrap CERTS against an explicit expected RSA identity, supplied by
   `BootstrapIdentity` or connection metadata. A transport certificate alone is
   not a replacement for the Tor relay identity check.

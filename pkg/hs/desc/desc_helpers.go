@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"filippo.io/edwards25519/field"
 	hscrypto "github.com/robogg133/gonion/pkg/hs/crypto"
 	"github.com/robogg133/gonion/pkg/lspec"
 )
@@ -263,22 +262,7 @@ func validatePrivateKey(k ed25519.PrivateKey) error {
 
 // C Tor uses sign bit zero for the Montgomery-to-Edwards conversion.
 func encryptionCertKey(raw []byte) ([]byte, error) {
-	u, err := new(field.Element).SetBytes(raw)
-	if err != nil || !bytes.Equal(u.Bytes(), raw) {
-		return nil, errors.New("hs/desc: invalid Curve25519 key")
-	}
-	one := new(field.Element).One()
-	numerator := new(field.Element).Subtract(u, one)
-	denominator := new(field.Element).Add(u, one)
-	if denominator.Equal(new(field.Element).Zero()) == 1 {
-		return nil, errors.New("hs/desc: degenerate Curve25519 key")
-	}
-	denominator.Invert(denominator)
-	key := new(field.Element).Multiply(numerator, denominator).Bytes()
-	if err := hscrypto.ValidateEd25519PublicKey(key); err != nil {
-		return nil, err
-	}
-	return key, nil
+	return hscrypto.Ed25519FromX25519(raw, 0)
 }
 
 func validateX25519(raw []byte) error {

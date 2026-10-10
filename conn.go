@@ -54,6 +54,12 @@ type Conn struct {
 	storage storage.Storage
 }
 
+type ConnOption uint8
+
+const (
+	ConnOptionSkipRelayFingerprintCheck ConnOption = iota
+)
+
 // SetStorage attaches a consensus store to the connection.
 // When set, bootstrap and consensus refresh read from and write to it.
 func (c *Conn) SetStorage(st storage.Storage) {
@@ -62,7 +68,7 @@ func (c *Conn) SetStorage(st storage.Storage) {
 
 // NewConn performs the Tor link handshake on c.
 // logOut receives structured logs when debug is false; when debug is true, logs go to stderr in console form.
-func NewConn(c net.Conn, logOut io.Writer, debug bool) (*Conn, error) {
+func NewConn(c net.Conn, logOut io.Writer, debug bool, opts ...ConnOption) (*Conn, error) {
 	if c == nil {
 		return nil, Public(ErrIO, "nil OR connection")
 	}
@@ -145,10 +151,12 @@ func NewConn(c net.Conn, logOut io.Writer, debug bool) (*Conn, error) {
 		cancel(err)
 		return nil, fail(ctx, ErrHandshake, "certificate verification failed", err)
 	}
-	if pinned, ok := c.(interface{ ExpectedRelayIdentity() [20]byte }); ok {
-		if err := conn.CheckRelayFingerprint(pinned.ExpectedRelayIdentity()); err != nil {
-			cancel(err)
-			return nil, err
+	if !slices.Contains(opts, ConnOptionSkipRelayFingerprintCheck) {
+		if pinned, ok := c.(interface{ ExpectedRelayIdentity() [20]byte }); ok {
+			if err := conn.CheckRelayFingerprint(pinned.ExpectedRelayIdentity()); err != nil {
+				cancel(err)
+				return nil, err
+			}
 		}
 	}
 	log.Debug().Msg("certs verified")
@@ -222,11 +230,15 @@ func (conn *Conn) CheckRelayIdentity(relay *common.RouterStatus) error {
 }
 
 func parseRemoteAddr(addr net.Addr) netip.Addr {
-	ap, err := netip.ParseAddrPort(addr.String())
-	if err != nil {
-		return netip.Addr{}
+	if addr != nil {
+		if ap, err := netip.ParseAddrPort(addr.String()); err == nil {
+			return ap.Addr()
+		}
 	}
-	return ap.Addr()
+	// Pluggable transports may not expose an IP endpoint. An unspecified IPv4
+	// address still has the exact ATYPE/ALEN framing required by tor-spec 4.5;
+	// an invalid netip.Addr would emit an IPv6 header without its 16-byte value.
+	return netip.IPv4Unspecified()
 }
 
 func (conn *Conn) Close() error {
