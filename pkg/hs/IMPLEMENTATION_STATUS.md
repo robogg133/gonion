@@ -1,17 +1,17 @@
 # Tor client and onion-v3 implementation status
 
-Checkpoint: **2026-09-26**. Read the repository's
-[current validation record](../../docs/STATUS.md) before interpreting results below.
-The current full offline suite fails `TestCapturedFlavors/ns` with `wrong digest`;
-vet passes, and the full race suite fails that same assertion. The public-network
-passes below predate the latest path-selection changes and have not been rerun
-at this checkpoint. [Context](../../docs/CONTEXT.md) and
-[next steps](../../docs/NEXT_STEPS.md) describe the complete handoff.
+Checkpoint: **2026-10-18**; planning audit: **2026-11-07**. Results below describe
+the tree on which they were produced; rerun the repository validation commands
+before relying on them. On 2026-11-07, `go vet ./...` passed but `go test ./...`
+failed in `pkg/crypto` because a captured certificate fixture had expired; full
+race testing was not run. That fixture needs an injected reference-time test
+seam, not weakened certificate validation.
 
 Gonion is experimental. Successful interoperability tests are **not** a security
 audit, proof of anonymity, censorship resistance, or complete Tor compatibility.
-In particular, persistent guard selection is still missing; do not use Gonion as
-an anonymity boundary.
+Persistent public guard state and guard-scoped path-bias accounting are
+implemented (see below), but the new trust/guard code has not had an independent
+review or audit; do not use Gonion as an anonymity boundary.
 
 ## Implemented and exercised
 
@@ -47,6 +47,13 @@ an anonymity boundary.
   shared family IDs, IPv4 /16 and IPv6 /32 conflicts before weighted sampling.
   HS targets recover family metadata from matching consensus identities while
   retaining supplied onion keys and the original link-specifier bytes.
+- **Persistent guards:** every public circuit build—exit pool and all onion
+  client/service circuits—selects its fixed first hop through the caller-owned
+  persistent guard manager (`pkg/path/guards.go`, `pkg/path/guards_state.go`,
+  the `pkg/hs/capi` seam); persistence is caller-supplied and strictly validated,
+  selection uses the vendored guard specification, and public guard choice
+  fails closed instead of falling back to stateless selection. The pinned
+  bridge policy is separate from this manager.
 - **Streams:** bounded queues, SENDME accounting, deadlines, serialized relay
   cryptography and link-write acknowledgements. CONNECTED and DATA share a FIFO;
   a successful Write is not merely insertion into a queue that Close can discard.
@@ -114,23 +121,32 @@ CI. The reference-peer variant needs a C Tor binary on PATH.
 
 ## Remaining work, in priority order
 
-1. **Persistent guards and path-bias handling.** Guard sampling is still stateless
-   across builds/retries. Implement the complete guard state machine and
-   caller-controlled persistence before any anonymity claim. Current weight and
-   diversity fixes do not solve guard exposure.
-2. **Long-running resilience.** Reconnect directory refresh after its bootstrap
-   channel dies; exercise rollover, prolonged publication failure, intro replacement,
-   and restart with persisted revisions on a controlled network. Review revision
-   map retention and replay/connection limits under sustained load.
-3. **Trust-model hardening.** Consensus snapshots are copied, but exported fields
-   remain mutable while the private authentication marker survives cloning.
-   Authenticated snapshots must be treated as immutable. Cache reloads already
-   reverify original bytes; stronger API sealing remains to be designed.
+1. **Path-bias accounting limits, and independent review of the guard batches.**
+   Guard-scoped path-bias construction/usage accounting is implemented with two
+   documented code shortcuts (see the `shortcut:` comments): the §7.2 END-echo
+   usage-failure probe and per-hop build progress at the 30s build deadline;
+   §7.3 rate/scale enforcement still fails closed (`path.ErrGuardPathBias`). The
+   persistent guard manager, its callers, and the trust/recovery batches also
+   require independent specification review before any anonymity claim.
+2. **Long-running resilience.** Directory refresh now reconnects after its
+   bootstrap/bridge channel dies (`StartConsensusRecovery`, fail-closed without a
+   redial policy); controlled-network coverage of rollover, prolonged
+   publication failure, intro replacement, and restart with persisted revisions
+   remains open. Review revision map retention and replay/connection limits
+   under sustained load.
+3. **Trust-model review.** Authorization now reads privately owned authenticated
+   state (`OwnAuthenticatedHydration`/`Trusted`), so mutated public clones cannot
+   grant trust; the boundary still needs independent review, cache crash/partial
+   file states still need broader verification, and full `ns` hydration remains
+   unsupported.
 4. **Coverage and audit.** Add fixed modern CERTS-chain negative fixtures, broader
-   parser fuzzing, stream cancellation/close stress and current C Tor/Chutney
-   interoperability. No full independent security audit has been completed.
-5. **Unsupported features.** Normal (`ns`) server-descriptor hydration, persistent
-   bridge-aware guard selection, IPv6 exit streams, high-level client authorization,
+   parser fuzzing, sustained-throughput stream profiling (close/write ordering
+   now has offline stress tests) and current C Tor/Chutney interoperability. No
+   full independent security audit has been completed.
+5. **Unsupported features.** Normal (`ns`) server-descriptor hydration,
+   bridge-aware persistent guard state instances (bridge mode stays one pinned
+   bridge outside the guard manager) and directory-purpose one-hop guard state,
+   IPv6 exit streams, high-level client authorization,
    congestion control negotiation, proof-of-work and multi-port service routing
    are not implemented by the embedded API. The lower-level descriptor codec does
    support authorized descriptors; that does not make embed Dial authorized-service
@@ -143,7 +159,8 @@ uses authenticated **microdesc consensus plus matching microdescriptors**. See
 ## Sources of truth
 
 The local `torspec` directory contains the relevant link, directory, path,
-certificate and rend-spec-v3 documents. Ambiguous behavior is checked against
-`tor-source`, mirror `ssh://git@git.servidordomal.lol/robogg133/tor.git`, commit
+certificate and rend-spec-v3 documents, plus the vendored official guard
+specification (`torspec/guard-spec`, provenance in its README). Ambiguous
+behavior is checked against `tor-source`, mirror `ssh://git@git.servidordomal.lol/robogg133/tor.git`, commit
 `3937194786d83725e43cdfd0b18f7d4651c2fc0e`. The source checkout is a reference only:
 no C code, native wrapper, CGO or external Tor daemon is linked into the client.

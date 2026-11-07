@@ -47,9 +47,10 @@ func (c *Client) Connect(ctx context.Context, builder capi.CircuitBuilder, cns *
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
-	if builder == nil || !cns.IsAuthenticated() || !cns.IsLive(time.Now()) {
+	if builder == nil || !cns.IsAuthenticated() || !cns.TrustedHydrated() || !cns.IsLive(time.Now()) {
 		return nil, fmt.Errorf("hs: an authenticated live consensus and circuit builder are required")
 	}
+	cns = cns.Trusted()
 	_, port, err := net.SplitHostPort(addr)
 	p, portErr := strconv.ParseUint(port, 10, 16)
 	if err != nil || portErr != nil || p == 0 {
@@ -142,49 +143,27 @@ func (c *Client) fetchDescriptor(ctx context.Context, builder capi.CircuitBuilde
 	return desc.Fetch(ctx, circ, h, bpk, periodNum, periodLen, replica)
 }
 
-// circuitBuildRetries bounds fresh-path attempts. Guard selection is currently
-// stateless; these retries do not implement Tor's persistent guard algorithm.
+// circuitBuildRetries bounds fresh-path attempts through the shared guard manager.
 const circuitBuildRetries = 6
 
-// buildCircuitWithRetry selects a fresh random path and builds a circuit,
-// honoring the builder's fixed guard, if any. If tail is non-nil it is forced as
+// buildCircuitWithRetry chooses fresh remaining hops through the shared public
+// guard manager, or honors the builder's pinned bridge. If tail is non-nil it is forced as
 // the last hop (used by the intro circuit to end at a specific intro point).
-func buildCircuitWithRetry(ctx context.Context, builder capi.CircuitBuilder, cns *common.Consensus, hops uint, port uint16, tail *common.RouterStatus) (capi.Circ, error) {
+func buildCircuitWithRetry(ctx context.Context, builder capi.CircuitBuilder, cns *common.Consensus, hops uint, port uint16, tail *common.RouterStatus, purpose ...path.BuildPurpose) (capi.Circ, error) {
 	var last error
 	for attempt := 0; attempt < circuitBuildRetries; attempt++ {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		guard, err := capi.CircuitGuard(ctx, builder)
-		if err != nil {
-			return nil, err
-		}
-		sel := path.NewWithGuard(cns, true, guard)
-		if tail == nil && port == 0 {
-			var target *common.RouterStatus
-			target, err = sel.SelectHSRelay(false)
-			if err == nil {
-				err = sel.SelectCircuitTo(hops, target)
+		target := tail
+		var err error
+		if target == nil && port == 0 {
+			target, err = path.New(cns, true).SelectHSRelay(false)
+			if err != nil {
+				return nil, err
 			}
-		} else if tail == nil {
-			err = sel.SelectRandomCircuit(hops, port)
-		} else {
-			err = sel.SelectCircuitTo(hops, tail)
 		}
-		if err != nil {
-			last = err
-			logger(ctx).Debug().Err(err).Uint("hops", hops).Msg("path selection failed")
-			continue
-		}
-		relays := sel.Circuit()
-		var circ capi.Circ
-		if cb, ok := builder.(capi.ContextCircuitBuilder); ok {
-			attemptCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-			circ, err = cb.BuildPathContext(attemptCtx, nextCircuitID(), relays)
-			cancel()
-		} else {
-			circ, err = builder.BuildPath(nextCircuitID(), relays)
-		}
+		circ, relays, err := capi.BuildGuardedCircuit(ctx, builder, cns, nextCircuitID(), hops, port, target, true, purpose...)
 		if err == nil {
 			return &pathCircuit{Circ: circ, final: relays[len(relays)-1]}, nil
 		}
@@ -316,7 +295,7 @@ func (c *Client) tryIntro(ctx context.Context, builder capi.CircuitBuilder, cns 
 		return err
 	}
 	introRelay.LinkSpecifiers = append([]byte(nil), ip.LinkSpecifiers...)
-	circ, err := buildCircuitWithRetry(ctx, builder, cns, 3, 0, introRelay)
+	circ, err := buildCircuitWithRetry(ctx, builder, cns, 3, 0, introRelay, path.PurposeClientIntro)
 	if err != nil {
 		return err
 	}

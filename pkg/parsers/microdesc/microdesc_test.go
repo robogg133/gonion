@@ -7,6 +7,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/robogg133/gonion/pkg/common"
 )
 
 // tor-test-md.fixture is test_md2_25 from Tor's official test_microdesc.c,
@@ -31,6 +33,21 @@ func TestOfficialMicrodescriptor(t *testing.T) {
 			got, err := (Parser{}).Parse(bytes.NewReader(input), []string{d})
 			if err == nil && got[0] != nil {
 				t.Fatal("accepted altered digest bytes")
+			}
+		})
+	}
+	for name, input := range map[string][]byte{
+		"junk before PEM": bytes.Replace(data, []byte("onion-key\n"), []byte("onion-key\njunk\n"), 1),
+		"junk inside PEM": bytes.Replace(data, []byte("-----BEGIN RSA PUBLIC KEY-----\n"), []byte("-----BEGIN RSA PUBLIC KEY-----\njunk\n"), 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			check := sha256.Sum256(input)
+			name := base64.RawStdEncoding.EncodeToString(check[:])
+			if _, err := common.ParseMicrodescriptor(input, name); err == nil {
+				t.Fatal("trust parser accepted malformed PEM framing")
+			}
+			if _, err := (Parser{}).Parse(bytes.NewReader(input), []string{name}); err == nil {
+				t.Fatal("batch parser accepted malformed PEM framing")
 			}
 		})
 	}

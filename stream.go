@@ -53,6 +53,7 @@ type Stream struct {
 	readDeadline  streamDeadline
 	writeDeadline streamDeadline
 	receiveSendMe chan struct{}
+	sendDone      chan struct{}
 }
 
 // newStream installs a stream before BEGIN/CONNECTED, so optimistic DATA can
@@ -120,6 +121,7 @@ func (s *Stream) open() bool {
 		return false
 	}
 	s.State = STREAM_OPEN
+	s.sendDone = make(chan struct{})
 	go s.controlLoop()
 	go s.sendController()
 	return true
@@ -158,6 +160,7 @@ func (s *Stream) controlLoop() {
 }
 
 func (s *Stream) sendController() {
+	defer close(s.sendDone)
 	for {
 		select {
 		case out := <-s.outbound:
@@ -255,19 +258,11 @@ func (s *Stream) queueControl(cell relay.Cell) {
 }
 
 func (s *Stream) End(reason uint8) error {
-	if s.Ctx.Err() == nil {
-		s.queueControl(&relay.RelayEndCell{Reason: reason})
-	}
-	return s.Free()
-}
-
-func (s *Stream) Free() error {
-	_ = s.Close()
+	s.close(true, reason)
 	return s.Reader.Close()
 }
 
-// Close handles remote END too: queued input remains readable through EOF.
-func (s *Stream) Close() error {
+func (s *Stream) close(sendEnd bool, reason uint8) {
 	s.closeOnce.Do(func() {
 		s.mu.Lock()
 		s.State = STREAM_CLOSED
@@ -276,7 +271,20 @@ func (s *Stream) Close() error {
 		if stop != nil {
 			stop()
 		}
+		// Cancel first: blocked DATA writes must not hold Close hostage.
 		s.ctxCancel(ErrStreamClosed)
+		if sendEnd && s.sendDone != nil {
+			<-s.sendDone
+		}
+		// DATA already handed to WriteRelayCell is ahead of this END. DATA
+		// still waiting in outbound is discarded by the canceled sender.
+		if sendEnd && s.circuit.Ctx.Err() == nil {
+			end := &relay.RelayEndCell{Reason: reason, StreamID: s.ID}
+			select {
+			case s.circuit.WriteRelayCell <- RelayOut{Cell: end, Dst: s.myHopDestination}:
+			default:
+			}
+		}
 		s.buffer.CloseWriter()
 		select {
 		case s.readReady <- struct{}{}:
@@ -285,7 +293,17 @@ func (s *Stream) Close() error {
 		s.circuit.streams.Delete(s.ID)
 		s.circuit.closeServiceIfIdle()
 	})
+}
+
+// Close handles remote END too: queued input remains readable through EOF.
+func (s *Stream) Close() error {
+	s.close(false, relay.END_REASON_DONE)
 	return nil
+}
+
+func (s *Stream) Free() error {
+	_ = s.Close()
+	return s.Reader.Close()
 }
 
 func (s *Stream) writeDataCell(cell *relay.DataCell) error {

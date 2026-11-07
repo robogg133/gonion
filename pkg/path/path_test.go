@@ -12,7 +12,7 @@ import (
 
 // path-spec 6: a configured bridge replaces, rather than precedes, the guard.
 func TestFixedBridgeSelection(t *testing.T) {
-	cns := testutil.Consensus(t, time.Now())
+	cns := trustedTestConsensus(t, time.Now())
 	bridge := cns.RelayInformation[0]
 	bridge.NodeID, bridge.Ipv4Addr = [20]byte{99}, "192.0.2.1"
 	bridge.StatusFlags = [15]bool{}
@@ -21,7 +21,7 @@ func TestFixedBridgeSelection(t *testing.T) {
 		if err := sel.SelectRandomCircuit(3, 443); err != nil {
 			t.Fatal(err)
 		}
-		if len(sel.Circuit()) != 3 || sel.Guard() != &bridge {
+		if len(sel.Circuit()) != 3 || sel.Guard().NodeID != bridge.NodeID {
 			t.Fatal("bridge was replaced or an extra hop was added")
 		}
 		for _, hop := range sel.Circuit()[1:] {
@@ -36,7 +36,7 @@ func TestFixedBridgeSelection(t *testing.T) {
 		if err := sel.SelectCircuitTo(3, target); err != nil {
 			t.Fatal(err)
 		}
-		if sel.Guard() != &bridge || sel.Exit().NodeID != target.NodeID {
+		if sel.Guard().NodeID != bridge.NodeID || sel.Exit().NodeID != target.NodeID {
 			t.Fatal("explicit target path lost bridge or target")
 		}
 	}
@@ -45,17 +45,19 @@ func TestFixedBridgeSelection(t *testing.T) {
 		t.Fatal("bridge used twice")
 	}
 	bridge.Ipv4Addr = cns.RelayInformation[5].Ipv4Addr
+	sel = NewWithGuard(cns, false, &bridge)
 	if err := sel.SelectCircuitTo(3, &cns.RelayInformation[5]); err == nil {
 		t.Fatal("same-network target accepted")
 	}
 	bridge.NTorOnionKey = nil
+	sel = NewWithGuard(cns, false, &bridge)
 	if err := sel.SelectRandomCircuit(3, 443); err == nil {
 		t.Fatal("missing bridge key fell back to public guard")
 	}
 }
 
 func TestSelectRandomCircuit(t *testing.T) {
-	cns := testutil.Consensus(t, time.Now())
+	cns := trustedTestConsensus(t, time.Now())
 	if cns.BandWidthWeight.Wgg != 10000 || cns.BandWidthWeight.Wme != 10000 {
 		t.Fatal("missing consensus weights were not defaulted")
 	}
@@ -66,7 +68,7 @@ func TestSelectRandomCircuit(t *testing.T) {
 	if sl.Guard() == nil || sl.Exit() == nil || len(sl.Middle()) != 1 || len(sl.Circuit()) != 3 {
 		t.Fatal("incomplete path")
 	}
-	if sl.Circuit()[0] != sl.Guard() || sl.Circuit()[2] != sl.Exit() {
+	if sl.Circuit()[0].NodeID != sl.Guard().NodeID || sl.Circuit()[2].NodeID != sl.Exit().NodeID {
 		t.Fatal("incorrect circuit order")
 	}
 	for i, a := range sl.Circuit() {
@@ -88,8 +90,8 @@ func TestSelectionRequiresAuthenticatedLiveConsensus(t *testing.T) {
 	for name, cns := range map[string]*common.Consensus{
 		"nil":       nil,
 		"untrusted": {ValidAfter: now.Add(-time.Hour), ValidUntil: now.Add(time.Hour)},
-		"expired":   testutil.Consensus(t, now.Add(-24*time.Hour)),
-		"future":    testutil.Consensus(t, now.Add(24*time.Hour)),
+		"expired":   trustedTestConsensus(t, now.Add(-24*time.Hour)),
+		"future":    trustedTestConsensus(t, now.Add(24*time.Hour)),
 	} {
 		t.Run(name, func(t *testing.T) {
 			sl := New(cns, false)
@@ -99,7 +101,7 @@ func TestSelectionRequiresAuthenticatedLiveConsensus(t *testing.T) {
 			if _, err := sl.SelectHSRelay(true); err == nil {
 				t.Fatal("untrusted or non-live consensus selected an intro relay")
 			}
-			target := testutil.Consensus(t, now).RelayInformation[0]
+			target := trustedTestConsensus(t, now).RelayInformation[0]
 			if err := sl.SelectCircuitTo(1, &target); err == nil {
 				t.Fatal("explicit target bypassed consensus validation")
 			}
@@ -134,7 +136,7 @@ func TestConsensusWeights(t *testing.T) {
 	if weightedBandwidth(^uint32(0), 1<<31-1) != int64(1<<31-1)*int64(1<<31-1) {
 		t.Fatal("C Tor bandwidth cap not applied")
 	}
-	sl := New(testutil.Consensus(t, time.Now()), false)
+	sl := New(trustedTestConsensus(t, time.Now()), false)
 	sl.weight.Wgg, sl.weight.Wgd = 0, 0
 	if err := sl.SelectRandomCircuit(3, 80); err == nil {
 		t.Fatal("explicit zero guard weights fell back to bandwidth")
@@ -201,10 +203,8 @@ func TestRelayDiversity(t *testing.T) {
 }
 
 func TestExplicitTargetKeepsFamilyAndWireMetadata(t *testing.T) {
-	sl := New(testutil.Consensus(t, time.Now()), true)
+	sl := New(testutil.ConsensusWithFamily(t, time.Now(), 0, 5), true)
 	a, b := &sl.list[0], &sl.list[5]
-	a.Family = []common.Family{{Digest: b.NodeID[:]}}
-	b.Family = []common.Family{{Digest: a.NodeID[:]}}
 	target := *b
 	target.Family = nil // A descriptor/INTRODUCE2 contains no family list.
 	target.LinkSpecifiers = []byte{1, 99, 1, 42}
@@ -224,7 +224,7 @@ func TestExplicitTargetKeepsFamilyAndWireMetadata(t *testing.T) {
 }
 
 func TestConflictsFilteredBeforeWeightedSelection(t *testing.T) {
-	sl := New(testutil.Consensus(t, time.Now()), false)
+	sl := New(trustedTestConsensus(t, time.Now()), false)
 	// One overwhelming but conflicting candidate must not exhaust a retry
 	// budget and hide the only eligible guard (path-spec 2.2).
 	sl.list[0].BandWidth = ^uint32(0)

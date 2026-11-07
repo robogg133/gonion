@@ -6,20 +6,41 @@ An experimental **pure-Go Tor client and onion-v3 service** designed for embeddi
 No CGO, native bindings, `libtor`, external Tor daemon or local SOCKS proxy is
 required by the client implementation.
 
-> **Not production-ready or an anonymity boundary.** Persistent guard selection
-> is still missing, and no full independent security audit has been completed.
-> Successful TCP/HTTPS/onion interoperability tests do not establish anonymity,
-> censorship resistance, reduced detectability, or complete Tor compatibility.
+> **Not production-ready or an anonymity boundary.** Persistent public guard
+> state is required for every circuit and path-bias accounting is implemented,
+> but the guard/trust/path-bias code is new and awaiting independent review,
+> and no full security audit has been completed. Successful TCP/HTTPS/onion
+> interoperability tests do not establish anonymity, censorship resistance,
+> reduced detectability, or complete Tor compatibility.
+
+## Supported scope
+
+Production-oriented use must stay inside this scope; anything outside fails
+closed and requires separate specification review and acceptance evidence:
+
+- Surface TCP/IPv4 Dial and onion-v3 Dial/Listen, over direct networking or one
+  caller-pinned bridge. `Options.Guards` (persistent, caller-owned public guard
+  state) is mandatory outside bridge mode.
+- Deliberately unsupported and rejected: IPv6 exit streams, multi-bridge
+  selection, authorized onion services, congestion-control/PoW negotiation,
+  multi-port service routing, and full `ns` server-descriptor hydration.
+- Known path-bias limits are documented as `shortcut:` comments with their
+  upgrade paths.
+- Vulnerability disclosure: [SECURITY.md](SECURITY.md).
 
 ## Current functionality
 
 - TLS/OR link negotiation, relay CERTS authentication and expected identity pins.
 - Tor cell framing, ntor circuit construction, per-hop cryptography, streams,
   SENDME flow control and deadlines.
-- Authenticated consensus download, microdescriptor hydration, refresh and
-  separate raw/hydrated cache files.
+- Authenticated consensus download, microdescriptor hydration, refresh,
+  connection-owned refresh recovery after channel loss, and separate
+  raw/hydrated cache files.
 - `pkg/embed`: `DefaultOptions`, caller-controlled bootstrap/guard dialers and
-  storage, TCP/HTTPS/onion Dial, circuit pooling and lifecycle management.
+  storage, persistent caller-owned public guard state (`Options.Guards`, one
+  guard choice shared across exit and onion circuit construction; construction
+  fails closed without it), TCP/HTTPS/onion Dial, circuit pooling and lifecycle
+  management.
 - Onion-v3 descriptor validation, introduction/rendezvous, and service publication.
 - A Tor-backed `net.Listener` for onion services, without a local listening socket.
   Service identities and durable descriptor revision allocation belong to callers.
@@ -30,11 +51,10 @@ See the [embedding guide](pkg/embed/README.md),
 [runnable examples](examples/embed/README.md), and
 [detailed implementation status and remaining work](pkg/hs/IMPLEMENTATION_STATUS.md).
 
-For the dated development handoff, read [context and decisions](docs/CONTEXT.md),
-[current validation and known failures](docs/STATUS.md), and
-[the resume plan](docs/NEXT_STEPS.md), in that order. The 2026-09-26 full offline
-suite currently fails one ns fixture digest assertion; historical passes do not
-supersede this result.
+The published tree documents current behavior through this file, `SECURITY.md`,
+`pkg/embed/README.md`, and `pkg/hs/IMPLEMENTATION_STATUS.md`. Historical results
+belong only to the trees on which they were produced; rerun the current
+validation commands before relying on them.
 
 ## Architecture
 
@@ -48,7 +68,7 @@ supersede this result.
 | `pkg/common`, `pkg/parsers` | Directory models, consensus signature/quorum verification, text/JSON/microdescriptor parsing |
 | Root `bootstraping.go`, `helpers.go` | Directory download, hash-checked hydration and consensus refresh |
 | `pkg/storage` | Caller-selected in-memory or on-disk public directory caches |
-| `pkg/path` | Weighted relay selection, family/identity/subnet constraints; persistent guards remain outstanding |
+| `pkg/path` | Weighted relay selection, family/identity/subnet constraints, persistent public-default guard manager (`pkg/path/guards.go`) |
 | `pkg/hs/onion`, `pkg/hs/crypto`, `pkg/hs/desc` | Onion address checks, key blinding, HS-ntor, signed/encrypted descriptors |
 | `pkg/hs`, `pkg/hs/capi` | Client/service orchestration and integration with real circuits |
 | `pkg/embed` | Application-facing Dial/HTTP/Listen APIs and resource ownership |
@@ -93,14 +113,18 @@ protocol vectors, negative tests, fuzzing, controlled-network testing or audit.
 
 ## Development priorities
 
-1. Implement persistent guard state/persistence and path-bias handling.
-2. Recover directory refresh after channel loss; stress long-running service
-   rollover, publication failures and restarts.
-3. Harden the mutable authenticated-consensus API and expand CERTS/parser/stream
-   negative and concurrency tests.
+1. Review the implemented persistent guard state/persistence and the integrated
+   path-bias accounting (two documented `shortcut:` cases).
+2. Exercise long-running service rollover, publication failures and restarts on
+   a controlled network; refresh recovery after channel loss is implemented
+   (`StartConsensusRecovery`, fail-closed without a redial policy), but its
+   long-run behavior still needs controlled-network coverage.
+3. Review the immutable directory trust boundary and expand CERTS/parser negative
+   and concurrency tests.
 4. Add unsupported capabilities only with their corresponding spec review and
-   interoperability tests: bridge-aware guards, IPv6 streams, normal consensus
-   server-descriptor hydration and high-level authorized services.
+   interoperability tests: bridge-aware guard state instances, IPv6 streams,
+   normal consensus server-descriptor hydration and high-level authorized
+   services.
 
 Correctness, explicit validation and readable/auditable code take priority over
 speculative optimizations. Performance and fingerprinting claims require

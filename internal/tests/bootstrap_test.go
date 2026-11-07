@@ -1,8 +1,8 @@
 package tests
 
 import (
-	"io"
 	"fmt"
+	"io"
 	"testing"
 
 	"github.com/robogg133/gonion"

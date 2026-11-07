@@ -21,6 +21,7 @@ import (
 
 	"github.com/robogg133/gonion/internal/fallback"
 	"github.com/robogg133/gonion/internal/shared"
+	"github.com/robogg133/gonion/internal/testutil/guardfixture"
 	"github.com/robogg133/gonion/pkg/common"
 	"github.com/robogg133/gonion/pkg/embed"
 	"github.com/rs/zerolog"
@@ -44,6 +45,7 @@ func TestEmbedListenOnion(t *testing.T) {
 		reference = startReferenceTor(t, ctx)
 	}
 	opts := embed.DefaultOptions()
+	opts.Guards = guardfixture.Manager(t)
 	opts.ORDialer = func(ctx context.Context) (net.Conn, error) {
 		return fallback.New(shared.Fallbacks).DialContext(ctx, true)
 	}

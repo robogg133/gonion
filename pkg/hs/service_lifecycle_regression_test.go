@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/robogg133/gonion/internal/testutil"
+	"github.com/robogg133/gonion/internal/testutil/guardfixture"
 	"github.com/robogg133/gonion/pkg/common"
 	"github.com/robogg133/gonion/pkg/hs/capi"
 	"github.com/robogg133/gonion/pkg/hs/desc"
@@ -47,22 +48,19 @@ func (c *publicationCircuit) Close() error {
 func TestServicePartialPublicationRetainsIntrosAndRevision(t *testing.T) {
 	// EXPIRE-DESC / DESC-OUTER: even one acknowledged upload makes these
 	// introductions usable for 180 minutes and consumes the revision.
-	cns := testutil.Consensus(t, time.Now())
+	cns := testutil.ConsensusWithHSDirs(t, time.Now(), 0, 1)
 	d := maintenanceDescriptor(t, servicePeriods(cns)[0])
 	// Encoding no introductions is valid at this lower-level API; circuit
 	// health/three-introduction readiness is enforced by renewal separately.
 	d.intros = nil
 	groups := [][]common.RouterStatus{{cns.RelayInformation[0]}, {cns.RelayInformation[1]}}
-	for i := range groups {
-		groups[i][0].StatusFlags[common.FLAG_HIDDEN_SERVICE_DIR] = true
-		groups[i][0].ProtoVersions.HSDir.SetValue(common.VERSION_2, true)
-	}
+
 	var peers sync.WaitGroup
 	defer peers.Wait()
 	var revision uint64 = 7
 	l := &Listener{revisions: make(map[[32]byte]uint64)}
 	l.opts.NextRevision = func(context.Context, [32]byte) (uint64, error) { return revision, nil }
-	l.builder = serviceBuildFunc(func(_ context.Context, relays []*common.RouterStatus) (capi.Circ, error) {
+	l.builder = guardedServiceBuild{serviceBuildFunc: serviceBuildFunc(func(_ context.Context, relays []*common.RouterStatus) (capi.Circ, error) {
 		conn, peer := net.Pipe()
 		ctx, cancel := context.WithCancel(context.Background())
 		circ := &publicationCircuit{lifecycleCircuit: &lifecycleCircuit{ctx: ctx, cancel: cancel}, conn: conn}
@@ -94,7 +92,7 @@ func TestServicePartialPublicationRetainsIntrosAndRevision(t *testing.T) {
 			_, _ = fmt.Fprintf(peer, "HTTP/1.0 %d result\r\nContent-Length: 0\r\n\r\n", status)
 		}()
 		return circ, nil
-	})
+	}), guards: guardfixture.Manager(t)}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	before := time.Now()

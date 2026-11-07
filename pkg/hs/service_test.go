@@ -14,11 +14,13 @@ import (
 	"time"
 
 	"github.com/robogg133/gonion/internal/testutil"
+	"github.com/robogg133/gonion/internal/testutil/guardfixture"
 	"github.com/robogg133/gonion/pkg/cells/relay"
 	"github.com/robogg133/gonion/pkg/common"
 	"github.com/robogg133/gonion/pkg/hs/capi"
 	"github.com/robogg133/gonion/pkg/hs/crypto"
 	"github.com/robogg133/gonion/pkg/hs/desc"
+	"github.com/robogg133/gonion/pkg/path"
 )
 
 func serviceHex(t *testing.T, text string) []byte {
@@ -251,6 +253,13 @@ func (f serviceBuildFunc) BuildPathContext(ctx context.Context, _ uint32, relays
 	return f(ctx, relays)
 }
 
+type guardedServiceBuild struct {
+	serviceBuildFunc
+	guards *path.GuardManager
+}
+
+func (b guardedServiceBuild) PublicGuardManager() *path.GuardManager { return b.guards }
+
 type introTestCircuit struct {
 	*lifecycleCircuit
 	control chan relay.Cell
@@ -284,7 +293,7 @@ func TestServiceReplacesUnavailableIntroduction(t *testing.T) {
 	defer l.Close()
 	seen := make(map[[20]byte]bool)
 	var circuits []*introTestCircuit
-	l.builder = serviceBuildFunc(func(_ context.Context, relays []*common.RouterStatus) (capi.Circ, error) {
+	l.builder = guardedServiceBuild{serviceBuildFunc: serviceBuildFunc(func(_ context.Context, relays []*common.RouterStatus) (capi.Circ, error) {
 		target := relays[len(relays)-1].NodeID
 		if seen[target] {
 			t.Error("reused failed or already established intro target")
@@ -294,7 +303,7 @@ func TestServiceReplacesUnavailableIntroduction(t *testing.T) {
 		circ := &introTestCircuit{lifecycleCircuit: &lifecycleCircuit{ctx: life, cancel: closeCirc}, fail: len(circuits) == 0}
 		circuits = append(circuits, circ)
 		return circ, nil
-	})
+	}), guards: guardfixture.Manager(t)}
 	// The signed test network has the same key/descriptor layout as the
 	// Tor/Chutney fixture. Only the circuit I/O is simulated here.
 	d, err := l.newDescriptor(ctx, cns, descriptorPeriod{cns.CalcPeriodNum(), cns.CalcPeriodLength()})
@@ -313,7 +322,7 @@ func TestServiceReplacesUnavailableIntroduction(t *testing.T) {
 }
 
 func TestServicePublicationBoundsAndCancellation(t *testing.T) {
-	cns := testutil.Consensus(t, time.Now())
+	cns := testutil.ConsensusWithHSDirs(t, time.Now(), 0, 1, 2, 3, 4, 5)
 	identity := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{1}, 32))
 	blinded, err := crypto.BlindPrivateKey(identity, cns.CalcPeriodNum(), cns.CalcPeriodLength())
 	if err != nil {
@@ -325,7 +334,7 @@ func TestServicePublicationBoundsAndCancellation(t *testing.T) {
 	started := make(chan struct{}, 8)
 	l := &Listener{revisions: make(map[[32]byte]uint64)}
 	l.opts.NextRevision = func(context.Context, [32]byte) (uint64, error) { reserved.Add(1); return 1, nil }
-	l.builder = serviceBuildFunc(func(ctx context.Context, _ []*common.RouterStatus) (capi.Circ, error) {
+	l.builder = guardedServiceBuild{serviceBuildFunc: serviceBuildFunc(func(ctx context.Context, _ []*common.RouterStatus) (capi.Circ, error) {
 		n := active.Add(1)
 		defer active.Add(-1)
 		for old := maximum.Load(); n > old; old = maximum.Load() {
@@ -339,7 +348,7 @@ func TestServicePublicationBoundsAndCancellation(t *testing.T) {
 		started <- struct{}{}
 		<-ctx.Done()
 		return nil, ctx.Err()
-	})
+	}), guards: guardfixture.Manager(t)}
 	d := &serviceDescriptor{blinded: blinded, signing: identity}
 	groups := [][]common.RouterStatus{cns.RelayInformation[:3], cns.RelayInformation[3:]}
 	done := make(chan error, 1)

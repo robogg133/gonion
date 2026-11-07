@@ -171,7 +171,7 @@ func (c *Client) allocateCircuit(ctx context.Context, port uint16) (*pooledCircu
 	cns := c.Consensus()
 	// Existing streams may drain, but a cached circuit must not bypass the
 	// directory validity requirement for new traffic.
-	if !cns.IsAuthenticated() || !cns.IsLive(time.Now()) {
+	if !cns.IsAuthenticated() || !cns.TrustedHydrated() || !cns.IsLive(time.Now()) {
 		return nil, fmt.Errorf("embed: an authenticated live consensus is required")
 	}
 	c.reapOnce()
@@ -232,19 +232,8 @@ func (c *Client) buildCircuit(ctx context.Context, cns *common.Consensus, port u
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	guard, err := capi.CircuitGuard(ctx, c.builder)
-	if err != nil {
-		return nil, err
-	}
-	sel := path.NewWithGuard(cns, c.longLived, guard)
-	if err := sel.SelectRandomCircuit(3, port); err != nil {
-		return nil, fmt.Errorf("embed: select path: %w", err)
-	}
-	circ, err := (contextBuilder{ctx: ctx, lifetime: c.lifetime, builder: c.builder}).BuildPath(c.nextID.Add(1), sel.Circuit())
-	if err != nil {
-		return nil, err
-	}
-	return circ, nil
+	circ, _, err := capi.BuildGuardedCircuit(ctx, contextBuilder{ctx: ctx, lifetime: c.lifetime, builder: c.builder}, cns, c.nextID.Add(1), 3, port, nil, c.longLived)
+	return circ, err
 }
 
 // invalidate marks a circuit for removal and closes it.
@@ -272,8 +261,7 @@ func (c *Client) reapLoop(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-c.conn.Context().Done():
-			return
+
 		case <-ticker.C:
 			c.reapOnce()
 		}
@@ -288,7 +276,10 @@ type gonionBuilder struct {
 	dial   func(context.Context, *common.RouterStatus) (net.Conn, error)
 	ctx    context.Context
 	bridge *bridgeState
+	guards *path.GuardManager
 }
+
+func (b gonionBuilder) PublicGuardManager() *path.GuardManager { return b.guards }
 
 func (b gonionBuilder) CircuitGuard(ctx context.Context) (*common.RouterStatus, error) {
 	if b.bridge == nil {
@@ -380,6 +371,13 @@ type contextBuilder struct {
 	ctx      context.Context
 	lifetime context.Context
 	builder  capi.CircuitBuilder
+}
+
+func (b contextBuilder) PublicGuardManager() *path.GuardManager {
+	if provider, ok := b.builder.(capi.PublicGuardProvider); ok {
+		return provider.PublicGuardManager()
+	}
+	return nil
 }
 
 func (b contextBuilder) CircuitGuard(ctx context.Context) (*common.RouterStatus, error) {

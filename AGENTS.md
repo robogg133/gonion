@@ -10,18 +10,15 @@ interoperability review.
 
 ## Read First And Resume
 
-Before continuing implementation, read:
+Before continuing implementation, inspect current code, `git status`, the
+applicable specifications, `README.md`, `SECURITY.md`, `pkg/embed/README.md`, and
+`pkg/hs/IMPLEMENTATION_STATUS.md`. Local planning notes are intentionally not
+part of the published tree; do not assume historical notes or test results
+validate the current checkout.
 
-1. `docs/CONTEXT.md`: original goals, accepted decisions, architecture, and work
-   already completed. Do not restart completed protocol work from obsolete notes.
-2. `docs/STATUS.md`: latest validation, known failures, and remaining limitations.
-3. `docs/NEXT_STEPS.md`: immediate resume sequence and completion criteria.
-4. `pkg/embed/README.md`: public ownership, lifecycle, networking, and cache contracts.
-
-These documents are a dated checkpoint, not a substitute for inspecting current
-code, `git status`, and the applicable specifications. Update status and validation
-records when behavior or test results change. Never turn a historical pass into a
-claim that the current tree is fully validated.
+Update public status and validation statements when behavior or test results
+change. Never turn a historical pass into a claim that the current tree is fully
+validated.
 
 ## Language And Dependencies
 

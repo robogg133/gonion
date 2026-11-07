@@ -13,6 +13,7 @@ import (
 
 	"github.com/robogg133/gonion/internal/fallback"
 	"github.com/robogg133/gonion/internal/shared"
+	"github.com/robogg133/gonion/internal/testutil/guardfixture"
 	"github.com/robogg133/gonion/pkg/embed"
 )
 
@@ -22,6 +23,7 @@ func TestEmbedDialExit(t *testing.T) {
 	defer cancel()
 
 	client, err := embed.New(ctx, embed.Options{
+		Guards: guardfixture.Manager(t),
 		GuardDialer: func(ctx context.Context, r *common.RouterStatus) (net.Conn, error) {
 			return (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, "tcp", net.JoinHostPort(r.Ipv4Addr, strconv.Itoa(int(r.ORPort))))
 		},

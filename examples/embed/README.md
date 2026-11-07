@@ -4,8 +4,10 @@ Runnable applications for [`pkg/embed`](../../pkg/embed). They use the **real To
 network** when invoked and are not anonymity guarantees. Ordinary Go tests
 compile these commands and run offline helper tests; they do not run live flows.
 
-`basic`, `exit`, `onion` and `listen` explicitly permit direct TCP connections to
-public fallback/guard relays. `ORDialer` selects the bootstrap connection and its
+`exit`, `onion` and `listen` explicitly permit direct TCP connections to
+public fallback/guard relays and require `-guard-state <caller-owned-file>`,
+persisting public guard state there; they never choose a home-directory path.
+`ORDialer` selects the bootstrap connection and its
 expected identity; `GuardDialer` connects to each selected traffic guard. This
 choice is made here in the application, not silently inside the embedded library.
 Repository-internal fallback data is used only because these examples belong to
@@ -13,10 +15,9 @@ this module; external applications must provide their own bootstrap policy.
 
 | Command | Behavior |
 | --- | --- |
-| `go run ./examples/embed/basic` | HTTP GET through an exit with `HTTPClient` |
-| `go run ./examples/embed/exit` | Raw `DialContext` and an HTTP/1.0 request, with a stream deadline |
-| `go run ./examples/embed/onion` | HTTP GET from the Tor Project's public onion website; `-onion` overrides the host |
-| `go run ./examples/embed/listen` | Publish a temporary onion identity and serve HTTP on its Tor-backed listener |
+| `go run ./examples/embed/exit -guard-state ./guards.json` | Raw `DialContext` and an HTTP/1.0 request, with a stream deadline |
+| `go run ./examples/embed/onion -guard-state ./guards.json` | HTTP GET from the Tor Project's public onion website; `-onion` overrides the host |
+| `go run ./examples/embed/listen -guard-state ./guards.json` | Publish a temporary onion identity and serve HTTP on its Tor-backed listener |
 
 ## Ephemeral Listen
 
@@ -27,7 +28,9 @@ and publication acknowledgement, not after a reachability probe. Ctrl-C stops ne
 acceptance and allows up to 15 seconds for HTTP shutdown before Client.Close
 terminates the remaining circuits.
 
-Do **not** reuse its in-memory revision policy with a persistent identity. For a
+Do **not** reuse its in-memory revision policy with a persistent identity. The
+public guard-state file must be exclusively owned by this process (or protected
+by a caller-provided lock); concurrent managers writing one file are unsupported. For a
 stable onion address, load/store the identity yourself and atomically persist
 monotonically increasing revision reservations before returning them to Listen.
 See the [ownership and lifecycle contract](../../pkg/embed/README.md#listen-without-a-local-socket).
@@ -41,7 +44,9 @@ go run ./examples/embed/transport/obfs4 \
 ```
 
 Each transport has a separate command under `transport/`: `obfs4`, `meek`,
-`snowflake` and `webtunnel`, each with its own `main.go`.
+`snowflake` and `webtunnel`, each with its own `main.go`. Every command also
+requires `-guard-state <caller-owned-file>` to satisfy the mandatory public
+state contract, even though traffic remains disabled.
 See [transport examples](transport/README.md) for commands and parameters for all
 four, plus the cancellation limitations of transports without `DialContext`.
 

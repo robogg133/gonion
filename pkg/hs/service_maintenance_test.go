@@ -37,7 +37,7 @@ func TestServiceRenewAttemptsBothDescriptors(t *testing.T) {
 	first := maintenanceDescriptor(t, periods[0])
 	second := maintenanceDescriptor(t, periods[1])
 	l := &Listener{
-		consensus: func() *common.Consensus { return cns },
+		consensus:   func() *common.Consensus { return cns },
 		descriptors: map[descriptorPeriod]*serviceDescriptor{periods[0]: first, periods[1]: second},
 	}
 	// This signed fixture has no HSDirs: both independent descriptor attempts

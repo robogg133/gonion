@@ -41,10 +41,14 @@ func New(cns *common.Consensus, longlive bool) *Selector {
 	if cns == nil {
 		return &Selector{}
 	}
+	owned := cns.Trusted()
+	if owned == nil {
+		return &Selector{}
+	}
 	return &Selector{
-		consensus: cns,
-		list:      cns.RelayInformation,
-		weight:    cns.BandWidthWeight,
+		consensus: owned,
+		list:      owned.RelayInformation,
+		weight:    owned.BandWidthWeight,
 		longLive:  longlive,
 	}
 }
@@ -54,14 +58,15 @@ func New(cns *common.Consensus, longlive bool) *Selector {
 // The caller owns guard authentication, expiry and immutable snapshot lifetime.
 func NewWithGuard(cns *common.Consensus, longlive bool, guard *common.RouterStatus) *Selector {
 	sl := New(cns, longlive)
-	sl.fixedGuard, sl.guard = guard, guard
+	sl.fixedGuard = common.CloneRouter(guard)
+	sl.guard = sl.fixedGuard
 	return sl
 }
 
 // SelectHSRelay selects a general relay with the required introduction or
 // rendezvous protocol, never an Exit-policy-dependent final hop.
 func (sl *Selector) SelectHSRelay(introduction bool) (*common.RouterStatus, error) {
-	return sl.selectRelay(func(r common.RouterStatus) bool {
+	r, err := sl.selectRelay(func(r common.RouterStatus) bool {
 		if !middleValideFunc(r) || r.StatusFlags[common.FLAG_MIDDLE_ONLY] {
 			return false
 		}
@@ -70,6 +75,20 @@ func (sl *Selector) SelectHSRelay(introduction bool) (*common.RouterStatus, erro
 		}
 		return r.ProtoVersions.HSRend.CheckIsTrue(common.VERSION_2)
 	}, middleWeightFunc, 0)
+	return common.CloneRouter(r), err
+}
+
+// SelectTail chooses the final relay before public guard restrictions are made.
+func (sl *Selector) SelectTail(port uint16) (*common.RouterStatus, error) {
+	validator, weight := exitValidateFunc, exitWeightFunc
+	if port == 0 {
+		validator = func(r common.RouterStatus) bool {
+			return middleValideFunc(r) && !r.StatusFlags[common.FLAG_MIDDLE_ONLY]
+		}
+		weight = middleWeightFunc
+	}
+	r, err := sl.selectRelay(validator, weight, port)
+	return common.CloneRouter(r), err
 }
 
 func (sl *Selector) SelectRandomCircuit(hops uint, port uint16) error {
@@ -85,7 +104,7 @@ func (sl *Selector) SelectCircuitTo(hops uint, target *common.RouterStatus) erro
 	// HS link specifiers do not carry family declarations. Use the matching
 	// consensus identity's family metadata without replacing its supplied
 	// onion key or ordered link-specifier block.
-	copyTarget := *target
+	copyTarget := *common.CloneRouter(target)
 	for i := range sl.list {
 		r := &sl.list[i]
 		if r.NodeID != target.NodeID {
@@ -170,14 +189,21 @@ func (sl *Selector) selectCircuit(hops uint, port uint16, target *common.RouterS
 	return nil
 }
 
-func (sl *Selector) Guard() *common.RouterStatus    { return sl.guard }
-func (sl *Selector) Exit() *common.RouterStatus     { return sl.exit }
-func (sl *Selector) Middle() []*common.RouterStatus { return sl.middles }
+func (sl *Selector) Guard() *common.RouterStatus     { return common.CloneRouter(sl.guard) }
+func (sl *Selector) Exit() *common.RouterStatus      { return common.CloneRouter(sl.exit) }
+func (sl *Selector) Middle() []*common.RouterStatus  { return clonePath(sl.middles) }
+func (sl *Selector) Circuit() []*common.RouterStatus { return clonePath(sl.fullPath) }
 
-func (sl *Selector) Circuit() []*common.RouterStatus { return sl.fullPath }
+func clonePath(in []*common.RouterStatus) []*common.RouterStatus {
+	out := make([]*common.RouterStatus, len(in))
+	for i, r := range in {
+		out[i] = common.CloneRouter(r)
+	}
+	return out
+}
 
 func (sl *Selector) checkConsensus() error {
-	if !sl.consensus.IsAuthenticated() || !sl.consensus.IsLive(time.Now()) {
+	if sl.consensus == nil || !sl.consensus.IsAuthenticated() || !sl.consensus.IsLive(time.Now()) || !sl.consensus.TrustedHydrated() {
 		return fmt.Errorf("path: an authenticated live consensus is required")
 	}
 	return nil

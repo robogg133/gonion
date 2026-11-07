@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/robogg133/gonion/internal/testutil/guardfixture"
 	"github.com/robogg133/gonion/pkg/common"
 	"github.com/robogg133/gonion/pkg/hs/capi"
 )
@@ -22,7 +23,7 @@ func TestDialerErrorClosesReturnedConnection(t *testing.T) {
 			want := errors.New("dial failed after opening connection")
 			var err error
 			if kind == "bootstrap" {
-				_, err = New(context.Background(), Options{ORDialer: func(context.Context) (net.Conn, error) { return raw, want }})
+				_, err = New(context.Background(), Options{Guards: guardfixture.Manager(t), ORDialer: func(context.Context) (net.Conn, error) { return raw, want }})
 			} else {
 				b := gonionBuilder{dial: func(context.Context, *common.RouterStatus) (net.Conn, error) { return raw, want }}
 				_, err = b.BuildPath(1, []*common.RouterStatus{{}})

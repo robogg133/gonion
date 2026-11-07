@@ -40,7 +40,8 @@ type Conn struct {
 	userDataPipeWriter *io.PipeWriter
 	userDataPipeReader *io.PipeReader
 
-	mu sync.RWMutex
+	mu        sync.RWMutex
+	publishMu sync.Mutex
 
 	writeCall chan cellWrite
 	ctx       context.Context
@@ -52,6 +53,15 @@ type Conn struct {
 	cellBodyLen int
 
 	storage storage.Storage
+
+	recoveryMu     sync.Mutex
+	recoveryCancel context.CancelFunc
+	recoveryConn   *Conn
+	// trustedAuthorities, when set, replaces the default nine public C Tor
+	// authority pins for consensus authentication. It is set once, before
+	// bootstrap fetches a consensus, and never mutated afterwards; recovery
+	// connections copy it verbatim.
+	trustedAuthorities [][20]byte
 }
 
 type ConnOption uint8
@@ -59,6 +69,35 @@ type ConnOption uint8
 const (
 	ConnOptionSkipRelayFingerprintCheck ConnOption = iota
 )
+
+// SetTrustedAuthorities replaces the default nine public C Tor authority pins
+// with an explicit caller-supplied set (private or controlled networks). The
+// set must be non-empty, unique and non-zeroed; consensus acceptance then
+// requires a strict majority of these pins. Call it once, before the first
+// consensus fetch: identity pins of relays and connection CERTS are separate
+// checks and are never relaxed by this override.
+func (c *Conn) SetTrustedAuthorities(pins [][20]byte) error {
+	if c.trustedAuthorities != nil {
+		return Public(ErrDirectory, "authority pins already set")
+	}
+	if len(pins) == 0 {
+		return Public(ErrDirectory, "empty authority pin set")
+	}
+	seen := make(map[[20]byte]bool, len(pins))
+	out := make([][20]byte, 0, len(pins))
+	for _, id := range pins {
+		if id == ([20]byte{}) {
+			return Public(ErrDirectory, "invalid authority pin")
+		}
+		if seen[id] {
+			return Public(ErrDirectory, "duplicate authority pin")
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	c.trustedAuthorities = out
+	return nil
+}
 
 // SetStorage attaches a consensus store to the connection.
 // When set, bootstrap and consensus refresh read from and write to it.
@@ -243,6 +282,16 @@ func parseRemoteAddr(addr net.Addr) netip.Addr {
 
 func (conn *Conn) Close() error {
 	logger(conn.ctx).Info().Msg("closing connection")
+	conn.recoveryMu.Lock()
+	cancel, replacement := conn.recoveryCancel, conn.recoveryConn
+	conn.recoveryCancel, conn.recoveryConn = nil, nil
+	conn.recoveryMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	if replacement != nil {
+		_ = replacement.Close()
+	}
 	conn.ctxCancel(ErrClosed)
 	return conn.socket.Close()
 }

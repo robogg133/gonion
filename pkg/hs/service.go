@@ -239,11 +239,12 @@ func servicePeriods(c *common.Consensus) [2]descriptorPeriod {
 
 func (l *Listener) renew(ctx context.Context) error {
 	cns := l.consensus()
-	if !cns.IsAuthenticated() || !cns.IsLive(time.Now()) {
+	if !cns.IsAuthenticated() || !cns.TrustedHydrated() || !cns.IsLive(time.Now()) {
 		// Local expiry must still run while directory recovery is unavailable.
 		l.pruneRetired(time.Now())
 		return fmt.Errorf("hs: publication requires an authenticated live consensus")
 	}
+	cns = cns.Trusted()
 	l.mu.Lock()
 	l.current = cns
 	l.mu.Unlock()

@@ -86,7 +86,8 @@ func (p *Ports) turnOnAllPorts() {
 
 type Consensus struct {
 	// Not serialized: persisted models must be reauthenticated from RawDocument.
-	authenticated        bool
+	trusted              *Consensus // Private, owned verification result; never exposes mutable fields.
+	hydrated             bool       // Set only on a fully verified private snapshot.
 	NetowrkStatusVersion uint8
 	Flavor               string
 	// RawDocument preserves the signed bytes, including signatures. Parsing and
@@ -172,24 +173,33 @@ func (c *Consensus) Clone() *Consensus {
 	}
 	out.RelayInformation = slices.Clone(c.RelayInformation)
 	for i := range out.RelayInformation {
-		r := &out.RelayInformation[i]
-		r.OnionKey = bytes.Clone(r.OnionKey)
-		r.LinkSpecifiers = bytes.Clone(r.LinkSpecifiers)
-		r.IdEd25519 = bytes.Clone(r.IdEd25519)
-		r.Family = slices.Clone(r.Family)
-		for j := range r.Family {
-			r.Family[j].Digest = bytes.Clone(r.Family[j].Digest)
-		}
-		r.Familys = slices.Clone(r.Familys)
-		for j, f := range r.Familys {
-			if f != nil {
-				v := *f
-				v.Value = bytes.Clone(f.Value)
-				r.Familys[j] = &v
-			}
-		}
+		out.RelayInformation[i] = *CloneRouter(&c.RelayInformation[i])
 	}
 	return &out
+}
+
+// CloneRouter separates selected relay views, including nested family and key bytes.
+func CloneRouter(src *RouterStatus) *RouterStatus {
+	if src == nil {
+		return nil
+	}
+	r := *src
+	r.OnionKey = bytes.Clone(r.OnionKey)
+	r.LinkSpecifiers = bytes.Clone(r.LinkSpecifiers)
+	r.IdEd25519 = bytes.Clone(r.IdEd25519)
+	r.Family = slices.Clone(r.Family)
+	for j := range r.Family {
+		r.Family[j].Digest = bytes.Clone(r.Family[j].Digest)
+	}
+	r.Familys = slices.Clone(r.Familys)
+	for j, f := range r.Familys {
+		if f != nil {
+			v := *f
+			v.Value = bytes.Clone(f.Value)
+			r.Familys[j] = &v
+		}
+	}
+	return &r
 }
 
 // Validate checks the supported consensus model, not its cryptographic trust.
@@ -258,19 +268,86 @@ func (c *Consensus) Parameter(name string, fallback, lower, upper int32) int {
 	return int(min(upper, max(lower, value)))
 }
 
-// IsAuthenticated reports validation by AuthenticateConsensus, never a JSON flag.
-// Published snapshots must be treated as immutable after authentication.
+// IsAuthenticated reports an association with privately owned authenticated
+// state, not that the mutable exported fields of this view are authenticated.
 func (c *Consensus) IsAuthenticated() bool {
-	return c != nil && c.authenticated
+	return c != nil && c.trusted != nil
+}
+
+// Trusted returns a fresh view of the privately owned authenticated state.
+// Exported fields on c (including signed bytes) are never used as trust evidence.
+func (c *Consensus) Trusted() *Consensus {
+	if c == nil || c.trusted == nil {
+		return nil
+	}
+	view := c.trusted.Clone()
+	view.trusted = c.trusted
+	return view
+}
+
+// OwnAuthenticatedHydration derives relay keys and policies from digest-bound
+// original microdescriptor bytes, never from caller-supplied model fields.
+func (c *Consensus) OwnAuthenticatedHydration(descriptors map[string][]byte) (*Consensus, error) {
+	if c == nil || c.trusted == nil {
+		return nil, fmt.Errorf("consensus: authenticated source required")
+	}
+	base := c.trusted
+	if base.Flavor != ConsensusFlavorMicrodesc || len(base.RelayInformation) == 0 || len(descriptors) > MaxConsensusRelays {
+		return nil, fmt.Errorf("consensus: incomplete hydration")
+	}
+	owned := base.Clone()
+	owned.trusted = nil
+	owned.Microdescriptors = make(map[string][]byte, len(descriptors))
+	for i, r := range base.RelayInformation {
+		raw := descriptors[r.MicrodescriptorDigest]
+		md, err := ParseMicrodescriptor(raw, r.MicrodescriptorDigest)
+		if err != nil {
+			return nil, err
+		}
+		owned.Microdescriptors[r.MicrodescriptorDigest] = bytes.Clone(raw)
+		if r.StatusFlags[FLAG_NO_ED_CONSENSUS] {
+			md.IdEd25519 = nil
+		}
+		key, err := ecdh.X25519().NewPublicKey(md.NTorOnionKey)
+		if err != nil {
+			return nil, fmt.Errorf("consensus: invalid microdescriptor ntor key: %w", err)
+		}
+		owned.RelayInformation[i].OnionKey = md.OnionKey
+		owned.RelayInformation[i].NTorOnionKey = key
+		owned.RelayInformation[i].IdEd25519 = md.IdEd25519
+		owned.RelayInformation[i].Family = md.Family
+		owned.RelayInformation[i].Familys = md.Familys
+		owned.RelayInformation[i].Ports = *md.ExitRules
+		owned.RelayInformation[i].MicrodescriptorLoaded = true
+	}
+	owned.hydrated = true
+	view := owned.Clone()
+	view.trusted = owned
+	return view, nil
 }
 
 // IsLive deliberately does not allow future or expired documents at bootstrap.
 func (c *Consensus) IsLive(now time.Time) bool {
-	return c != nil && !now.Before(c.ValidAfter) && now.Before(c.ValidUntil)
+	if c == nil {
+		return false
+	}
+	if c.trusted != nil {
+		c = c.trusted
+	}
+	return !now.Before(c.ValidAfter) && now.Before(c.ValidUntil)
 }
 
+// TrustedHydrated checks only the privately owned, verified descriptor state.
+func (c *Consensus) TrustedHydrated() bool {
+	return c != nil && c.trusted != nil && c.trusted.hydrated
+}
+
+// IsHydrated describes this model's fields, not their authenticity.
 func (c *Consensus) IsHydrated() bool {
-	if c == nil || c.Flavor != ConsensusFlavorMicrodesc || len(c.RelayInformation) == 0 {
+	if c == nil {
+		return false
+	}
+	if c.Flavor != ConsensusFlavorMicrodesc || len(c.RelayInformation) == 0 {
 		return false
 	}
 	for i := range c.RelayInformation {

@@ -19,6 +19,7 @@ import (
 	"github.com/robogg133/gonion/pkg/hs/crypto"
 	"github.com/robogg133/gonion/pkg/hs/desc"
 	"github.com/robogg133/gonion/pkg/lspec"
+	"github.com/robogg133/gonion/pkg/path"
 )
 
 const maxIntroductionReplays = 4096
@@ -225,7 +226,10 @@ func (l *Listener) joinIntroduction(ip *serviceIntroduction, r *introductionRequ
 	defer clear(keys.Kb)
 	defer clear(keys.Df)
 	defer clear(keys.Db)
-	pc, err := buildCircuitWithRetry(ctx, l.builder, cns, 3, 0, r.target)
+	// The service-side rendezvous join is excluded from path-bias counters by
+	// C's pathbias_should_count (S_CONNECT_REND/S_REND_JOINED); the guard lease
+	// lifecycle still runs.
+	pc, err := buildCircuitWithRetry(ctx, l.builder, cns, 3, 0, r.target, path.PurposeRendezvousJoin)
 	if err != nil {
 		logger(l.ctx).Debug().Err(err).Msg("service rendezvous circuit build failed")
 		return

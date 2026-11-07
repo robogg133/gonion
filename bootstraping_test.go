@@ -3,30 +3,35 @@ package gonion
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/base64"
+
 	"errors"
-	"os"
+
 	"reflect"
 	"testing"
 	"time"
 
+	"github.com/robogg133/gonion/internal/testutil"
 	"github.com/robogg133/gonion/pkg/common"
 	"github.com/robogg133/gonion/pkg/parsers/microdesc"
 )
 
 func TestHydrationSnapshots(t *testing.T) {
-	data, err := os.ReadFile("pkg/parsers/microdesc/tor-test-md.fixture")
-	if err != nil {
-		t.Fatal(err)
+	signed := testutil.Consensus(t, time.Now().UTC())
+	c := signed.Trusted()
+	if _, err := hydrateConsensus(context.Background(), &common.Consensus{Flavor: ConsensusFlavorMicrodesc}, nil, nil); err == nil {
+		t.Fatal("untrusted model hydrated")
 	}
-	digest := sha256.Sum256(data)
-	d := base64.RawStdEncoding.EncodeToString(digest[:])
-	now := time.Now().UTC()
-	c := &common.Consensus{NetowrkStatusVersion: 3, Flavor: ConsensusFlavorMicrodesc, ValidAfter: now.Add(-time.Hour), FreshUntil: now.Add(time.Hour), ValidUntil: now.Add(2 * time.Hour), RelayInformation: []common.RouterStatus{{Nickname: "test005r", NodeID: [20]byte{1}, Ipv4Addr: "127.0.0.1", ORPort: 5005, MicrodescriptorDigest: d}}}
 	before := c.Clone()
 	fetch := func(ds []string) ([]*common.Microdesc, error) {
-		return (microdesc.Parser{}).Parse(bytes.NewReader(data), ds)
+		out := make([]*common.Microdesc, len(ds))
+		for i, digest := range ds {
+			parsed, err := (microdesc.Parser{}).Parse(bytes.NewReader(signed.Microdescriptors[digest]), []string{digest})
+			if err != nil {
+				return nil, err
+			}
+			out[i] = parsed[0]
+		}
+		return out, nil
 	}
 	out, err := hydrateConsensus(context.Background(), c, nil, fetch)
 	if err != nil {
@@ -49,8 +54,8 @@ func TestHydrationSnapshots(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if newer.RelayInformation[0].BandWidth != 999 {
-		t.Fatal("reused stale consensus fields")
+	if newer.RelayInformation[0].BandWidth != out.RelayInformation[0].BandWidth {
+		t.Fatal("caller-mutated consensus fields entered trust state")
 	}
 	newer.RelayInformation[0].IdEd25519[0] ^= 1
 	if !reflect.DeepEqual(previous, old) {

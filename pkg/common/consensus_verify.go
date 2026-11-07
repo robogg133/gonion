@@ -118,7 +118,7 @@ func AuthenticateConsensus(raw, certificates []byte, trusted [][20]byte, now tim
 		return nil, fmt.Errorf("consensus: authority quorum not met: %d valid, need %d", len(good), len(pins)/2+1)
 	}
 	c.AuthorityCertificates = bytes.Clone(certificates)
-	c.authenticated = true
+	c.trusted = c.Clone()
 	return c, nil
 }
 

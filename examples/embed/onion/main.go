@@ -20,17 +20,24 @@ import (
 	"os"
 	"time"
 
+	"github.com/robogg133/gonion/examples/embed/internal/guardstate"
 	"github.com/robogg133/gonion/pkg/embed"
 )
 
 func main() {
 	onion := flag.String("onion", "2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion", "target .onion address (host only)") // torproject website
+	state := flag.String("guard-state", "", "caller-owned persistent public-guard state file")
 	flag.Parse()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
 	opts := embed.DefaultOptions()
+	var err error
+	opts.Guards, err = guardstate.New(ctx, *state)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	client, err := embed.New(ctx, opts)
 	if err != nil {

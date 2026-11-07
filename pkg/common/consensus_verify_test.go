@@ -102,6 +102,17 @@ func TestConsensusAuthorityQuorum(t *testing.T) {
 			if err != nil || !c.IsAuthenticated() {
 				t.Fatalf("valid consensus: %v", err)
 			}
+			original := c.Trusted()
+			c.ValidAfter = now.Add(48 * time.Hour)
+			c.ValidUntil = now.Add(49 * time.Hour)
+			c.Params = map[string]int32{"bwweightscale": 1}
+			c.SharedCurrentValue[0] = 99
+			c.RawDocument[0] ^= 1
+			clone := c.Clone()
+			clone.BandWidthWeight.Wgg = 0
+			if !c.IsLive(now) || !clone.IsLive(now) || !c.Trusted().ValidAfter.Equal(original.ValidAfter) || c.Trusted().SharedCurrentValue != original.SharedCurrentValue || c.Trusted().Parameter("bwweightscale", 10000, 1, 10000) != 10000 || clone.Trusted().BandWidthWeight != original.BandWidthWeight {
+				t.Fatal("public consensus fields altered trusted state")
+			}
 			mutated := strings.Replace(document.String(), "02:00:00", "02:10:00", 1)
 			if _, err := AuthenticateConsensus([]byte(mutated), certs, pins, now); err == nil {
 				t.Fatal("modified signed bytes accepted")

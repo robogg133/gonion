@@ -4,7 +4,7 @@ package testutil
 
 import (
 	"bytes"
-	"crypto/ecdh"
+
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/rsa"
@@ -20,7 +20,6 @@ import (
 	"time"
 
 	"github.com/robogg133/gonion/pkg/common"
-	"github.com/robogg133/gonion/pkg/parsers/microdesc"
 )
 
 //go:embed tor-test-md.fixture
@@ -42,6 +41,34 @@ var authorityKeys = sync.OnceValues(func() ([2]*rsa.PrivateKey, error) {
 // with an explicitly pinned test authority and hash-checked microdescriptors.
 // No production authority, authentication marker, or clock check is overridden.
 func Consensus(t testing.TB, now time.Time) *common.Consensus {
+	return consensus(t, now, nil, nil)
+}
+
+// ConsensusWithHSDirs signs the requested directory flags and protocol
+// capabilities before authentication, rather than modifying a trusted view.
+func ConsensusWithHSDirs(t testing.TB, now time.Time, indices ...int) *common.Consensus {
+	t.Helper()
+	hsdirs := make(map[int]bool, len(indices))
+	for _, index := range indices {
+		if index < 0 || index >= 6 {
+			t.Fatal("test HSDir index out of range")
+		}
+		hsdirs[index] = true
+	}
+	return consensus(t, now, hsdirs, nil)
+}
+
+// ConsensusWithFamily signs mutual family declarations in the descriptor
+// digests for two relays before verifying and hydrating the directory.
+func ConsensusWithFamily(t testing.TB, now time.Time, a, b int) *common.Consensus {
+	t.Helper()
+	if a < 0 || a >= 6 || b < 0 || b >= 6 || a == b {
+		t.Fatal("invalid test family indices")
+	}
+	return consensus(t, now, nil, map[int]int{a: b, b: a})
+}
+
+func consensus(t testing.TB, now time.Time, hsdirs map[int]bool, family map[int]int) *common.Consensus {
 	t.Helper()
 	keys, err := authorityKeys()
 	if err != nil {
@@ -76,6 +103,10 @@ func Consensus(t testing.TB, now time.Time) *common.Consensus {
 			t.Fatal(err)
 		}
 		raw := bytes.Clone(microdescriptor[:bytes.Index(microdescriptor, []byte("id ed25519 "))])
+		if other, ok := family[i]; ok {
+			related := sha1.Sum([]byte(fmt.Sprintf("test-only relay %d", other)))
+			raw = fmt.Appendf(raw, "family $%X\n", related)
+		}
 		raw = fmt.Appendf(raw, "id ed25519 %s\n", base64.RawStdEncoding.EncodeToString(pub))
 		hash := sha256.Sum256(raw)
 		digest := base64.RawStdEncoding.EncodeToString(hash[:])
@@ -87,7 +118,12 @@ func Consensus(t testing.TB, now time.Time) *common.Consensus {
 		} else if i >= 4 {
 			flags += " Exit"
 		}
-		fmt.Fprintf(&body, "r relay%d %s %s 10.%d.0.1 9001 0\ns %s\npr HSIntro=4 HSRend=2\nw Bandwidth=1000\nm %s\n", i, base64.RawStdEncoding.EncodeToString(relayID[:]), stamp(-time.Hour), i, flags, digest)
+		proto := "HSIntro=4 HSRend=2"
+		if hsdirs[i] {
+			flags += " HSDir"
+			proto += " HSDir=2"
+		}
+		fmt.Fprintf(&body, "r relay%d %s %s 10.%d.0.1 9001 0\ns %s\npr %s\nw Bandwidth=1000\nm %s\n", i, base64.RawStdEncoding.EncodeToString(relayID[:]), stamp(-time.Hour), i, flags, proto, digest)
 	}
 	body.WriteString("directory-footer\ndirectory-signature ")
 	digest := sha256.Sum256(body.Bytes())
@@ -96,22 +132,11 @@ func Consensus(t testing.TB, now time.Time) *common.Consensus {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c.Microdescriptors = mds
-	for i := range c.RelayInformation {
-		r := &c.RelayInformation[i]
-		md, err := (microdesc.Parser{}).Parse(bytes.NewReader(mds[r.MicrodescriptorDigest]), []string{r.MicrodescriptorDigest})
-		if err != nil || len(md) != 1 || md[0] == nil {
-			t.Fatalf("microdescriptor fixture: %v", err)
-		}
-		r.NTorOnionKey, err = ecdh.X25519().NewPublicKey(md[0].NTorOnionKey)
-		if err != nil {
-			t.Fatal(err)
-		}
-		r.OnionKey, r.IdEd25519 = md[0].OnionKey, md[0].IdEd25519
-		r.Family, r.Familys, r.Ports = md[0].Family, md[0].Familys, *md[0].ExitRules
-		r.MicrodescriptorLoaded = true
+	c, err = c.OwnAuthenticatedHydration(mds)
+	if err != nil {
+		t.Fatalf("verified fixture hydration: %v", err)
 	}
-	if err := c.Validate(); err != nil || !c.IsHydrated() {
+	if err := c.Validate(); err != nil || !c.TrustedHydrated() {
 		t.Fatalf("hydrated fixture: %v", err)
 	}
 	return c

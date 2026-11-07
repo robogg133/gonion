@@ -5,11 +5,13 @@ package embed
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"strconv"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	gonion "github.com/robogg133/gonion"
@@ -18,6 +20,7 @@ import (
 	"github.com/robogg133/gonion/pkg/common"
 	"github.com/robogg133/gonion/pkg/hs"
 	"github.com/robogg133/gonion/pkg/hs/capi"
+	"github.com/robogg133/gonion/pkg/path"
 	"github.com/robogg133/gonion/pkg/storage"
 )
 
@@ -49,6 +52,10 @@ type Client struct {
 // Options configures a Client.
 type Options struct {
 	Storage storage.Storage
+	// Guards is a caller-created persistent public-default manager, shared by
+	// all public traffic purposes. Required outside pinned bridge mode.
+	// Construct it with path.NewGuardManager and caller-owned durable callbacks.
+	Guards *path.GuardManager
 	// Bridge, when non-nil, overrides BOTH dialers with a pinned fixed bridge.
 	// There is no public-relay fallback, even when using DefaultOptions.
 	Bridge *BridgeOptions
@@ -58,6 +65,11 @@ type Options struct {
 	// Required unless the connection provides ExpectedRelayIdentity() [20]byte
 	// (as the built-in fallback dialer does). A raw TLS certificate is not a pin.
 	BootstrapIdentity [20]byte
+	// Authorities replaces the default nine public C Tor authority pins with an
+	// explicit caller-supplied set (private or controlled networks). Validation
+	// rules live on gonion.Conn.SetTrustedAuthorities; the set is used for a
+	// strict majority quorum and does not relax relay/bridge identity checks.
+	Authorities [][20]byte
 	// GuardDialer opens the selected guard for every traffic circuit, including
 	// onion circuits. It must honor ctx and must not substitute a different relay.
 	// Nil disables traffic circuit construction; there is no direct TCP fallback.
@@ -95,10 +107,17 @@ func defaultORDialer(ctx context.Context) (net.Conn, error) {
 }
 
 func defaultGuardDialer(ctx context.Context, guard *common.RouterStatus) (net.Conn, error) {
-	return (&net.Dialer{Timeout: 15 * time.Second}).DialContext(ctx, "tcp", net.JoinHostPort(guard.Ipv4Addr, strconv.Itoa(int(guard.ORPort))))
+	conn, err := (&net.Dialer{Timeout: 15 * time.Second}).DialContext(ctx, "tcp", net.JoinHostPort(guard.Ipv4Addr, strconv.Itoa(int(guard.ORPort))))
+	if ctx.Err() == nil && (errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.EHOSTUNREACH) || errors.Is(err, syscall.ENETUNREACH) || errors.Is(err, syscall.ETIMEDOUT)) {
+		err = &capi.GuardConnectionFailure{Err: err}
+	}
+	return conn, err
 }
 
 func (o Options) validate() error {
+	if o.Bridge == nil && o.Guards == nil {
+		return path.ErrGuardPersistence
+	}
 	if o.CircuitTTL < 0 || o.MaxCircuitUses < 0 {
 		return fmt.Errorf("embed: negative circuit pool limit")
 	}
@@ -206,18 +225,38 @@ func NewWithConn(ctx context.Context, orConn net.Conn, opts Options) (*Client, e
 	if opts.Storage != nil {
 		conn.SetStorage(opts.Storage)
 	}
-	builder := gonionBuilder{dial: opts.GuardDialer}
+	if opts.Authorities != nil {
+		if err := conn.SetTrustedAuthorities(opts.Authorities); err != nil {
+			_ = conn.Close()
+			return nil, err
+		}
+	}
+	builder := gonionBuilder{dial: opts.GuardDialer, guards: opts.Guards}
+	recoveryDial := opts.ORDialer
+	if opts.Bridge == nil && recoveryDial != nil {
+		// A built-in fallback connection carries the *selected endpoint's*
+		// explicit redial policy. An arbitrary ORDialer is never replaced
+		// unless it deliberately returned that pinned capability.
+		if pinned, ok := orConn.(interface {
+			RedialExpectedRelay(context.Context, [20]byte) (net.Conn, error)
+		}); ok {
+			recoveryDial = func(ctx context.Context) (net.Conn, error) {
+				return pinned.RedialExpectedRelay(ctx, identity)
+			}
+		}
+	}
 	if opts.Bridge != nil {
 		bridge := *opts.Bridge // Do not retain caller-mutable configuration.
-		builder.bridge, err = newBridgeState(ctx, conn, bridge.Identity)
+		recoveryDial = bridge.DialContext
+		builder.bridge, err = newBridgeState(ctx, conn, bridge)
 		if err == nil {
 			builder.dial = func(ctx context.Context, _ *common.RouterStatus) (net.Conn, error) {
 				return bridge.DialContext(ctx)
 			}
-			err = gonion.BootstrapOneConnTo(conn, &builder.bridge.descriptor.Relay)
+			err = gonion.BootstrapOneConnManaged(conn, &builder.bridge.descriptor.Relay)
 		}
 	} else {
-		err = gonion.BootstrapOneConn(conn)
+		err = gonion.BootstrapOneConnManaged(conn, nil)
 	}
 	if err != nil {
 		_ = conn.Close()
@@ -228,7 +267,7 @@ func NewWithConn(ctx context.Context, orConn net.Conn, opts Options) (*Client, e
 	}
 
 	cns := conn.Consensus()
-	if !cns.IsAuthenticated() {
+	if !cns.IsAuthenticated() || !cns.TrustedHydrated() {
 		_ = conn.Close()
 		return nil, fmt.Errorf("embed: no consensus after bootstrap")
 	}
@@ -247,11 +286,22 @@ func NewWithConn(ctx context.Context, orConn net.Conn, opts Options) (*Client, e
 		_ = conn.Close()
 		return nil, ctx.Err()
 	}
-	go c.reapLoop(conn.Context())
+	c.lifetime, c.cancel = context.WithCancel(context.Background())
+	var guard func(context.Context) (*common.RouterStatus, error)
+	if builder.bridge != nil {
+		guard = builder.bridge.guard
+	}
+	if err := conn.StartConsensusRecovery(recoveryDial, identity, guard); err != nil {
+		c.cancel()
+		_ = conn.Close()
+		return nil, err
+	}
+	go c.reapLoop(c.lifetime)
 	return c, nil
 }
 
-// Conn exposes the underlying gonion connection (for advanced use).
+// Conn exposes the initial bootstrap channel (for advanced use). Directory
+// recovery may move to a different channel; use Client.Consensus for snapshots.
 func (c *Client) Conn() *gonion.Conn { return c.conn }
 
 // Consensus returns the current bootstrapped consensus.

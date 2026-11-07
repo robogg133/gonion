@@ -51,12 +51,31 @@ func (c *Conn) BuildPath(id uint32, relays []*common.RouterStatus) (*Circuit, er
 	}
 	for i, r := range relays[1:] {
 		if err := circ.ExtendTo(r); err != nil {
+			// Path-bias accounting (pkg/path) must tell a guard-handshake
+			// failure from a failure after the guarded build committed a second
+			// hop (path-spec §7.1). Wrap the error with the hops that were open.
+			hops := circ.HopCount()
 			_ = circ.Close()
-			return nil, failf(circ.Ctx, ErrExtend, err, "extend hop %d failed", i+1)
+			return nil, &pathBiasHopsError{err: failf(circ.Ctx, ErrExtend, err, "extend hop %d failed", i+1), hops: hops}
 		}
 	}
 	return circ, nil
 }
+
+// pathBiasHopsError marks a multi-hop build that failed inside its extension
+// loop, after the guard handshake completed, and reports how many hops were
+// open at the failure. It is plumbing only: the guard reachability attribution
+// and every protocol behavior stay with the underlying error.
+type pathBiasHopsError struct {
+	err  error
+	hops int
+}
+
+// PathBiasHops is the read-only hop progress signal for path-bias accounting.
+func (e *pathBiasHopsError) PathBiasHops() int { return e.hops }
+
+func (e *pathBiasHopsError) Error() string { return e.err.Error() }
+func (e *pathBiasHopsError) Unwrap() error { return e.err }
 
 // Dial opens a stream to addr (host:port) through the circuit exit hop.
 func (c *Circuit) Dial(addr string) (net.Conn, error) {

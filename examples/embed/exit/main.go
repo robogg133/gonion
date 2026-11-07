@@ -11,19 +11,28 @@ package main
 
 import (
 	"context"
+	"flag"
 	"io"
 	"log"
 	"os"
 	"time"
 
+	"github.com/robogg133/gonion/examples/embed/internal/guardstate"
 	"github.com/robogg133/gonion/pkg/embed"
 )
 
 func main() {
+	state := flag.String("guard-state", "", "caller-owned persistent public-guard state file")
+	flag.Parse()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
 	opts := embed.DefaultOptions()
+	var err error
+	opts.Guards, err = guardstate.New(ctx, *state)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	client, err := embed.New(ctx, opts)
 	if err != nil {

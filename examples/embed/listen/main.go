@@ -6,24 +6,33 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"flag"
 	"io"
 	"log"
 	"sync/atomic"
 	"time"
 
+	"github.com/robogg133/gonion/examples/embed/internal/guardstate"
 	"github.com/robogg133/gonion/pkg/embed"
 )
 
 func main() {
-	if err := run(); err != nil {
+	state := flag.String("guard-state", "", "caller-owned persistent public-guard state file")
+	flag.Parse()
+	if err := run(*state); err != nil {
 		log.Fatal(err)
 	}
 }
 
-func run() error {
+func run(state string) error {
 	init, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
 	defer cancel()
 	opts := embed.DefaultOptions()
+	var err error
+	opts.Guards, err = guardstate.New(init, state)
+	if err != nil {
+		return err
+	}
 
 	client, err := embed.New(init, opts)
 	if err != nil {

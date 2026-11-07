@@ -53,7 +53,9 @@ func (fb *FallBackDialer) DialContext(ctx context.Context, tryipv6 bool) (net.Co
 		for _, addr := range addresses {
 			conn, err := (&net.Dialer{Timeout: 15 * time.Second}).DialContext(ctx, "tcp", addr)
 			if err == nil {
-				return &pinnedConn{Conn: conn, identity: [20]byte(raw)}, nil
+				return &pinnedConn{Conn: conn, identity: [20]byte(raw), redial: func(ctx context.Context) (net.Conn, error) {
+					return New([]shared.FallbackDir{v}).DialContext(ctx, tryipv6)
+				}}, nil
 			}
 			failures = append(failures, err)
 			if err := ctx.Err(); err != nil {
@@ -70,6 +72,16 @@ func (fb *FallBackDialer) DialContext(ctx context.Context, tryipv6 bool) (net.Co
 type pinnedConn struct {
 	net.Conn
 	identity [20]byte
+	redial   func(context.Context) (net.Conn, error)
 }
 
 func (c *pinnedConn) ExpectedRelayIdentity() [20]byte { return c.identity }
+
+// RedialExpectedRelay reconnects only the originally selected fallback. It
+// never substitutes a different fallback when that address is unavailable.
+func (c *pinnedConn) RedialExpectedRelay(ctx context.Context, expected [20]byte) (net.Conn, error) {
+	if expected == [20]byte{} || expected != c.identity || c.redial == nil {
+		return nil, fmt.Errorf("fallback: selected identity has no matching redial policy")
+	}
+	return c.redial(ctx)
+}

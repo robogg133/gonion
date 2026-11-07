@@ -2,10 +2,12 @@
 
 Experimental pure-Go Tor client and onion-v3 service. No local SOCKS proxy,
 listening socket or external Tor daemon is required by the implementation.
-**Do not use it as an anonymity boundary:** persistent guard selection and a
-full security review remain outstanding. See the detailed
+**Do not use it as an anonymity boundary:** the implementation is experimental
+and unreviewed. Persistent public guard state and guard-scoped path-bias
+accounting are mandatory, caller-owned requirements described below; two
+documented path-bias shortcuts remain (see the `shortcut:` comments and the
 [implementation status](../hs/IMPLEMENTATION_STATUS.md), including real
-interoperability results and remaining limitations.
+interoperability results and remaining limitations).
 
 ## Defaults and caller-owned policy
 
@@ -13,7 +15,9 @@ interoperability results and remaining limitations.
 streams per circuit, and supplies two **direct TCP** dialers: a fallback
 directory connection for bootstrap and a connection to the selected traffic
 guard. Zero option values use the pool defaults; negative limits are rejected.
-These are local pool policies, not Tor's complete guard/dirtiness algorithm.
+The pool limits are local pooling policies, not Tor's guard/dirtiness algorithm;
+guard identity and its persistent state are the caller's responsibility through
+`Options.Guards`.
 `Storage`, identity and listener policy are never chosen implicitly.
 
 - `ORDialer(ctx)` opens **only the bootstrap connection** and must honor ctx.
@@ -32,6 +36,17 @@ These are local pool policies, not Tor's complete guard/dirtiness algorithm.
 - `Storage` is optional and caller-owned. The client neither closes it nor
   chooses an application data directory. The caller owns any key/revision store
   separately from the public consensus cache.
+- `Authorities` replaces the default nine public C Tor authority pins with an
+  explicit caller-supplied set for every consensus authentication, including
+  recovery replacement connections. Use it only with a deliberate, deployed
+  authority list (private/dedicated/controlled networks): it must be non-empty,
+  without zeroed or duplicate fingerprints, can be set once before the first
+  consensus fetch, and consensus acceptance then requires a strict majority of
+  those pins. Relay CERTS and bridge/bootstrap identity checks are separate and
+  are never relaxed by this override.
+
+Outside bridge mode, `Options.Guards` is also mandatory
+(see [Persistent public guard state](#persistent-public-guard-state)).
 
 `New(ctx, opts)` dials and bootstraps. `NewWithConn(ctx, conn, opts)` takes ownership
 of an existing OR connection, including closing it on error; the same identity
@@ -40,10 +55,51 @@ initialization, not the lifetime of successfully returned objects.
 
 **Migration:** raw OR/custom transport callers must supply `BootstrapIdentity`;
 callers that only supplied `ORDialer` no longer need to add `GuardDialer` for
-direct traffic, because `DefaultOptions()` now supplies one, and must clear it
-when the client must not reach a guard directly. The fallback dialer carries its
+direct traffic, because `DefaultOptions()` now supplies one; they must still
+clear it when the client must not reach a guard directly, and they must supply
+`Options.Guards` unless the client uses `Bridge`. The fallback dialer carries its
 selected relay's pin automatically. Do not replace identity validation with an
 insecure TLS setting.
+
+## Persistent public guard state
+
+Guard identity persists across restarts by design: resampling a new guard
+whenever one fails would make every failure cheap to attack. Outside bridge
+mode, therefore, construction fail-closes without `Options.Guards`:
+
+- `Guards` is a caller-created `*path.GuardManager` (`path.NewGuardManager`,
+  `path.GuardPersistence{Load, Save}`) shared by every public traffic purpose of
+  the client: exit streams and all onion client/service circuits reach the
+  selected guard through this same manager; there is no stateless/random
+  guard fallback. Bridge mode does not consult or require this manager
+  (a pinned bridge is a separate policy; see [Fixed bridges](#fixed-bridges)).
+- `Load(ctx)` returning `(nil, nil)` means a genuine first run and the manager
+  samples its initial guard set. Any non-nil state is validated strictly —
+  version/instance, bounded size, unique identities, duplicate-field and
+  unknown-field JSON rejection, confirmation and path-bias consistency — and
+  malformed state fails construction; no circuit can start from corrupt state.
+- `Save(ctx, state)` must atomically replace and durably commit the whole
+  snapshot before returning success. The caller owns the storage; Gonion never
+  writes a file on its own. A failed save poisons the manager: it fails closed
+  from then on, and recovery is a new manager reconstructed from durable
+  storage.
+- Operator note: when no primary guard is reachable and the restriction allows
+  it, a build may lease a non-primary guard whose circuit stays parked in
+  NO_CIRCLIST waiting until it is promoted, the 10-minute non-primary idle
+  timeout fires, or the Dial context is canceled. This is specified behavior;
+  bound Dial contexts so callers control the visible delay.
+- The state file must be exclusively owned by the client (or protected by an
+  external caller-provided lock); concurrent managers writing one file are
+  unsupported. The example applications use
+  [`examples/embed/internal/guardstate`](../../examples/embed/internal/guardstate)
+  (temp-file, sync, rename), and tests use `internal/testutil/guardfixture`.
+- The manager implements the vendored guard specification
+  (`torspec/guard-spec`) for the public-default traffic instance:
+  sampling/removal by guard-position weights,
+  listed/unlisted/expiry transitions against the live authenticated consensus,
+  confirmed/primary priority, reachability retry and waiting. One-hop
+  bootstrap/directory recovery is deliberately outside this manager; non-default
+  or bridge state instances remain unsupported.
 
 ## Fixed bridges
 
@@ -73,13 +129,19 @@ Descriptors remain private, in memory, and refresh on demand every three hours.
 Transient refresh failure retains a still-valid snapshot; its 48-hour maximum
 age and certificate expiry fail closed for new circuit construction. Older
 publication times and changed identities are rejected. Refresh waiting honors
-cancellation. Loss/cancellation of the descriptor directory circuit is not yet
-automatically recovered; recreate the client under the same bridge policy.
+cancellation. Loss of the descriptor directory channel is recovered by the
+connection-owned recovery worker, which redials only the pinned bridge callback
+and re-verifies both pinned RSA/Ed25519 identities before reuse; without a
+redial path, on identity change, or past the retained key's expiry it fails
+closed rather than falling back to a public relay.
 
-**Scope:** one caller-selected bridge, not the persistent multi-bridge guard,
-reachability/path-bias or randomized-backoff algorithms. Descriptor `family-cert`
-is explicitly unsupported and rejected rather than ignored. No anonymity or
-censorship-resistance guarantee follows from this API.
+**Scope:** one caller-selected bridge. Bridge mode remains outside the persistent
+public guard manager: there are no bridge or multi-bridge guard-state
+instances, no guard-manager reachability/retry algorithm for the bridge (its
+recovery worker uses fixed retention/retry behavior), and no reachability or
+path-bias enforcement. Descriptor `family-cert` is explicitly unsupported and
+rejected rather than ignored. No anonymity or censorship-resistance guarantee
+follows from this API.
 
 See [`../../examples/embed/snowflake`](../../examples/embed/snowflake) for an
 end-to-end bridge example and configurable public Snowflake defaults. Snowflake
@@ -179,12 +241,18 @@ Writes use temporary files, file sync and rename. A snapshot carries its own
 original document so separate file replacement cannot mix consensus epochs.
 Use a dedicated application directory rather than a running C Tor instance's
 data directory. In-memory storage and independent snapshots are also supported.
-Snapshots returned by `Consensus()` are copies; treat an authenticated snapshot
-as immutable because its exported model fields are not sealed by the API.
+Snapshots returned by `Consensus()` are copies. Authorization reads the
+privately owned authenticated state
+(`OwnAuthenticatedHydration`/`Trusted()`), so mutating a returned copy cannot
+change trust; still treat snapshots as immutable views and do not rely on their
+exported fields for security decisions.
 
 Refresh retains the last good snapshot on failure; once it expires, new traffic
-fails closed. Automatic recovery after loss of the bootstrap refresh channel
-still needs implementation. Full `ns` server-descriptor hydration is not supported.
+fails closed. Automatic recovery after loss of the bootstrap refresh channel is
+the connection-owned recovery worker: it re-dials only the caller's explicit
+policy (pinned bridge callback, or the pinned bootstrap identity for direct
+calls) and never substitutes unrelated relays; without a redial policy it fails
+closed. Full `ns` server-descriptor hydration is not supported.
 
 ## Runnable examples and validation
 

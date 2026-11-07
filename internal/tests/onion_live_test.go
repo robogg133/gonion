@@ -12,6 +12,7 @@ import (
 
 	"github.com/robogg133/gonion/internal/fallback"
 	"github.com/robogg133/gonion/internal/shared"
+	"github.com/robogg133/gonion/internal/testutil/guardfixture"
 	"github.com/robogg133/gonion/pkg/common"
 	"github.com/robogg133/gonion/pkg/embed"
 )
@@ -23,6 +24,7 @@ func TestEmbedDialOnion(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
 	client, err := embed.New(ctx, embed.Options{
+		Guards: guardfixture.Manager(t),
 		ORDialer: func(ctx context.Context) (net.Conn, error) {
 			return fallback.New(shared.Fallbacks).DialContext(ctx, true)
 		},

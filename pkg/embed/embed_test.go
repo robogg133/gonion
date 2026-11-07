@@ -11,10 +11,12 @@ import (
 	"time"
 
 	"github.com/robogg133/gonion/internal/testutil"
+	"github.com/robogg133/gonion/internal/testutil/guardfixture"
 	"github.com/robogg133/gonion/pkg/cells/relay"
 	"github.com/robogg133/gonion/pkg/common"
 	"github.com/robogg133/gonion/pkg/hs"
 	"github.com/robogg133/gonion/pkg/hs/capi"
+	"github.com/robogg133/gonion/pkg/path"
 )
 
 // stubCirc is a no-op capi.Circ for pool tests.
@@ -69,6 +71,25 @@ type stubBuilder struct {
 	built           int
 }
 
+type testGuardBuilder struct {
+	capi.CircuitBuilder
+	guards *path.GuardManager
+}
+
+func (b testGuardBuilder) PublicGuardManager() *path.GuardManager { return b.guards }
+func (b testGuardBuilder) CircuitGuard(ctx context.Context) (*common.RouterStatus, error) {
+	if provider, ok := b.CircuitBuilder.(capi.GuardProvider); ok {
+		return provider.CircuitGuard(ctx)
+	}
+	return nil, nil
+}
+func (b testGuardBuilder) BuildPathContext(ctx context.Context, id uint32, relays []*common.RouterStatus) (capi.Circ, error) {
+	if builder, ok := b.CircuitBuilder.(capi.ContextCircuitBuilder); ok {
+		return builder.BuildPathContext(ctx, id, relays)
+	}
+	return b.CircuitBuilder.BuildPath(id, relays)
+}
+
 func (b *stubBuilder) BuildPath(id uint32, relays []*common.RouterStatus) (capi.Circ, error) {
 	b.built++
 	c := &stubCirc{hops: 3, failNextStream: b.failFirstStream}
@@ -91,7 +112,7 @@ func (n *nopConn) SetWriteDeadline(time.Time) error { return nil }
 
 func newTestClient(t *testing.T, b capi.CircuitBuilder) *Client {
 	t.Helper()
-	c := &Client{cns: testutil.Consensus(t, time.Now()), builder: b}
+	c := &Client{cns: testutil.Consensus(t, time.Now()), builder: testGuardBuilder{CircuitBuilder: b, guards: guardfixture.Manager(t)}}
 	t.Cleanup(func() { _ = c.Close() })
 	return c
 }
@@ -105,6 +126,7 @@ func TestAllocateCircuitPool(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	first := b.last
 	pc1.active = false // release the allocation before reusing it
 	// Second call should reuse the live circuit (under use cap).
 	pc2, err := c.allocateCircuit(ctx, 0)
@@ -120,7 +142,7 @@ func TestAllocateCircuitPool(t *testing.T) {
 
 	// Invalidate and ensure it is removed and a new one built.
 	c.invalidate(pc1)
-	if !pc1.circ.(*stubCirc).closed {
+	if !first.closed {
 		t.Fatal("invalidated circuit should be closed")
 	}
 	pc3, err := c.allocateCircuit(ctx, 0)
@@ -143,10 +165,11 @@ func TestReapExpired(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	circ := b.last
 	pc.active = false
 	pc.expiresAt = time.Now().Add(-time.Minute)
 	c.reapOnce()
-	if !pc.circ.(*stubCirc).closed {
+	if !circ.closed {
 		t.Fatal("expired circuit should be closed by reaper")
 	}
 	if len(c.circuits) != 0 {

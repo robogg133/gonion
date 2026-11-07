@@ -38,13 +38,15 @@ type bridgeState struct {
 	lastErr    error
 }
 
-func newBridgeState(ctx context.Context, conn *gonion.Conn, identity [20]byte) (*bridgeState, error) {
+func newBridgeState(ctx context.Context, conn *gonion.Conn, bridge BridgeOptions) (*bridgeState, error) {
+	identity := bridge.Identity
 	// CREATE_FAST is needed only to learn the initially unknown ntor key over
 	// pinned TLS. This one-hop circuit is never extended or used for traffic.
 	directory, err := conn.NewFastCircuit(2)
 	if err != nil {
 		return nil, err
 	}
+	defer directory.Close()
 	b := &bridgeState{identity: identity, lock: make(chan struct{}, 1)}
 	b.fetch = func(ctx context.Context) (*common.BridgeDescriptor, error) {
 		ctx, cancel := context.WithTimeout(ctx, time.Minute)
@@ -58,10 +60,59 @@ func newBridgeState(ctx context.Context, conn *gonion.Conn, identity [20]byte) (
 		return d, err
 	}
 	if _, err := b.guard(ctx); err != nil {
-		_ = directory.Close()
 		return nil, fmt.Errorf("embed: bridge descriptor: %w", err)
 	}
+	// Never reuse the initial CREATE_FAST circuit. Once a verified descriptor
+	// supplies ntor, every refresh uses a newly authenticated pinned channel.
+	b.fetch = func(ctx context.Context) (*common.BridgeDescriptor, error) {
+		return fetchBridgeDescriptor(ctx, bridge, b.descriptor)
+	}
 	return b, nil
+}
+
+// Called with bridgeState.lock held; the signed descriptor supplies the ntor
+// key and Ed identity. An expired key cannot authorize a new circuit.
+func fetchBridgeDescriptor(ctx context.Context, bridge BridgeOptions, previous *common.BridgeDescriptor) (*common.BridgeDescriptor, error) {
+	if previous == nil || !time.Now().Before(previous.Expires) {
+		return nil, fmt.Errorf("embed: bridge descriptor key expired; ntor recovery unavailable")
+	}
+	ctx, cancel := context.WithTimeout(ctx, time.Minute)
+	defer cancel()
+	raw, err := bridge.DialContext(ctx)
+	if err != nil {
+		if raw != nil {
+			_ = raw.Close()
+		}
+		return nil, err
+	}
+	if raw == nil {
+		return nil, fmt.Errorf("embed: bridge dialer returned nil connection")
+	}
+	if pinned, ok := raw.(interface{ ExpectedRelayIdentity() [20]byte }); ok && pinned.ExpectedRelayIdentity() != bridge.Identity {
+		_ = raw.Close()
+		return nil, fmt.Errorf("embed: bridge dialer identity pin changed")
+	}
+	stop := context.AfterFunc(ctx, func() { _ = raw.Close() })
+	defer stop() // Also interrupt a blocked ntor circuit or descriptor fetch.
+	link, err := gonion.NewConn(raw, nil, false)
+	if err != nil {
+		_ = raw.Close()
+		return nil, err
+	}
+	defer link.Close()
+	if err := link.CheckRelayIdentity(&previous.Relay); err != nil {
+		return nil, err
+	}
+	circuit, err := link.NewCircuitTo(2, &previous.Relay)
+	if err != nil {
+		return nil, err
+	}
+	defer circuit.Close()
+	descriptor, err := circuit.GetBridgeDescriptor(ctx, bridge.Identity)
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	return descriptor, err
 }
 
 func (b *bridgeState) guard(ctx context.Context) (*common.RouterStatus, error) {
@@ -86,14 +137,20 @@ func (b *bridgeState) guard(ctx context.Context) (*common.RouterStatus, error) {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		// ponytail: one configured bridge, fixed three-hour refresh/retry cadence
-		// (dir-spec 5.5 base delay); full guard reachability/backoff is separate.
+		// Retry failures while the retained ntor key is still valid; never
+		// wait for its expiry before the next attempt.
 		b.nextFetch = now.Add(3 * time.Hour)
+		if err != nil {
+			b.nextFetch = now.Add(30 * time.Minute)
+			if b.descriptor != nil && b.descriptor.Expires.Before(b.nextFetch) {
+				b.nextFetch = now.Add(b.descriptor.Expires.Sub(now) / 2)
+			}
+		}
 		b.lastErr = err
 		if err == nil {
 			b.descriptor = d
-			if d.Expires.Before(b.nextFetch) {
-				b.nextFetch = d.Expires
+			if until := d.Expires.Sub(now) / 2; until < b.nextFetch.Sub(now) {
+				b.nextFetch = now.Add(until)
 			}
 		}
 	}

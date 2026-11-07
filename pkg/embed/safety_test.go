@@ -9,13 +9,14 @@ import (
 	"time"
 
 	"github.com/robogg133/gonion/internal/testutil"
+	"github.com/robogg133/gonion/internal/testutil/guardfixture"
 	"github.com/robogg133/gonion/pkg/common"
 	"github.com/robogg133/gonion/pkg/hs/capi"
 )
 
 func TestDefaultsAndNoDirectFallback(t *testing.T) {
 	o := DefaultOptions()
-	if o.Storage != nil || o.CircuitTTL != 10*time.Minute || o.MaxCircuitUses != 100 {
+	if o.Storage != nil || o.Guards != nil || o.CircuitTTL != 10*time.Minute || o.MaxCircuitUses != 100 {
 		t.Fatal("unexpected policy defaults")
 	}
 	// The direct-TCP bootstrap and guard dialers are ordinary visible options,
@@ -91,15 +92,17 @@ func TestPoolDoesNotReuseDifferentPort(t *testing.T) {
 
 // path-spec 2.1.6 and tor-spec 5.4: lifetime expiration must drain streams.
 func TestExpiredActiveCircuitDrains(t *testing.T) {
-	c := newTestClient(t, &stubBuilder{})
+	b := &stubBuilder{}
+	c := newTestClient(t, b)
 	conn, err := c.Dial("tcp", "example.com:80")
 	if err != nil {
 		t.Fatal(err)
 	}
 	pc := c.circuits[0]
+	circ := b.last
 	pc.expiresAt = time.Now().Add(-time.Second)
 	c.reapOnce()
-	if pc.circ.(*stubCirc).closed {
+	if circ.closed {
 		t.Fatal("active stream closed at TTL")
 	}
 	next, err := c.Dial("tcp", "example.com:80")
@@ -111,7 +114,7 @@ func TestExpiredActiveCircuitDrains(t *testing.T) {
 	}
 	_ = conn.Close()
 	_ = conn.Close()
-	if !pc.circ.(*stubCirc).closed {
+	if !circ.closed {
 		t.Fatal("drained expired circuit not closed")
 	}
 	_ = next.Close()
@@ -197,7 +200,9 @@ func TestPoolRequiresAuthenticatedLiveConsensus(t *testing.T) {
 func TestBootstrapRequiresIdentityBeforeIO(t *testing.T) {
 	raw, peer := net.Pipe()
 	defer peer.Close()
-	if _, err := NewWithConn(context.Background(), raw, DefaultOptions()); err == nil || !strings.Contains(err.Error(), "identity is required") {
+	opts := DefaultOptions()
+	opts.Guards = guardfixture.Manager(t)
+	if _, err := NewWithConn(context.Background(), raw, opts); err == nil || !strings.Contains(err.Error(), "identity is required") {
 		t.Fatalf("unpinned bootstrap: %v", err)
 	}
 	if _, err := peer.Write([]byte{1}); err == nil {
@@ -211,6 +216,7 @@ func TestBootstrapHandshakeCancellation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
 	opts := DefaultOptions()
+	opts.Guards = guardfixture.Manager(t)
 	opts.BootstrapIdentity = [20]byte{1}
 	_, err := NewWithConn(ctx, raw, opts)
 	if !errors.Is(err, context.DeadlineExceeded) {

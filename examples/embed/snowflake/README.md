@@ -69,4 +69,5 @@ establish anonymity or censorship resistance.
 
 One configured bridge is supported. Full persistent multi-bridge guards,
 randomized retry/backoff, directory-channel recovery and `family-cert` server
-descriptors remain unsupported; see the embedding README and `docs/STATUS.md`.
+descriptors remain unsupported; see the embedding README and
+`pkg/hs/IMPLEMENTATION_STATUS.md`.

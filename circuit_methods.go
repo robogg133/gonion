@@ -85,7 +85,10 @@ func (c *Circuit) authenticateConsensus(ctx context.Context, candidate *common.C
 	if candidate == nil {
 		return nil, Public(ErrDirectory, "missing consensus")
 	}
-	pins := common.DefaultAuthorities()
+	pins := c.conn.trustedAuthorities
+	if len(pins) == 0 {
+		pins = common.DefaultAuthorities()
+	}
 	if verified, err := common.AuthenticateConsensus(candidate.RawDocument, candidate.AuthorityCertificates, pins, time.Now().UTC()); err == nil {
 		return verified, nil
 	}
