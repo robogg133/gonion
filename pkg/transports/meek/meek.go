@@ -7,6 +7,7 @@ package meek
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -45,12 +47,15 @@ const (
 
 // We use this RoundTripper to make all our requests. We use the defaults,
 // except we take control of the Proxy setting (notably, disabling the default
-// ProxyFromEnvironment).
-var httpRoundTripper = http.DefaultTransport.(*http.Transport).Clone()
-
-func init() {
-	httpRoundTripper.Proxy = nil
-}
+// ProxyFromEnvironment). The cloned transport keeps DefaultTransport's
+// net.Dialer.DialContext, so an HTTP request context also cancels TCP and TLS
+// establishment; the bridge must be reached directly, never through an
+// environment-configured proxy.
+var httpRoundTripper = func() *http.Transport {
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.Proxy = nil
+	return tr
+}()
 
 // RequestInfo encapsulates all the configuration used for a request-response
 // roundtrip.
@@ -64,6 +69,10 @@ type RequestInfo struct {
 	Host string
 	// The RoundTripper to use to send requests.
 	RoundTripper http.RoundTripper
+	// transport is the per-connection clone behind RoundTripper. It is kept
+	// so a failed dial or Close can release idle connections that the
+	// transport established but did not use.
+	transport *http.Transport
 }
 
 // Dial connects to a meek bridge. bridgeURL is the endpoint URL (the url=
@@ -73,7 +82,47 @@ type RequestInfo struct {
 // SNI, but the HTTP Host header in the request remains the one in bridgeURL.
 //
 // Like upstream, the bridge address on the Bridge line is ignored.
+//
+// Dial retains the historical behavior of returning immediately without
+// touching the network; the first HTTP request happens when the returned
+// connection is first read or written. Use DialContext to bound an initial
+// roundtrip with a context.
 func Dial(bridgeURL, front string) (net.Conn, error) {
+	info, err := newRequestInfo(bridgeURL, front)
+	if err != nil {
+		return nil, err
+	}
+	return start(info), nil
+}
+
+// DialContext connects to a meek bridge like Dial, but the initial HTTP
+// roundtrip is bounded by ctx. Pre-canceled contexts fail without network
+// access, and canceling during the roundtrip closes the underlying TCP/TLS
+// connection. After a successful return the connection owns its lifetime:
+// canceling ctx does not close it. Proxy settings from the environment are
+// never inherited.
+func DialContext(ctx context.Context, bridgeURL, front string) (net.Conn, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	info, err := newRequestInfo(bridgeURL, front)
+	if err != nil {
+		return nil, err
+	}
+	if err := handshake(ctx, info); err != nil {
+		info.transport.CloseIdleConnections()
+		return nil, err
+	}
+	// Cancellation that raced with a successful roundtrip still wins; a
+	// connection returned from here is independent of the caller's context.
+	if err := ctx.Err(); err != nil {
+		info.transport.CloseIdleConnections()
+		return nil, err
+	}
+	return start(info), nil
+}
+
+func newRequestInfo(bridgeURL, front string) (*RequestInfo, error) {
 	u, err := url.Parse(bridgeURL)
 	if err != nil {
 		return nil, fmt.Errorf("meek: parse url failed: %w", err)
@@ -84,31 +133,80 @@ func Dial(bridgeURL, front string) (net.Conn, error) {
 		return nil, fmt.Errorf("meek: unsupported scheme %q", u.Scheme)
 	}
 
+	// Isolate each stream's HTTP pool and make it releasable on failure or
+	// Close. Clone preserves the disabled environment proxy and the
+	// context-aware net.Dialer.
+	tr := httpRoundTripper.Clone()
 	info := &RequestInfo{
 		SessionID:    genSessionID(),
 		URL:          u,
-		RoundTripper: httpRoundTripper,
+		RoundTripper: tr,
+		transport:    tr,
 	}
 	if front != "" {
 		info.Host = info.URL.Host
 		info.URL.Host = front
 	}
+	return info, nil
+}
 
-	// The meek engine runs against one end of an in-memory duplex pipe;
-	// the caller gets the other end as its net.Conn. The pipe is
-	// synchronous, so callers should read and write concurrently (as
-	// gonion's Conn read/write loops do).
+// start runs the meek engine against one end of an in-memory duplex pipe and
+// returns the caller's end. The pipe is synchronous, so callers should read
+// and write concurrently (as gonion's Conn read/write loops do). The returned
+// connection closes its own request context on Close, aborting an in-flight
+// HTTP roundtrip.
+func start(info *RequestInfo) net.Conn {
 	inner, outer := net.Pipe()
+	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
-		copyLoop(inner, info)
-		inner.Close()
+		defer cancel()
+		_ = copyLoop(ctx, inner, info)
+		_ = inner.Close()
 	}()
-	return outer, nil
+	return &meekConn{Conn: outer, cancel: cancel, transport: info.transport}
+}
+
+type meekConn struct {
+	net.Conn
+	cancel    context.CancelFunc
+	transport *http.Transport
+	once      sync.Once
+}
+
+func (c *meekConn) Close() error {
+	c.once.Do(func() {
+		c.cancel()
+		if c.transport != nil {
+			c.transport.CloseIdleConnections()
+		}
+	})
+	return c.Conn.Close()
+}
+
+// handshake performs one empty roundtrip so DialContext can report
+// cancellation and establish the TCP/TLS connection. A session ID is fresh,
+// so the server cannot have stream data for it; the probe response is closed
+// without being forwarded.
+func handshake(ctx context.Context, info *RequestInfo) error {
+	resp, err := roundTripRetries(ctx, info.RoundTripper, func() (*http.Request, error) {
+		return makeRequest(ctx, nil, info)
+	}, maxTries)
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+		return err
+	}
+	_ = resp.Body.Close()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return nil
 }
 
 // Make an http.Request from the payload data in buf and the request metadata
 // in info.
-func makeRequest(buf []byte, info *RequestInfo) (*http.Request, error) {
+func makeRequest(ctx context.Context, buf []byte, info *RequestInfo) (*http.Request, error) {
 	var body io.Reader
 	if len(buf) > 0 {
 		// Leave body == nil when buf is empty. A nil body is an
@@ -122,7 +220,7 @@ func makeRequest(buf []byte, info *RequestInfo) (*http.Request, error) {
 		// https://bugs.torproject.org/22865.
 		body = bytes.NewReader(buf)
 	}
-	req, err := http.NewRequest("POST", info.URL.String(), body)
+	req, err := http.NewRequestWithContext(ctx, "POST", info.URL.String(), body)
 	if err != nil {
 		return nil, err
 	}
@@ -137,16 +235,20 @@ func makeRequest(buf []byte, info *RequestInfo) (*http.Request, error) {
 
 // Do a roundtrip, trying at most limit times if there is an HTTP status other
 // than 200. In case all tries result in error, returns the last error seen.
+// Cancellation interrupts both the roundtrip and the delay between retries.
 //
 // Retrying the request immediately is a bit bogus, because we don't know if the
 // remote server received our bytes or not, so we may be sending duplicates,
 // which will cause the connection to die. The alternative, though, is to just
 // kill the connection immediately. A better solution would be a system of
 // acknowledgements so we know what to resend after an error.
-func roundTripRetries(rt http.RoundTripper, makeReq func() (*http.Request, error), limit int) (*http.Response, error) {
+func roundTripRetries(ctx context.Context, rt http.RoundTripper, makeReq func() (*http.Request, error), limit int) (*http.Response, error) {
 	var resp *http.Response
 	var err error
 again:
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return nil, ctxErr
+	}
 	limit--
 	resp, err = func() (*http.Response, error) {
 		req, err := makeReq()
@@ -159,9 +261,16 @@ again:
 	// returned a status other than 200. Other kinds of errors and success
 	// with 200 always return immediately.
 	if err == nil && resp.StatusCode != http.StatusOK {
+		_ = resp.Body.Close()
 		err = fmt.Errorf("status code was %d, not %d", resp.StatusCode, http.StatusOK)
 		if limit > 0 {
-			time.Sleep(retryDelay)
+			timer := time.NewTimer(retryDelay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return nil, ctx.Err()
+			case <-timer.C:
+			}
 			goto again
 		}
 	}
@@ -170,9 +279,9 @@ again:
 
 // Send the data in buf to the remote URL, wait for a reply, and feed the reply
 // body back into conn.
-func sendRecv(buf []byte, conn net.Conn, info *RequestInfo) (int64, error) {
-	resp, err := roundTripRetries(info.RoundTripper, func() (*http.Request, error) {
-		return makeRequest(buf, info)
+func sendRecv(ctx context.Context, buf []byte, conn net.Conn, info *RequestInfo) (int64, error) {
+	resp, err := roundTripRetries(ctx, info.RoundTripper, func() (*http.Request, error) {
+		return makeRequest(ctx, buf, info)
 	}, maxTries)
 	if err != nil {
 		return 0, err
@@ -183,25 +292,33 @@ func sendRecv(buf []byte, conn net.Conn, info *RequestInfo) (int64, error) {
 
 // Repeatedly read from conn, issue HTTP requests, and write the responses back
 // to conn.
-func copyLoop(conn net.Conn, info *RequestInfo) error {
+func copyLoop(ctx context.Context, conn net.Conn, info *RequestInfo) error {
 	var interval time.Duration
 
 	ch := make(chan []byte)
+	done := make(chan struct{})
+	defer close(done)
 
-	// Read from the Conn and send byte slices on the channel.
+	// Read from the Conn and send byte slices on the channel. Select on done
+	// so this goroutine cannot outlive copyLoop when a request fails while a
+	// read result is waiting to be consumed.
 	go func() {
+		defer close(ch)
 		var buf [maxPayloadLength]byte
 		r := bufio.NewReader(conn)
 		for {
 			n, err := r.Read(buf[:])
 			b := make([]byte, n)
 			copy(b, buf[:n])
-			ch <- b
+			select {
+			case ch <- b:
+			case <-done:
+				return
+			}
 			if err != nil {
 				break
 			}
 		}
-		close(ch)
 	}()
 
 	interval = initPollInterval
@@ -215,11 +332,13 @@ loop:
 			if !ok {
 				break loop
 			}
+		case <-ctx.Done():
+			return ctx.Err()
 		case <-time.After(interval):
 			buf = nil
 		}
 
-		nw, err := sendRecv(buf, conn, info)
+		nw, err := sendRecv(ctx, buf, conn, info)
 		if err != nil {
 			return err
 		}

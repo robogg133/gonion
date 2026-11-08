@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	snowflake_client "gitlab.torproject.org/robogg133/snowflake-with-logging-setting/v2/client/lib"
 )
 
 func TestPinnedConnectionCloseAndMetadata(t *testing.T) {
@@ -106,5 +109,46 @@ func TestDialContextTransfersOwnership(t *testing.T) {
 			t.Fatal("failed dial leaked connection")
 		}
 		_ = peer.Close()
+	}
+}
+
+// TestFrontedAndUnfrontedConfigurationsAreSeparate keeps the two Snowflake
+// configuration classes distinct (E4.4): the fronted default fronts broker
+// polling over CDN domains, while UnfrontedOptions selects the direct
+// rendezvous and must still carry the mandatory bridge pin and stay silent.
+// Pre-dial validation must behave identically for both classes.
+func TestFrontedAndUnfrontedConfigurationsAreSeparate(t *testing.T) {
+	fronted := DefaultOptions()
+	unfronted := UnfrontedOptions()
+	if len(fronted.FrontDomains) == 0 || fronted.FrontDomain != "" {
+		t.Fatal("fronted defaults changed")
+	}
+	if unfronted.FrontDomains != nil || unfronted.FrontDomain != "" {
+		t.Fatal("unfronted configuration still fronts")
+	}
+	if unfronted.BrokerURL != DefaultBroker || unfronted.BridgeFingerprint != DefaultBridgeFingerprint {
+		t.Fatal("unfronted lost the broker/pin defaults")
+	}
+	if unfronted.Log == nil || unfronted.KeepLocalAddresses || unfronted.Max != 1 || len(unfronted.ICEAddresses) == 0 {
+		t.Fatal("unfronted lost silence or ICE hygiene defaults")
+	}
+	for name, cfg := range map[string]snowflake_client.ClientConfig{"fronted": fronted, "unfronted": unfronted} {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if _, err := DialContext(ctx, cfg); !errors.Is(err, context.Canceled) {
+			t.Fatalf("%s pre-dial cancellation: %v", name, err)
+		}
+		cfg.BridgeFingerprint = ""
+		if _, err := DialContext(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "fingerprint") {
+			t.Fatalf("%s accepted an unpinned bridge: %v", name, err)
+		}
+	}
+}
+
+// TestUpstreamForkRecorded pins the evidence provenance constant used by
+// transport reports.
+func TestUpstreamForkRecorded(t *testing.T) {
+	if !strings.Contains(UpstreamVersion, "aff631a5b504") {
+		t.Fatalf("upstream fork version not recorded: %q", UpstreamVersion)
 	}
 }
