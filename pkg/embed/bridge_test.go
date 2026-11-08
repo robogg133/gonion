@@ -35,9 +35,6 @@ func TestBridgeOptionsFailClosed(t *testing.T) {
 		func(o *Options) { o.Bridge.Identity = [20]byte{} },
 		func(o *Options) { o.Bridge.DialContext = nil },
 		func(o *Options) { o.BootstrapIdentity = [20]byte{2} },
-		func(o *Options) { o.IgnoreRelayCheck = true },
-		func(o *Options) { o.ORConnectionSkipRelayFingerprintCheck = true },
-		func(o *Options) { o.GuardConnectionSkipRelayFingerprintCheck = true },
 	} {
 		o := DefaultBridgeOptions(bridge)
 		modify(&o)

@@ -228,12 +228,31 @@ func (c *Client) allocateCircuit(ctx context.Context, port uint16) (*pooledCircu
 	return pc, nil
 }
 
+// buildCircuit constructs a fresh exit circuit and records the privacy-safe
+// failure class for observability (never the stream destination).
 func (c *Client) buildCircuit(ctx context.Context, cns *common.Consensus, port uint16) (capi.Circ, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	circ, _, err := capi.BuildGuardedCircuit(ctx, contextBuilder{ctx: ctx, lifetime: c.lifetime, builder: c.builder}, cns, c.nextID.Add(1), 3, port, nil, c.longLived)
+	if err != nil {
+		c.obs.countBuildFailure()
+		c.obs.logf("circuit: build failed port=%d: %v", port, firstErr(err, ctx.Err()))
+	} else {
+		c.obs.countBuilt()
+	}
 	return circ, err
+}
+
+// firstErr returns the first non-nil error so a cancellation never logs a
+// misleading wrapped transport error as the primary class.
+func firstErr(errs ...error) error {
+	for _, err := range errs {
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // invalidate marks a circuit for removal and closes it.
@@ -277,6 +296,7 @@ type gonionBuilder struct {
 	ctx    context.Context
 	bridge *bridgeState
 	guards *path.GuardManager
+	obs    *observability
 }
 
 func (b gonionBuilder) PublicGuardManager() *path.GuardManager { return b.guards }
@@ -292,8 +312,6 @@ func (b gonionBuilder) BuildPathContext(ctx context.Context, id uint32, relays [
 	b.ctx = ctx
 	return b.BuildPath(id, relays)
 }
-
-var CTXKeySkipRelayIdentityCheck = struct{}{}
 
 func (b gonionBuilder) BuildPath(id uint32, relays []*common.RouterStatus) (capi.Circ, error) {
 	if len(relays) == 0 {
@@ -313,6 +331,8 @@ func (b gonionBuilder) BuildPath(id uint32, relays []*common.RouterStatus) (capi
 		return nil, fmt.Errorf("embed: nil guard")
 	}
 	if b.bridge != nil && relays[0].NodeID != b.bridge.identity {
+		b.obs.countIdentityMismatch()
+		b.obs.logf("guard: rejected path not starting at the pinned bridge")
 		return nil, fmt.Errorf("embed: path does not start at configured bridge")
 	}
 	raw, err := b.dial(ctx, relays[0])
@@ -320,6 +340,8 @@ func (b gonionBuilder) BuildPath(id uint32, relays []*common.RouterStatus) (capi
 		if raw != nil {
 			_ = raw.Close()
 		}
+		b.obs.countGuardDialFailure()
+		b.obs.logf("guard: dial failed: %v", firstErr(err, ctx.Err()))
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
@@ -331,19 +353,23 @@ func (b gonionBuilder) BuildPath(id uint32, relays []*common.RouterStatus) (capi
 	stop := context.AfterFunc(ctx, func() { _ = raw.Close() })
 	defer stop()
 
-	// Options for the connection
-	var connOpts []gonion.ConnOption
-	if b.bridge == nil && ctx.Value(CTXKeySkipRelayIdentityCheck) != nil {
-		connOpts = append(connOpts, gonion.ConnOptionSkipRelayFingerprintCheck)
-	}
-	//
-
-	conn, err := gonion.NewConn(raw, nil, false, connOpts...)
+	// There is no skip path (E4.1): NewConn verifies the relay CERTS chain
+	// against the TLS certificate and any ExpectedRelayIdentity pin, and the
+	// channel's CERTS-authenticated RSA identity must then match the relay
+	// path selection chose. A dialer that silently substitutes another relay
+	// fails closed here.
+	conn, err := gonion.NewConn(raw, nil, false)
 	if err != nil {
 		_ = raw.Close()
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
+		return nil, err
+	}
+	if err := conn.CheckRelayFingerprint(relays[0].NodeID); err != nil {
+		_ = conn.Close()
+		b.obs.countIdentityMismatch()
+		b.obs.logf("guard: relay identity does not match the selected guard")
 		return nil, err
 	}
 	stopBuild := context.AfterFunc(ctx, func() { _ = conn.Close() })

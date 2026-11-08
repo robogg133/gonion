@@ -38,8 +38,13 @@ func (c *Client) Listen(ctx context.Context, opts ServiceOptions) (*Listener, er
 	if !ok {
 		return nil, fmt.Errorf("embed: Listen requires a context-aware circuit builder")
 	}
+	c.obs.logf("listener: initialization starting")
 	inner, err := hs.Listen(ctx, contextBuilder{ctx: ctx, lifetime: c.lifetime, builder: builder}, c.Consensus, opts)
 	if err != nil {
+		// The error text is deliberately not logged: hidden-service setup
+		// errors can reference introduction/rendezvous material. The caller
+		// receives the full error, and Stats exposes ListenerFaults.
+		c.obs.logf("listener: initialization failed")
 		return nil, err
 	}
 	l := &Listener{Listener: inner, client: c}
@@ -57,6 +62,7 @@ func (c *Client) Listen(ctx context.Context, opts ServiceOptions) (*Listener, er
 	}
 	c.listeners[l] = struct{}{}
 	c.mu.Unlock()
+	c.obs.logf("listener: registered")
 	return l, nil
 }
 
@@ -66,6 +72,7 @@ func (l *Listener) Close() error {
 		l.client.mu.Lock()
 		delete(l.client.listeners, l)
 		l.client.mu.Unlock()
+		l.client.obs.logf("listener: closed")
 	})
 	return nil
 }
@@ -73,6 +80,7 @@ func (l *Listener) Close() error {
 // Shutdown also closes already accepted streams. Client.Close calls it for
 // active listeners and cancels circuits belonging to previously closed ones.
 func (l *Listener) Shutdown() error {
+	l.client.obs.logf("listener: shutdown")
 	_ = l.Close()
 	return l.Listener.Shutdown()
 }

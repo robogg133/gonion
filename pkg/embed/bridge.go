@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"sync"
 	"time"
 
 	gonion "github.com/robogg133/gonion"
@@ -36,9 +37,16 @@ type bridgeState struct {
 	nextFetch  time.Time
 	fetch      func(context.Context) (*common.BridgeDescriptor, error)
 	lastErr    error
+	obs        *observability
+
+	// snapshotMu guards the Stats-visible fields only; the refresh schedule
+	// itself stays under the lock channel.
+	snapshotMu        sync.Mutex
+	observedValid     bool
+	observedNextFetch time.Time
 }
 
-func newBridgeState(ctx context.Context, conn *gonion.Conn, bridge BridgeOptions) (*bridgeState, error) {
+func newBridgeState(ctx context.Context, conn *gonion.Conn, bridge BridgeOptions, obs *observability) (*bridgeState, error) {
 	identity := bridge.Identity
 	// CREATE_FAST is needed only to learn the initially unknown ntor key over
 	// pinned TLS. This one-hop circuit is never extended or used for traffic.
@@ -47,7 +55,7 @@ func newBridgeState(ctx context.Context, conn *gonion.Conn, bridge BridgeOptions
 		return nil, err
 	}
 	defer directory.Close()
-	b := &bridgeState{identity: identity, lock: make(chan struct{}, 1)}
+	b := &bridgeState{identity: identity, lock: make(chan struct{}, 1), obs: obs}
 	b.fetch = func(ctx context.Context) (*common.BridgeDescriptor, error) {
 		ctx, cancel := context.WithTimeout(ctx, time.Minute)
 		defer cancel()
@@ -147,14 +155,19 @@ func (b *bridgeState) guard(ctx context.Context) (*common.RouterStatus, error) {
 			}
 		}
 		b.lastErr = err
-		if err == nil {
+		if err != nil {
+			b.obs.countBridgeRefreshFailure()
+			b.obs.logf("bridge: descriptor refresh failed: %v", err)
+		} else {
 			b.descriptor = d
+			b.obs.logf("bridge: descriptor refreshed")
 			if until := d.Expires.Sub(now) / 2; until < b.nextFetch.Sub(now) {
 				b.nextFetch = now.Add(until)
 			}
 		}
 	}
 	if b.descriptor == nil || !time.Now().Before(b.descriptor.Expires) {
+		b.observe()
 		if b.lastErr != nil {
 			return nil, b.lastErr
 		}
@@ -162,5 +175,24 @@ func (b *bridgeState) guard(ctx context.Context) (*common.RouterStatus, error) {
 	}
 	// Isolate the authenticated snapshot from selectors and caller dialers.
 	copy := (&common.Consensus{RelayInformation: []common.RouterStatus{b.descriptor.Relay}}).Clone()
+	b.observe()
 	return &copy.RelayInformation[0], nil
+}
+
+// observe publishes the current retention state for Stats. Called with the
+// refresh lock held.
+func (b *bridgeState) observe() {
+	valid := b.descriptor != nil && time.Now().Before(b.descriptor.Expires)
+	b.snapshotMu.Lock()
+	b.observedValid = valid
+	b.observedNextFetch = b.nextFetch
+	b.snapshotMu.Unlock()
+}
+
+// snapshot is the privacy-safe guard-state view for Stats: validity and the
+// next scheduled refresh only, never key material or descriptor plaintext.
+func (b *bridgeState) snapshot() (valid bool, nextFetch time.Time) {
+	b.snapshotMu.Lock()
+	defer b.snapshotMu.Unlock()
+	return b.observedValid, b.observedNextFetch
 }
