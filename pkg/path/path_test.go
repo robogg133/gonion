@@ -2,7 +2,9 @@ package path
 
 import (
 	"bytes"
+	"encoding/hex"
 	"math/big"
+	"strings"
 	"testing"
 	"time"
 
@@ -235,5 +237,243 @@ func TestConflictsFilteredBeforeWeightedSelection(t *testing.T) {
 		if err != nil || r != &sl.list[1] {
 			t.Fatalf("eligible low-bandwidth guard lost: %v", err)
 		}
+	}
+}
+
+// path-spec §2.2 / dir-spec §3.4.1 adversarial weight vectors: an explicitly
+// signed zero or negative weight is authoritative (it excludes the position's
+// candidates instead of falling back to raw bandwidth), malformed
+// consensus-parameter scales clamp before use, and legal-scale products that
+// exceed 64 bits stay in big.Int arithmetic.
+func TestAdversarialWeightHandling(t *testing.T) {
+	t.Run("negative-middle-weights-exclude-candidates", func(t *testing.T) {
+		sl := New(trustedTestConsensus(t, time.Now()), false)
+		sl.weight.Wmm, sl.weight.Wmg, sl.weight.Wme, sl.weight.Wmd = -1, -1, -1, -1
+		if err := sl.SelectRandomCircuit(3, 80); err == nil {
+			t.Fatal("negative middle weights fell back to bandwidth")
+		}
+	})
+	t.Run("negative-guard-weights-exclude-candidates", func(t *testing.T) {
+		sl := New(trustedTestConsensus(t, time.Now()), false)
+		sl.weight.Wgg, sl.weight.Wgd = -1, -1
+		if err := sl.SelectRandomCircuit(3, 80); err == nil {
+			t.Fatal("negative guard weights fell back to bandwidth")
+		}
+	})
+	t.Run("negative-exit-weights-exclude-candidates", func(t *testing.T) {
+		sl := New(trustedTestConsensus(t, time.Now()), false)
+		sl.weight.Wee, sl.weight.Wed = -1, -1
+		if err := sl.SelectRandomCircuit(3, 80); err == nil {
+			t.Fatal("negative exit weights fell back to bandwidth")
+		}
+	})
+	t.Run("zero-wme-drops-exit-only-middles", func(t *testing.T) {
+		var flags [15]bool
+		flags[common.FLAG_EXIT] = true
+		weights := common.BandWidthWeight{Wmm: 10000, Wmg: 10000, Wme: 0, Wmd: 10000}
+		if middleWeightFunc(flags, weights) != 0 {
+			t.Fatal("explicit zero Wme ignored")
+		}
+	})
+	t.Run("bwweightscale-clamps-to-positive", func(t *testing.T) {
+		sl := New(trustedTestConsensus(t, time.Now()), false)
+		sl.consensus.Params = map[string]int32{"bwweightscale": -7}
+		for i := range sl.list {
+			sl.list[i].StatusFlags[common.FLAG_V2DIR] = false
+		}
+		r, err := sl.selectRelay(middleValideFunc, middleWeightFunc, 0)
+		if err != nil || r == nil {
+			t.Fatalf("unclamped bwweightscale excluded every candidate: %v", err)
+		}
+	})
+	t.Run("overflow-scale-values", func(t *testing.T) {
+		sl := New(trustedTestConsensus(t, time.Now()), false)
+		sl.list[0].BandWidth = ^uint32(0)
+		sl.weight.Wmm, sl.weight.Wmg, sl.weight.Wme, sl.weight.Wmd = 1<<30, 1<<30, 1<<30, 1<<30
+		for i := 0; i < 10; i++ {
+			if _, err := sl.selectRelay(middleValideFunc, middleWeightFunc, 0); err != nil {
+				t.Fatalf("overflow-scale pick failed: %v", err)
+			}
+		}
+	})
+}
+
+// path-spec §2.2.1: BadExit and missing-Exit relays are never exit candidates,
+// and a relay missing authenticated keys is never a candidate for any position.
+func TestForbiddenExitValidationVectors(t *testing.T) {
+	cns := trustedTestConsensus(t, time.Now())
+	base := cns.RelayInformation[0]
+	var plain [15]bool
+	exitOnly := base
+	exitOnly.StatusFlags = plain
+	exitOnly.StatusFlags[common.FLAG_EXIT] = true
+	if !exitValidateFunc(exitOnly) {
+		t.Fatal("plain exit rejected")
+	}
+	badExit := exitOnly
+	badExit.StatusFlags[common.FLAG_BAD_EXIT] = true
+	if exitValidateFunc(badExit) {
+		t.Fatal("BadExit accepted as exit")
+	}
+	noExit := base
+	noExit.StatusFlags = plain
+	if exitValidateFunc(noExit) {
+		t.Fatal("non-Exit accepted as exit")
+	}
+	keyless := exitOnly
+	keyless.NTorOnionKey = nil
+	if exitValidateFunc(keyless) || middleValideFunc(keyless) {
+		t.Fatal("keyless relay accepted")
+	}
+	guard := base
+	guard.StatusFlags = plain
+	guard.StatusFlags[common.FLAG_GUARD], guard.StatusFlags[common.FLAG_FAST] = true, true
+	guard.StatusFlags[common.FLAG_STABLE], guard.StatusFlags[common.FLAG_V2DIR] = true, true
+	if !guardValideFunc(guard) {
+		t.Fatal("guard-spec GUARDS flags rejected")
+	}
+	for _, flag := range []uint8{common.FLAG_GUARD, common.FLAG_FAST, common.FLAG_STABLE, common.FLAG_V2DIR} {
+		guard.StatusFlags = plain
+		guard.StatusFlags[common.FLAG_GUARD], guard.StatusFlags[common.FLAG_FAST] = true, true
+		guard.StatusFlags[common.FLAG_STABLE], guard.StatusFlags[common.FLAG_V2DIR] = true, true
+		guard.StatusFlags[flag] = false
+		if guardValideFunc(guard) {
+			t.Fatalf("guard accepted without flag %d", flag)
+		}
+	}
+	// Selector level: a sole BadExit candidate cannot carry an exit position.
+	sl := New(cns, false)
+	allPorts := [65536 / 8]byte{}
+	for i := range allPorts {
+		allPorts[i] = 0xFF
+	}
+	sl.list[0].StatusFlags = plain
+	sl.list[0].StatusFlags[common.FLAG_EXIT] = true
+	sl.list[0].StatusFlags[common.FLAG_BAD_EXIT] = true
+	sl.list[0].StatusFlags[common.FLAG_RUNNING], sl.list[0].StatusFlags[common.FLAG_VALID] = true, true
+	sl.list[0].Ports = allPorts
+	sl.list = sl.list[:1]
+	if _, err := sl.SelectTail(443); err == nil {
+		t.Fatal("BadExit selected as exit")
+	}
+	sl.list[0].StatusFlags[common.FLAG_BAD_EXIT] = false
+	if _, err := sl.SelectTail(443); err != nil {
+		t.Fatalf("eligible exit rejected: %v", err)
+	}
+}
+
+// path-spec §2.2: exit policies gate exit positions only. An empty policy
+// rejects every port at an exit position, while a port-0 tail (HS circuits)
+// never consults exit policy at all.
+func TestPortPolicySelectionVectors(t *testing.T) {
+	sl := New(trustedTestConsensus(t, time.Now()), false)
+	relay := sl.list[0]
+	relay.StatusFlags = [15]bool{}
+	relay.StatusFlags[common.FLAG_EXIT] = true
+	relay.StatusFlags[common.FLAG_RUNNING], relay.StatusFlags[common.FLAG_VALID] = true, true
+	relay.Ports = [65536 / 8]byte{} // reject *:*
+	sl.list = []common.RouterStatus{relay}
+	if _, err := sl.SelectTail(443); err == nil {
+		t.Fatal("exit with rejecting policy selected")
+	}
+	allPorts := [65536 / 8]byte{}
+	for i := range allPorts {
+		allPorts[i] = 0xFF
+	}
+	sl.list[0].Ports = allPorts
+	if r, err := sl.SelectTail(443); err != nil || r == nil {
+		t.Fatalf("policy-allowing exit rejected: %v", err)
+	}
+	// Port 0 selects a non-exit final hop without consulting policy.
+	sl.list[0].Ports = [65536 / 8]byte{}
+	sl.list[0].StatusFlags[common.FLAG_EXIT] = false
+	if r, err := sl.SelectTail(0); err != nil || r == nil {
+		t.Fatalf("port-0 tail wrongly policy-gated: %v", err)
+	}
+}
+
+// path-spec §2.2 stable/running requirements: long-lived selection keeps only
+// Stable relays, ordinary selection keeps all of them, and no selection ever
+// returns a non-Running or non-Valid relay.
+func TestStableAndRunningFlagVectors(t *testing.T) {
+	cns := trustedTestConsensus(t, time.Now())
+	unstable := func(sl *Selector) {
+		for i := range sl.list {
+			sl.list[i].StatusFlags[common.FLAG_STABLE] = false
+		}
+	}
+	sl := New(cns, true)
+	for i := 1; i < len(sl.list); i++ {
+		sl.list[i].StatusFlags[common.FLAG_STABLE] = false
+	}
+	r, err := sl.selectRelay(middleValideFunc, middleWeightFunc, 0)
+	if err != nil || r != &sl.list[0] {
+		t.Fatalf("long-lived pick %v, want the only stable relay: %v", r, err)
+	}
+	sl = New(cns, false)
+	unstable(sl)
+	if _, err := sl.selectRelay(middleValideFunc, middleWeightFunc, 0); err != nil {
+		t.Fatalf("unstable relay excluded without long-live: %v", err)
+	}
+	sl = New(cns, true)
+	unstable(sl)
+	if _, err := sl.selectRelay(middleValideFunc, middleWeightFunc, 0); err == nil {
+		t.Fatal("long-lived selection returned a non-Stable relay")
+	}
+	sl = New(cns, false)
+	for i := range sl.list {
+		sl.list[i].StatusFlags[common.FLAG_RUNNING] = false
+	}
+	if _, err := sl.selectRelay(middleValideFunc, middleWeightFunc, 0); err == nil {
+		t.Fatal("non-Running relay selected")
+	}
+	sl = New(cns, false)
+	for i := range sl.list {
+		sl.list[i].StatusFlags[common.FLAG_VALID] = false
+	}
+	if _, err := sl.selectRelay(middleValideFunc, middleWeightFunc, 0); err == nil {
+		t.Fatal("non-Valid relay selected")
+	}
+}
+
+// Selection must refuse an authenticated but unhydrated consensus: parsed
+// signature state without digest-bound relay keys is not usable directory
+// state (D2.4 "never uses unauthenticated state").
+func TestSelectionRejectsUnhydratedConsensus(t *testing.T) {
+	input := testutil.Consensus(t, time.Now())
+	// Rebuild the same signed fixture through AuthenticateConsensus only —
+	// the state a client holds after signature verification but before
+	// OwnAuthenticatedHydration has bound relay keys to descriptor digests.
+	// The authority pin comes from the fixture certificate, the same value
+	// internal/testutil pins (sha1 over the PKCS#1 identity key).
+	const marker = "fingerprint "
+	certs := string(input.AuthorityCertificates)
+	idx := strings.Index(certs, marker)
+	if idx < 0 {
+		t.Fatal("fixture certificate missing fingerprint")
+	}
+	line := certs[idx+len(marker):]
+	if nl := strings.IndexAny(line, "\r\n"); nl >= 0 {
+		line = line[:nl]
+	}
+	decoded, err := hex.DecodeString(strings.TrimSpace(line))
+	if err != nil || len(decoded) != 20 {
+		t.Fatalf("fixture authority fingerprint: %v", err)
+	}
+	var pin [20]byte
+	copy(pin[:], decoded)
+	auth, err := common.AuthenticateConsensus(input.RawDocument, input.AuthorityCertificates, [][20]byte{pin}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !auth.IsAuthenticated() || auth.TrustedHydrated() {
+		t.Fatal("fixture must be authenticated and unhydrated")
+	}
+	sl := New(auth, false)
+	if _, err := sl.selectRelay(middleValideFunc, middleWeightFunc, 0); err == nil {
+		t.Fatal("unhydrated consensus supplied selection candidates")
+	}
+	if err := sl.SelectRandomCircuit(3, 443); err == nil {
+		t.Fatal("unhydrated consensus built a path")
 	}
 }

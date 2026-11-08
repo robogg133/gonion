@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -599,5 +600,256 @@ func TestPathBiasCloseEventLostOnFailedSave(t *testing.T) {
 	// The poisoned manager refuses further work (fail-closed, no silent loss).
 	if _, err := m.Select(context.Background(), cns, nil); err == nil {
 		t.Fatal("poisoned manager still selected a guard")
+	}
+}
+
+// probeWatchCircuit counts stream attachments so tests can prove that no
+// path-spec §7.2 close-time probe is ever sent through this circuit API: the
+// END-echo probe cannot be verified here (no END payload, no structured END
+// result, no interruptible probe deadline), so a bare usage attempt at close
+// must classify directly and conservatively as a usage failure instead.
+type probeWatchCircuit struct {
+	*guardTestCircuit
+	wmu     sync.Mutex
+	streams int
+}
+
+func (c *probeWatchCircuit) NewStream(target string, hopDest int) (Stream, error) {
+	c.wmu.Lock()
+	c.streams++
+	c.wmu.Unlock()
+	return c.guardTestCircuit.NewStream(target, hopDest)
+}
+
+func (c *probeWatchCircuit) streamCount() int {
+	c.wmu.Lock()
+	defer c.wmu.Unlock()
+	return c.streams
+}
+
+type probeWatchBuilder struct {
+	guardTestBuilder
+	watch *probeWatchCircuit
+}
+
+func (b *probeWatchBuilder) BuildPath(_ uint32, relays []*common.RouterStatus) (Circ, error) {
+	b.selected = relays[0].NodeID
+	if b.resultErr != nil {
+		return nil, b.resultErr
+	}
+	return b.watch, nil
+}
+
+// path-spec §7.2 outcomes without the END-echo probe: the probe stream is
+// never sent (neither at client close nor at a premature close), and the bare
+// usage attempt is therefore counted as a usage failure — never as a success.
+func TestPathBiasEndEchoProbeUnavailableClassifiesConservatively(t *testing.T) {
+	t.Run("client-close-bare-attempt", func(t *testing.T) {
+		cns := testutil.Consensus(t, time.Now())
+		m, snap := testGuardManager(t, nil)
+		life, cancel := context.WithCancel(context.Background())
+		inner := &guardTestCircuit{ctx: life, cancel: cancel}
+		watch := &probeWatchCircuit{guardTestCircuit: inner}
+		b := &probeWatchBuilder{guardTestBuilder: guardTestBuilder{guards: m}, watch: watch}
+		w, _, err := BuildGuardedCircuit(context.Background(), b, cns, 1, 3, 80, nil, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		id := b.selected
+		if _, err := w.NewStream("dest.example.invalid", 1); err == nil {
+			t.Fatal("expected stream error")
+		}
+		if got := watch.streamCount(); got != 1 {
+			t.Fatalf("usage attempts = %d, want 1", got)
+		}
+		if err := w.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if got := watch.streamCount(); got != 1 {
+			t.Fatalf("close sent %d streams, want 0 additional (no §7.2 probe)", got-1)
+		}
+		want := path.GuardPathBias{CircAttempts: 1, CircSuccesses: 1, UseAttempts: 1, UnusableCircuits: 1}
+		if got := biasRecord(snap(), id); got != want {
+			t.Fatalf("counters %+v, want %+v", got, want)
+		}
+	})
+	t.Run("premature-death-not-probed", func(t *testing.T) {
+		cns := testutil.Consensus(t, time.Now())
+		m, snap := testGuardManager(t, nil)
+		life, cancel := context.WithCancel(context.Background())
+		inner := &guardTestCircuit{ctx: life, cancel: cancel}
+		watch := &probeWatchCircuit{guardTestCircuit: inner}
+		b := &probeWatchBuilder{guardTestBuilder: guardTestBuilder{guards: m}, watch: watch}
+		w, _, err := BuildGuardedCircuit(context.Background(), b, cns, 1, 3, 80, nil, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.NewStream("dest.example.invalid", 1); err == nil {
+			t.Fatal("expected stream error")
+		}
+		cancel()
+		deadline := time.Now().Add(2 * time.Second)
+		for biasRecord(snap(), b.selected).UnusableCircuits != 1 {
+			if time.Now().After(deadline) {
+				t.Fatal("premature close was not accounted")
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		// path-spec §7.2: prematurely closed circuits are not probed.
+		if got := watch.streamCount(); got != 1 {
+			t.Fatalf("premature close sent %d streams total, want 1 (no probe)", got)
+		}
+		if err := w.Close(); err != nil {
+			t.Fatal(err)
+		}
+		want := path.GuardPathBias{CircAttempts: 1, CircSuccesses: 1, UseAttempts: 1, UnusableCircuits: 1}
+		if got := biasRecord(snap(), b.selected); got != want {
+			t.Fatalf("counters %+v after client close, want %+v", got, want)
+		}
+	})
+	t.Run("close-without-usage-never-attaches", func(t *testing.T) {
+		cns := testutil.Consensus(t, time.Now())
+		m, _ := testGuardManager(t, nil)
+		life, cancel := context.WithCancel(context.Background())
+		inner := &guardTestCircuit{ctx: life, cancel: cancel}
+		watch := &probeWatchCircuit{guardTestCircuit: inner}
+		b := &probeWatchBuilder{guardTestBuilder: guardTestBuilder{guards: m}, watch: watch}
+		w, _, err := BuildGuardedCircuit(context.Background(), b, cns, 1, 3, 80, nil, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := w.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if got := watch.streamCount(); got != 0 {
+			t.Fatalf("unused close attached %d streams", got)
+		}
+	})
+}
+
+// All HS circuit purposes through the guarded seam: the counted purpose
+// persists construction and usage counters, the excluded purposes persist
+// none, and every purpose still completes the guard lifecycle (durable
+// confirmation) exactly as C's pathbias_should_count separates accounting
+// from guard selection.
+func TestGuardedSeamPurposeMatrix(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		purpose path.BuildPurpose
+		counted bool
+	}{
+		{"counted", path.PurposeCounted, true},
+		{"rendezvous-join-excluded", path.PurposeRendezvousJoin, false},
+		{"client-intro-excluded", path.PurposeClientIntro, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w, _, id, snap := guardedTestCircuitPurpose(t, tc.purpose)
+			if _, err := w.NewStream("dest.example.invalid", 1); err == nil {
+				t.Fatal("expected stream error")
+			}
+			if err := w.Close(); err != nil {
+				t.Fatal(err)
+			}
+			want := path.GuardPathBias{}
+			if tc.counted {
+				want = path.GuardPathBias{CircAttempts: 1, CircSuccesses: 1, UseAttempts: 1, UnusableCircuits: 1}
+			}
+			if got := biasRecord(snap(), id); got != want {
+				t.Fatalf("counters %+v, want %+v", got, want)
+			}
+			confirmed := false
+			for _, g := range snap().Guards {
+				if g.Identity == id && g.ConfirmedIndex != 0 {
+					confirmed = true
+				}
+			}
+			if !confirmed {
+				t.Fatal("guard lifecycle skipped confirmation for this purpose")
+			}
+		})
+	}
+}
+
+// A pinned bridge must replace the public guard entirely: the manager is
+// never consulted, never written, and the fixed first hop survives selection
+// with the same /16 diversity the public path enforces (path-spec §6).
+type bridgeFixedBuilder struct {
+	guardTestBuilder
+	bridge *common.RouterStatus
+}
+
+func (b *bridgeFixedBuilder) CircuitGuard(context.Context) (*common.RouterStatus, error) {
+	return b.bridge, nil
+}
+
+func TestBridgeFixedGuardBypassesPublicGuardState(t *testing.T) {
+	cns := testutil.Consensus(t, time.Now())
+	life, cancel := context.WithCancel(context.Background())
+	c := &guardTestCircuit{ctx: life, cancel: cancel}
+	m, _ := testGuardManager(t, func(int) {
+		t.Error("pinned bridge build wrote public guard state")
+	})
+	bridge := common.CloneRouter(&cns.RelayInformation[5])
+	b := &bridgeFixedBuilder{guardTestBuilder: guardTestBuilder{guards: m, circ: c}, bridge: bridge}
+	got, relays, err := BuildGuardedCircuit(context.Background(), b, cns, 1, 3, 80, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if relays[0].NodeID != bridge.NodeID {
+		t.Fatalf("bridge replaced by hop %x", relays[0].NodeID)
+	}
+	prefix := bridge.Ipv4Addr[:strings.LastIndex(bridge.Ipv4Addr, ".")+1]
+	for _, hop := range relays[1:] {
+		if hop.NodeID == bridge.NodeID || strings.HasPrefix(hop.Ipv4Addr, prefix) {
+			t.Fatalf("bridge diversity violated by %s", hop.Ipv4Addr)
+		}
+	}
+	if err := got.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Explicit-target metadata through the guarded seam: the descriptor-shaped
+// tail keeps its authenticated onion key and ordered link-specifier block,
+// gains the consensus family (link specifiers carry none), never mutates the
+// caller's value, and the guard position respects the target's family.
+func TestGuardedSeamExplicitTargetMetadata(t *testing.T) {
+	cns := testutil.ConsensusWithFamily(t, time.Now(), 0, 5)
+	life, cancel := context.WithCancel(context.Background())
+	c := &guardTestCircuit{ctx: life, cancel: cancel}
+	m, _ := testGuardManager(t, nil)
+	b := &guardTestBuilder{guards: m, circ: c}
+	target := common.CloneRouter(&cns.RelayInformation[5])
+	target.Family = nil // INTRODUCE2/link specifiers carry no family list
+	target.LinkSpecifiers = []byte{1, 99, 1, 42}
+	got, relays, err := BuildGuardedCircuit(context.Background(), b, cns, 1, 3, 0, target, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tail := relays[2]
+	if tail.NodeID != target.NodeID {
+		t.Fatalf("tail %x, want explicit target", tail.NodeID)
+	}
+	if len(tail.Family) == 0 {
+		t.Fatal("consensus family missing on explicit target")
+	}
+	if !bytes.Equal(tail.LinkSpecifiers, target.LinkSpecifiers) || !tail.NTorOnionKey.Equal(target.NTorOnionKey) {
+		t.Fatal("authenticated target wire metadata replaced")
+	}
+	if len(target.Family) != 0 {
+		t.Fatal("caller target mutated")
+	}
+	if relays[0].NodeID == cns.RelayInformation[0].NodeID || relays[0].NodeID == cns.RelayInformation[5].NodeID {
+		t.Fatalf("guard %x conflicts with the target family", relays[0].NodeID)
+	}
+	if err := got.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// An Ed25519 identity conflict on the tail is rejected before building.
+	conflict := common.CloneRouter(target)
+	conflict.IdEd25519 = bytes.Clone(conflict.IdEd25519)
+	conflict.IdEd25519[0] ^= 1
+	if _, _, err := BuildGuardedCircuit(context.Background(), b, cns, 1, 3, 0, conflict, false); err == nil {
+		t.Fatal("conflicting target identity accepted")
 	}
 }
