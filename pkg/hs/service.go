@@ -63,6 +63,51 @@ type serviceDescriptor struct {
 	directorySet               [32]byte
 }
 
+// Per-period retry pacing for an unavailable directory or introduction relay
+// (an audited per-minute failure storm). The delay doubles per consecutive
+// failure up to these caps, and a successful attempt or a changed responsible
+// HSDir set resets it immediately.
+const (
+	rebuildBackoffBase  = 2 * time.Minute
+	rebuildBackoffLimit = 30 * time.Minute
+	publishBackoffBase  = 5 * time.Minute
+	publishBackoffLimit = 2 * time.Hour
+)
+
+// periodRetry is the maintenance retry state for one descriptor period. It is
+// present only after a failed attempt. cause captures the responsible HSDir
+// set at that failure; a different set means a material directory change that
+// clears the backoff immediately. Only the maintenance goroutine touches it.
+type periodRetry struct {
+	cause        [32]byte
+	nextRebuild  time.Time // introduction re-establishment gate
+	rebuildDelay time.Duration
+	rebuildErr   error
+	nextPublish  time.Time // descriptor upload gate
+	publishDelay time.Duration
+	publishErr   error
+}
+
+// retryDelay grows the delay exponentially per consecutive failure up to the
+// limit, then hides that growth behind a uniform half-jitter so concurrent
+// services do not retry in phase. A crypto/rand failure keeps the
+// deterministic (still exponentially bounded) delay.
+func retryDelay(prev time.Duration, base, limit time.Duration) time.Duration {
+	if prev < base || prev >= limit {
+		prev = base
+	}
+	next := prev * 2
+	if next < base || next > limit {
+		next = limit
+	}
+	half := next / 2
+	jitter, err := rand.Int(rand.Reader, big.NewInt(int64(half)))
+	if err != nil {
+		return next
+	}
+	return half + time.Duration(jitter.Int64())
+}
+
 // Listener accepts Tor streams directly. It never binds a local socket.
 // Close preserves accepted connections; Shutdown also terminates those streams.
 // Local ceilings: 64 queued connections, 32 rendezvous circuits, and 16 active
@@ -89,6 +134,20 @@ type Listener struct {
 	descriptors map[descriptorPeriod]*serviceDescriptor
 	retired     []*serviceDescriptor
 	revisions   map[[32]byte]uint64
+	retries     map[descriptorPeriod]periodRetry
+	// maintenanceTick lets tests drive the renewal loop without real intervals;
+	// a live listener uses the minute ticker when it is nil.
+	maintenanceTick <-chan time.Time
+	// clock lets tests pin the renewal wall clock (SRV/period grid). A nil
+	// clock uses the system time; production listeners never set it.
+	clock func() time.Time
+}
+
+func (l *Listener) now() time.Time {
+	if l.clock != nil {
+		return l.clock()
+	}
+	return time.Now()
 }
 
 // Listen waits for three introduction points per active descriptor and attempts
@@ -108,7 +167,7 @@ func Listen(ctx context.Context, builder capi.ContextCircuitBuilder, consensus f
 	opts.Identity = bytes.Clone(opts.Identity)
 	host := (&onion.OnionHostname{Pk: [32]byte(opts.Identity[32:]), Version: 3}).String()
 	life, cancel := context.WithCancel(context.WithoutCancel(ctx))
-	l := &Listener{ctx: life, cancel: cancel, address: serviceAddress(net.JoinHostPort(host, strconv.Itoa(int(opts.Port)))), opts: opts, builder: builder, consensus: consensus, incoming: make(chan net.Conn, 64), slots: make(chan struct{}, 32), introCircuits: make(map[capi.Circ]struct{}), rendezvous: make(map[capi.ServiceCirc]struct{}), descriptors: make(map[descriptorPeriod]*serviceDescriptor), revisions: make(map[[32]byte]uint64)}
+	l := &Listener{ctx: life, cancel: cancel, address: serviceAddress(net.JoinHostPort(host, strconv.Itoa(int(opts.Port)))), opts: opts, builder: builder, consensus: consensus, incoming: make(chan net.Conn, 64), slots: make(chan struct{}, 32), introCircuits: make(map[capi.Circ]struct{}), rendezvous: make(map[capi.ServiceCirc]struct{}), descriptors: make(map[descriptorPeriod]*serviceDescriptor), revisions: make(map[[32]byte]uint64), retries: make(map[descriptorPeriod]periodRetry)}
 	stop := context.AfterFunc(ctx, func() { _ = l.Shutdown() })
 	err := l.renew(ctx)
 	stopped := stop()
@@ -208,13 +267,17 @@ func (l *Listener) maintain() {
 			l.retire(d)
 		}
 	}()
-	ticker := time.NewTicker(time.Minute)
-	defer ticker.Stop()
+	ticks := l.maintenanceTick
+	if ticks == nil {
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		ticks = ticker.C
+	}
 	for {
 		select {
 		case <-l.ctx.Done():
 			return
-		case <-ticker.C:
+		case <-ticks:
 			ctx, cancel := context.WithTimeout(l.ctx, 3*time.Minute)
 			err := l.renew(ctx)
 			cancel()
@@ -239,67 +302,148 @@ func servicePeriods(c *common.Consensus) [2]descriptorPeriod {
 
 func (l *Listener) renew(ctx context.Context) error {
 	cns := l.consensus()
-	if !cns.IsAuthenticated() || !cns.TrustedHydrated() || !cns.IsLive(time.Now()) {
+	if !cns.IsAuthenticated() || !cns.TrustedHydrated() || !cns.IsLive(l.now()) {
 		// Local expiry must still run while directory recovery is unavailable.
-		l.pruneRetired(time.Now())
+		l.pruneRetired(l.now())
 		return fmt.Errorf("hs: publication requires an authenticated live consensus")
 	}
 	cns = cns.Trusted()
 	l.mu.Lock()
 	l.current = cns
 	l.mu.Unlock()
-	now := time.Now()
+	now := l.now()
 	periods := servicePeriods(cns)
 	for key, d := range l.descriptors {
 		if key != periods[0] && key != periods[1] {
 			l.retired = append(l.retired, d)
 			delete(l.descriptors, key)
+			// A retired period can never disclose or publish again.
+			delete(l.retries, key)
 		}
 	}
 	l.pruneRetired(now)
 	var failures []error
+	live := make(map[[32]byte]struct{}, 2)
 	for i, p := range periods {
 		if err := ctx.Err(); err != nil {
 			return errors.Join(append(failures, err)...)
 		}
+		// Even a period without a descriptor is fingerprinted so a material
+		// directory change can clear pending backoff and unblock the work.
+		blinded, err := crypto.BlindPrivateKey(l.opts.Identity, p.number, p.length)
+		if err != nil {
+			failures = append(failures, err)
+			continue
+		}
+		blindedKey := [32]byte(blinded.PublicKey().Bytes())
+		live[blindedKey] = struct{}{}
+		srv := sharedRandom(cns, p.number, p.length, i == 1)
 		d := l.descriptors[p]
+		var groups [][]common.RouterStatus
+		directorySet := [32]byte{}
+		ringKnown := false
+		if d != nil && d.healthy() {
+			// The responsible ring is only decisive for publication decisions;
+			// here a period publishes to whatever directories are currently
+			// responsible, and the ring state must be known before retry
+			// pacing can be trusted.
+			var err error
+			groups, err = hsdirReplicas(cns, blinded.PublicKey(), p.number, p.length, srv, true)
+			if err != nil {
+				failures = append(failures, err)
+				continue
+			}
+			h := sha3.New256()
+			for _, group := range groups {
+				for _, r := range group {
+					h.Write(r.NodeID[:])
+				}
+			}
+			directorySet = [32]byte(h.Sum(nil))
+			ringKnown = true
+			// A changed responsible set invalidates the recorded failure: the
+			// new directories must be served immediately, without backoff.
+			if r, ok := l.retries[p]; ok && r.cause != directorySet {
+				delete(l.retries, p)
+			}
+		}
+		r := l.retries[p]
 		if d == nil || !d.healthy() {
+			if r.rebuildErr != nil && now.Before(r.nextRebuild) {
+				// Bounded journaling: keep the operational error visible without
+				// rebuilding introduction circuits every maintenance tick.
+				failures = append(failures, fmt.Errorf("hs: introduction rebuild waits until %s: %w", r.nextRebuild.Format(time.RFC3339), r.rebuildErr))
+				continue
+			}
 			if len(l.descriptors)+len(l.retired) >= 16 {
 				failures = append(failures, fmt.Errorf("hs: retiring descriptor limit reached"))
 				continue
 			}
 			replacement, err := l.newDescriptor(ctx, cns, p)
 			if err != nil {
+				r = l.retries[p]
+				r.cause, r.rebuildErr = directorySet, err
+				r.rebuildDelay = retryDelay(r.rebuildDelay, rebuildBackoffBase, rebuildBackoffLimit)
+				r.nextRebuild = now.Add(r.rebuildDelay)
+				l.retries[p] = r
 				failures = append(failures, err)
 				continue
 			}
+			// Success resets this period's retry pacing; a fresh descriptor also
+			// needs a fresh publication attempt, not the previous upload delay.
+			delete(l.retries, p)
 			if d != nil {
 				l.retired = append(l.retired, d)
 			}
 			d = replacement
 			l.descriptors[p] = d
+			// Publishes need the responsible ring; unlike a ready descriptor, a
+			// freshly built one is announced to the currently responsible
+			// directories, and a missing ring is reported from here.
+			nextGroups, err := hsdirReplicas(cns, blinded.PublicKey(), p.number, p.length, srv, true)
+			if err != nil {
+				failures = append(failures, err)
+				continue
+			}
+			h := sha3.New256()
+			for _, group := range nextGroups {
+				for _, r := range group {
+					h.Write(r.NodeID[:])
+				}
+			}
+			groups, directorySet, ringKnown = nextGroups, [32]byte(h.Sum(nil)), true
 		}
-		srv := sharedRandom(cns, p.number, p.length, i == 1)
-		groups, err := hsdirReplicas(cns, d.blinded.PublicKey(), p.number, p.length, srv, true)
-		if err != nil {
-			failures = append(failures, err)
+		if !ringKnown {
+			// Unreachable: every publish path above resolves the ring.
+			failures = append(failures, fmt.Errorf("hs: responsible HSDir ring unknown"))
 			continue
 		}
-		h := sha3.New256()
-		for _, group := range groups {
-			for _, r := range group {
-				h.Write(r.NodeID[:])
-			}
+		if directorySet == d.directorySet && now.Before(d.nextPublication) {
+			continue
 		}
-		directorySet := [32]byte(h.Sum(nil))
-		if now.Before(d.nextPublication) && directorySet == d.directorySet {
+		if r.publishErr != nil && r.cause == directorySet && now.Before(r.nextPublish) {
+			failures = append(failures, fmt.Errorf("hs: descriptor upload waits until %s: %w", r.nextPublish.Format(time.RFC3339), r.publishErr))
 			continue
 		}
 		if err := l.publish(ctx, cns, d, groups); err != nil {
+			r = l.retries[p]
+			r.cause, r.publishErr = directorySet, err
+			r.publishDelay = retryDelay(r.publishDelay, publishBackoffBase, publishBackoffLimit)
+			r.nextPublish = now.Add(r.publishDelay)
+			l.retries[p] = r
 			failures = append(failures, err)
 			continue
 		}
+		delete(l.retries, p)
 		d.directorySet = directorySet
+	}
+	for key := range l.revisions {
+		if _, ok := live[key]; !ok {
+			// Anti-rollback stays anchored to the caller-owned allocator: a
+			// pruned blinded identity belongs to a period that can never
+			// disclose again, and NextRevision remains strictly increasing.
+			delete(l.revisions, key)
+		}
 	}
 	// The overlapping descriptors serve different client consensus periods;
 	// failure of one must not suppress maintenance of the other.
@@ -472,7 +616,7 @@ func (l *Listener) publish(ctx context.Context, cns *common.Consensus, d *servic
 	for i, ip := range d.intros {
 		ips[i] = ip.descriptor
 	}
-	raw, err := desc.Encode(desc.EncodeOptions{BlindedKey: d.blinded, SigningKey: d.signing, RevisionCounter: revision, LifetimeMinutes: 180, CertificateExpiry: time.Now().Add(24 * time.Hour), IntroPoints: ips})
+	raw, err := desc.Encode(desc.EncodeOptions{BlindedKey: d.blinded, SigningKey: d.signing, RevisionCounter: revision, LifetimeMinutes: 180, CertificateExpiry: l.now().Add(24 * time.Hour), IntroPoints: ips})
 	if err != nil {
 		return err
 	}
@@ -524,7 +668,7 @@ func (l *Listener) publish(ctx context.Context, cns *common.Consensus, d *servic
 		if result.err == nil {
 			acknowledged[result.group] = true
 			// Partial publication also extends the lifetime of these intro keys.
-			d.published = time.Now()
+			d.published = l.now()
 			logger(ctx).Debug().Int("replica", result.group+1).Msg("descriptor upload acknowledged")
 		} else {
 			lastErr = result.err
@@ -543,7 +687,7 @@ func (l *Listener) publish(ctx context.Context, cns *common.Consensus, d *servic
 	if err != nil {
 		return err
 	}
-	d.nextPublication = time.Now().Add(time.Hour + time.Duration(delay.Int64()))
+	d.nextPublication = l.now().Add(time.Hour + time.Duration(delay.Int64()))
 	return nil
 }
 

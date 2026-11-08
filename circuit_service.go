@@ -62,9 +62,16 @@ func (c *Circuit) JoinRendezvous(cookie [20]byte, reply, Kf, Kb, Df, Db []byte, 
 		c.ctxCancel(err)
 		return err
 	}
-	// Match C Tor's legacy-size padding (rend-spec-v3 4.3). The client
-	// authenticates only the first 64 bytes of the relayed HANDSHAKE_INFO.
-	padded := make([]byte, 148)
+	// rend-spec-v3 4.3: relays once required rendezvous cell payloads of
+	// exactly 168 bytes; all shorter payloads are padded with random bytes
+	// so they are indistinguishable from legacy cells at the rendezvous
+	// point. C Tor's hs_circ_service_rp_has_opened does the same with
+	// crypto_rand up to HS_LEGACY_RENDEZVOUS_CELL_SIZE: cookie (20) plus
+	// this 148-byte HANDSHAKE_INFO (64 ntor reply + 84 random padding).
+	// The rendezvous point relays the whole HANDSHAKE_INFO section to the
+	// client (rendmid.c), whose RENDEZVOUS2 handshake consumes only the
+	// first 64 bytes (SERVER_PK | AUTH); trailing bytes are ignored.
+	padded := make([]byte, 148) // plus the 20-byte cookie gives a 168-byte payload
 	copy(padded, reply)
 	if _, err := rand.Read(padded[64:]); err != nil {
 		c.ctxCancel(err)

@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ecdh"
 	"crypto/ed25519"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"net"
@@ -379,5 +380,33 @@ func TestServiceCookieReplayAcrossIntroKeys(t *testing.T) {
 	cookie := [20]byte{42}
 	if !l.claimCookie(cookie, now) || l.claimCookie(cookie, now.Add(time.Minute)) || !l.claimCookie(cookie, now.Add(6*time.Minute)) {
 		t.Fatal("incorrect service-wide cookie replay interval")
+	}
+}
+
+func TestServiceClaimCookieHistoryBounded(t *testing.T) {
+	// The service-wide cookie cache never grows without a documented bound:
+	// once it holds its ceiling every further claim is refused until real
+	// expiry prunes it.
+	l := &Listener{ctx: context.Background()}
+	now := time.Now()
+	for i := range 32768 {
+		var cookie [20]byte
+		binary.BigEndian.PutUint64(cookie[:8], uint64(i))
+		if !l.claimCookie(cookie, now) {
+			t.Fatalf("claim %d refused on a fresh cache", i)
+		}
+	}
+	var cookie [20]byte
+	cookie[0] = 0xff
+	if l.claimCookie(cookie, now) {
+		t.Fatal("cookie claim above the ceiling")
+	}
+	// Expiry prunes": expired cookies free space for fresh ones.
+	now = now.Add(6 * time.Minute)
+	if !l.claimCookie(cookie, now) {
+		t.Fatal("the ceiling did not lift after the five-minute expiry")
+	}
+	if len(l.cookieReplay) > 32768 {
+		t.Fatal("cookie history grew past the documented ceiling")
 	}
 }

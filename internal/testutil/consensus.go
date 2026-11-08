@@ -10,6 +10,7 @@ import (
 	"crypto/rsa"
 	"crypto/sha1"
 	"crypto/sha256"
+	"crypto/sha3"
 	"crypto/x509"
 	_ "embed"
 	"encoding/base64"
@@ -37,11 +38,28 @@ var authorityKeys = sync.OnceValues(func() ([2]*rsa.PrivateKey, error) {
 	return keys, nil
 })
 
+type consensusOptions struct {
+	hsdirs map[int]bool
+	family map[int]int
+	// srv signs explicit shared random values into the body (dir-spec.txt
+	// shared-rand-current-value / shared-rand-previous-value), instead of
+	// patching them into the authenticated view afterwards.
+	srv *[2][32]byte
+	// relaySeed derives the six relay ed25519 identities deterministically
+	// (sha3("test relay", seed, i)) so HSDir ring membership is reproducible.
+	relaySeed *[32]byte
+	// hsdirInterval signs hsdir_interval in consensus params (0 = default).
+	hsdirInterval uint64
+	// stamps overrides valid-after/valid-until; fresh-until stays one hour
+	// after valid-after, giving a one-hour voting interval.
+	validAfter, validUntil time.Time
+}
+
 // Consensus signs a small test network for the supplied time, then verifies it
 // with an explicitly pinned test authority and hash-checked microdescriptors.
 // No production authority, authentication marker, or clock check is overridden.
 func Consensus(t testing.TB, now time.Time) *common.Consensus {
-	return consensus(t, now, nil, nil)
+	return consensus(t, now, consensusOptions{})
 }
 
 // ConsensusWithHSDirs signs the requested directory flags and protocol
@@ -55,7 +73,7 @@ func ConsensusWithHSDirs(t testing.TB, now time.Time, indices ...int) *common.Co
 		}
 		hsdirs[index] = true
 	}
-	return consensus(t, now, hsdirs, nil)
+	return consensus(t, now, consensusOptions{hsdirs: hsdirs})
 }
 
 // ConsensusWithFamily signs mutual family declarations in the descriptor
@@ -65,10 +83,56 @@ func ConsensusWithFamily(t testing.TB, now time.Time, a, b int) *common.Consensu
 	if a < 0 || a >= 6 || b < 0 || b >= 6 || a == b {
 		t.Fatal("invalid test family indices")
 	}
-	return consensus(t, now, nil, map[int]int{a: b, b: a})
+	return consensus(t, now, consensusOptions{family: map[int]int{a: b, b: a}})
 }
 
-func consensus(t testing.TB, now time.Time, hsdirs map[int]bool, family map[int]int) *common.Consensus {
+// ConsensusWithSRV signs explicit SRVs into the authenticated consensus body;
+// a non-nil relaySeed also fixes the relay identities. Neither value modifies
+// an already-verified view, so trust semantics stay identical to Consensus.
+func ConsensusWithSRV(t testing.TB, now time.Time, current, previous [32]byte, relaySeed *[32]byte, indices ...int) *common.Consensus {
+	t.Helper()
+	hsdirs := make(map[int]bool, len(indices))
+	for _, index := range indices {
+		if index < 0 || index >= 6 {
+			t.Fatal("test HSDir index out of range")
+		}
+		hsdirs[index] = true
+	}
+	return consensus(t, now, consensusOptions{hsdirs: hsdirs, srv: &[2][32]byte{current, previous}, relaySeed: relaySeed})
+}
+
+// EpochOptions states all fixture freedoms the H3.1 rollover tests need inside
+// the signed document: explicit validity stamps (both epochs stay live over
+// the run clock), a signed SRV pair, deterministic relay identities, HSDir
+// flags, and a signed hsdir_interval.
+type EpochOptions struct {
+	ValidAfter        time.Time
+	ValidUntil        time.Time
+	HsdirInterval     uint64 // minutes; 0 keeps the default 1440
+	RelaySeed         *[32]byte
+	Current, Previous [32]byte
+	HSDirs            []int
+}
+
+// ConsensusEpoch signs a consensus from one explicit validity interval for
+// tests that compare adjacent SRV/period epochs offline.
+func ConsensusEpoch(t testing.TB, o EpochOptions) *common.Consensus {
+	t.Helper()
+	opts := consensusOptions{srv: &[2][32]byte{o.Current, o.Previous}, relaySeed: o.RelaySeed, hsdirInterval: o.HsdirInterval, validAfter: o.ValidAfter, validUntil: o.ValidUntil}
+	for _, index := range o.HSDirs {
+		if index < 0 || index >= 6 {
+			t.Fatal("test HSDir index out of range")
+		}
+		opts.hsdirs = make(map[int]bool, len(o.HSDirs))
+	}
+	opts.hsdirs = make(map[int]bool, len(o.HSDirs))
+	for _, index := range o.HSDirs {
+		opts.hsdirs[index] = true
+	}
+	return consensus(t, o.ValidAfter, opts)
+}
+
+func consensus(t testing.TB, now time.Time, o consensusOptions) *common.Consensus {
 	t.Helper()
 	keys, err := authorityKeys()
 	if err != nil {
@@ -94,16 +158,45 @@ func consensus(t testing.TB, now time.Time, hsdirs map[int]bool, family map[int]
 	certDigest := sha1.Sum([]byte(cert))
 	cert += pemObject("SIGNATURE", sign(identity, certDigest[:]))
 
+	validAfter, validUntil := now.Add(-time.Hour), now.Add(2*time.Hour)
+	if !o.validAfter.IsZero() {
+		validAfter = o.validAfter
+	}
+	if !o.validUntil.IsZero() {
+		validUntil = o.validUntil
+	}
+	freshUntil := validAfter.Add(time.Hour)
+	if !freshUntil.Before(validUntil) {
+		t.Fatal("test validity stamps do not leave a one-hour voting interval")
+	}
+	stamped := func(t time.Time) string { return t.UTC().Format(common.CONSENSUS_DATE_FORMAT) }
+
 	var body bytes.Buffer
-	fmt.Fprintf(&body, "network-status-version 3 microdesc\nvote-status consensus\nvalid-after %s\nfresh-until %s\nvalid-until %s\n", stamp(-time.Hour), stamp(time.Hour), stamp(2*time.Hour))
+	fmt.Fprintf(&body, "network-status-version 3 microdesc\nvote-status consensus\nvalid-after %s\nfresh-until %s\nvalid-until %s\n", stamped(validAfter), stamped(freshUntil), stamped(validUntil))
+	if o.srv != nil {
+		encode := func(b [32]byte) string { return base64.StdEncoding.EncodeToString(b[:]) }
+		fmt.Fprintf(&body, "shared-rand-current-value 0 %s\n", encode(o.srv[0]))
+		fmt.Fprintf(&body, "shared-rand-previous-value 0 %s\n", encode(o.srv[1]))
+	}
+	if o.hsdirInterval != 0 {
+		fmt.Fprintf(&body, "params hsdir_interval=%d\n", o.hsdirInterval)
+	}
 	mds := make(map[string][]byte)
 	for i := 0; i < 6; i++ {
-		pub, _, err := ed25519.GenerateKey(rand.Reader)
-		if err != nil {
-			t.Fatal(err)
+		var pub ed25519.PublicKey
+		if o.relaySeed != nil {
+			digest := sha3.Sum256(append(append([]byte("test relay "), o.relaySeed[:]...), byte(i)))
+			pub = ed25519.NewKeyFromSeed(digest[:]).Public().(ed25519.PublicKey)
+		} else {
+			key, priv, err := ed25519.GenerateKey(rand.Reader)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pub = priv.Public().(ed25519.PublicKey)
+			_ = key
 		}
 		raw := bytes.Clone(microdescriptor[:bytes.Index(microdescriptor, []byte("id ed25519 "))])
-		if other, ok := family[i]; ok {
+		if other, ok := o.family[i]; ok {
 			related := sha1.Sum([]byte(fmt.Sprintf("test-only relay %d", other)))
 			raw = fmt.Appendf(raw, "family $%X\n", related)
 		}
@@ -119,7 +212,7 @@ func consensus(t testing.TB, now time.Time, hsdirs map[int]bool, family map[int]
 			flags += " Exit"
 		}
 		proto := "HSIntro=4 HSRend=2"
-		if hsdirs[i] {
+		if o.hsdirs[i] {
 			flags += " HSDir"
 			proto += " HSDir=2"
 		}
@@ -131,6 +224,11 @@ func consensus(t testing.TB, now time.Time, hsdirs map[int]bool, family map[int]
 	c, err := common.AuthenticateConsensus(body.Bytes(), []byte(cert), [][20]byte{id}, now)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if o.srv != nil {
+		if !c.HasSharedCurrentValue || !c.HasSharedPreviousValue || c.SharedCurrentValue != o.srv[0] || c.SharedPreviousValue != o.srv[1] {
+			t.Fatal("signed SRVs missing from the authenticated consensus")
+		}
 	}
 	c, err = c.OwnAuthenticatedHydration(mds)
 	if err != nil {

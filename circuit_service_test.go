@@ -1,15 +1,21 @@
 package gonion
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"io"
 	"net"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/robogg133/gonion/internal/hops"
+	"github.com/robogg133/gonion/internal/window"
+	cells "github.com/robogg133/gonion/pkg/cells/base"
 	"github.com/robogg133/gonion/pkg/cells/relay"
+	"github.com/robogg133/gonion/pkg/crypto"
 )
 
 func testServiceCircuit(t *testing.T) *Circuit {
@@ -22,6 +28,141 @@ func testServiceCircuit(t *testing.T) *Circuit {
 	c.hops.Hops = make([]*hops.Hop, 4)
 	t.Cleanup(func() { cancel(net.ErrClosed) })
 	return c
+}
+
+// fillTestPattern writes a deterministic per-element pattern so byte slices
+// are individually recognizable after the crawl through the relay layers.
+func fillTestPattern(b []byte, row byte) {
+	for i := range b {
+		b[i] = row + byte(i)
+	}
+}
+
+// TestJoinRendezvous1LegacyPayload168Bytes drives JoinRendezvous through the
+// real relay-framing path and asserts the encoded RENDEZVOUS1 payload against
+// rend-spec-v3 4.3: rendezvous cell payloads must be exactly 168 bytes long,
+// padded with random bytes like C Tor's hs_circ_service_rp_has_opened pads
+// the 84-byte cell (20-byte cookie + 64-byte ntor reply) up to
+// HS_LEGACY_RENDEZVOUS_CELL_SIZE. The cookie and the first 64 bytes of the
+// relayed HANDSHAKE_INFO must be unchanged.
+func TestJoinRendezvous1LegacyPayload168Bytes(t *testing.T) {
+	// Validated test-only onion address (see pkg/hs/onion/onion_test.go).
+	const serviceAddr = "tbup4alxvo3wmessgrbjfbfpny6x5xab56do6sli6i6b42sgreisrfqd.onion:80"
+
+	ctx, cancel := context.WithCancelCause(context.Background())
+	t.Cleanup(func() { cancel(net.ErrClosed) })
+	writeCall := make(chan cellWrite, 4)
+	frames := make(chan cellWrite, 4)
+	c := &Circuit{
+		conn:      &Conn{writeCall: writeCall, ctx: ctx, ctxCancel: cancel},
+		Coder:     cells.NewCellCoder(nil),
+		Ctx:       ctx,
+		ctxCancel: cancel,
+		streams:   &streams{streams: make(map[uint16]*Stream)},
+	}
+	go func() {
+		for cell := range writeCall {
+			frames <- cell
+			cell.done <- nil
+		}
+	}()
+
+	// JoinRendezvous marshals RENDEZVOUS1 for the last physical hop and
+	// layered-encrypts it through hops 2..0, all of which must return real
+	// hop state. The virtual e2e hop is appended by JoinRendezvous itself.
+	// The asserted cell is the circuit's first cell, so every hop keystream
+	// is consumed exactly once from its initial counter.
+	fwdKeys := [3][16]byte{}
+	fwdSeeds := [3][32]byte{}
+	for i := range fwdKeys {
+		fillTestPattern(fwdKeys[i][:], byte(i))
+		fillTestPattern(fwdSeeds[i][:], byte(64+i))
+		back, err := crypto.NewRunningValues(fwdKeys[i][:], fwdSeeds[i][:])
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Same key material for the backward direction is fine here: the
+		// test never feeds cells into the circuit, so only forward sending
+		// state is used.
+		c.hops.Append(hops.NewHop(ctx, relay.NewDataCellCoder(back, back),
+			window.NewWindow(1000, 100), window.NewWindow(1000, 100)))
+	}
+
+	var cookie [20]byte
+	for i := range cookie {
+		cookie[i] = byte(1 + i)
+	}
+	reply := make([]byte, 64)
+	for i := range reply {
+		reply[i] = byte(0x40 + i)
+	}
+	var kf, kb, df, db [32]byte
+	fillTestPattern(kf[:], 0x80)
+	fillTestPattern(kb[:], 0x90)
+	fillTestPattern(df[:], 0xA0)
+	fillTestPattern(db[:], 0xB0)
+	if err := c.JoinRendezvous(cookie, reply, kf[:], kb[:], df[:], db[:], serviceAddr); err != nil {
+		t.Fatalf("JoinRendezvous: %v", err)
+	}
+	linkCell := <-frames
+	close(writeCall)
+
+	// Fixed-size link frame: 5-byte header + 509-byte relay body (tor-spec
+	// 3 for negotiated link versions 4+).
+	if len(linkCell.data) != 514 {
+		t.Fatalf("link cell is %d bytes, want 514", len(linkCell.data))
+	}
+	if cmd := linkCell.data[4]; cmd != cells.COMMAND_RELAY {
+		t.Fatalf("link command %d, want RELAY", cmd)
+	}
+	plain := make([]byte, 509)
+	copy(plain, linkCell.data[5:])
+	for i := 0; i < 3; i++ {
+		nv, err := crypto.NewRunningValues(fwdKeys[i][:], fwdSeeds[i][:])
+		if err != nil {
+			t.Fatal(err)
+		}
+		nv.XORKeyStream(plain, plain)
+	}
+
+	if plain[0] != relay.COMMAND_RENDEZVOUS1 {
+		t.Fatalf("relay command %d, want RENDEZVOUS1 (%d)", plain[0], relay.COMMAND_RENDEZVOUS1)
+	}
+	if plain[1] != 0 || plain[2] != 0 {
+		t.Fatal("recognized field not zero before the final physical hop")
+	}
+	if id := binary.BigEndian.Uint16(plain[3:5]); id != 0 {
+		t.Fatalf("stream ID %d, want zero (rendezvous is a control cell)", id)
+	}
+	// The digest was stamped by the last physical hop over the payload with
+	// a zeroed digest field; reproduce it with a fresh running value.
+	digest := bytes.Clone(plain[5:9])
+	digestFrame := bytes.Clone(plain)
+	clear(digestFrame[5:9])
+	digestNV, err := crypto.NewRunningValues(fwdKeys[2][:], fwdSeeds[2][:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := digestNV.Write(digestFrame); err != nil {
+		t.Fatal(err)
+	}
+	if expected := digestNV.Sum(); !bytes.Equal(expected[:4], digest) {
+		t.Fatal("relay digest does not match the payload contents")
+	}
+	// rend-spec-v3 4.3 / C Tor hs_common.h: HS_LEGACY_RENDEZVOUS_CELL_SIZE.
+	if payloadLen := int(binary.BigEndian.Uint16(plain[9:11])); payloadLen != 168 {
+		t.Fatalf("RENDEZVOUS1 payload is %d bytes, want exactly 168", payloadLen)
+	}
+	prefix := append(append(make([]byte, 0, 84), cookie[:]...), reply...)
+	if !bytes.Equal(plain[11:11+len(prefix)], prefix) {
+		t.Fatal("cookie or 64-byte handshake reply altered before the padding")
+	}
+	// rend-spec-v3 4.3 / C Tor hs_circuit.c: the legacy padding is random,
+	// never zero-padded.
+	pad := plain[11+84 : 11+168]
+	if !slices.ContainsFunc(pad, func(b byte) bool { return b != 0 }) {
+		t.Fatal("legacy padding region is not random")
+	}
 }
 
 func TestIncomingServiceStreamLifecycle(t *testing.T) {
