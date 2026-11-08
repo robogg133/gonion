@@ -16,6 +16,11 @@ import (
 
 const CERT_KEY_TYPE_ED25519 uint8 = 1
 
+// now is the internal reference-time seam used by tests to pin deterministic
+// certificate validity. Production verification uses the wrapper functions,
+// which capture time.Now exactly once per operation.
+var now = time.Now
+
 type extension struct {
 	Flag uint8
 	Data []byte
@@ -65,14 +70,18 @@ func ParseIdentityVSigningCert(b []byte) (*TorCert, error) {
 }
 
 func VerifyConnection(cert4, cert5 *TorCert, tlsCert []byte) error {
+	return verifyConnection(cert4, cert5, tlsCert, now())
+}
+
+func verifyConnection(cert4, cert5 *TorCert, tlsCert []byte, when time.Time) error {
 	if cert4 == nil || cert5 == nil || cert4.CertType != 4 || cert5.CertType != 5 || cert4.CertKeyType != 1 || cert5.CertKeyType != 3 {
 		return fmt.Errorf("certificate: missing or incorrect link certificate types")
 	}
 	key := cert4.Extensions[4].Data
-	if err := verifyEdCertificate(cert4, key, time.Now()); err != nil {
+	if err := verifyEdCertificate(cert4, key, when); err != nil {
 		return err
 	}
-	if err := verifyEdCertificate(cert5, cert4.CertifiedKey, time.Now()); err != nil {
+	if err := verifyEdCertificate(cert5, cert4.CertifiedKey, when); err != nil {
 		return err
 	}
 	digest := sha256.Sum256(tlsCert)
@@ -104,6 +113,10 @@ func verifyEdCertificate(cert *TorCert, key []byte, now time.Time) error {
 // VerifyRelayCertificates validates the full modern CERTS chain (tor-spec 4.2).
 // The caller must additionally match these identities against its selected relay.
 func VerifyRelayCertificates(certs map[uint8][]byte, tlsCert []byte) ([20]byte, [32]byte, error) {
+	return verifyRelayCertificates(certs, tlsCert, now())
+}
+
+func verifyRelayCertificates(certs map[uint8][]byte, tlsCert []byte, when time.Time) ([20]byte, [32]byte, error) {
 	var rsaID [20]byte
 	var edID [32]byte
 	c4, err := ParseIdentityVSigningCert(certs[4])
@@ -114,7 +127,7 @@ func VerifyRelayCertificates(certs map[uint8][]byte, tlsCert []byte) ([20]byte, 
 	if err != nil {
 		return rsaID, edID, err
 	}
-	if err := VerifyConnection(c4, c5, tlsCert); err != nil {
+	if err := verifyConnection(c4, c5, tlsCert, when); err != nil {
 		return rsaID, edID, err
 	}
 	copy(edID[:], c4.Extensions[4].Data)
@@ -122,9 +135,8 @@ func VerifyRelayCertificates(certs map[uint8][]byte, tlsCert []byte) ([20]byte, 
 	if err != nil {
 		return rsaID, edID, fmt.Errorf("certificate: invalid RSA identity: %w", err)
 	}
-	now := time.Now()
 	key, ok := id.PublicKey.(*rsa.PublicKey)
-	if !ok || key.N.BitLen() != 1024 || now.Before(id.NotBefore) || !now.Before(id.NotAfter) {
+	if !ok || key.N.BitLen() != 1024 || when.Before(id.NotBefore) || !when.Before(id.NotAfter) {
 		return rsaID, edID, fmt.Errorf("certificate: invalid RSA identity key or lifetime")
 	}
 	// Tor's historical self-signed identity certificates may use SHA-1. This is
@@ -148,7 +160,7 @@ func VerifyRelayCertificates(certs map[uint8][]byte, tlsCert []byte) ([20]byte, 
 		return rsaID, edID, fmt.Errorf("certificate: invalid RSA identity self-signature")
 	}
 	cross := certs[7]
-	if len(cross) < 37 || len(cross) != 37+int(cross[36]) || !bytes.Equal(cross[:32], edID[:]) || !now.Before(time.Unix(int64(binary.BigEndian.Uint32(cross[32:36]))*3600, 0)) {
+	if len(cross) < 37 || len(cross) != 37+int(cross[36]) || !bytes.Equal(cross[:32], edID[:]) || !when.Before(time.Unix(int64(binary.BigEndian.Uint32(cross[32:36]))*3600, 0)) {
 		return rsaID, edID, fmt.Errorf("certificate: invalid RSA to Ed25519 cross-certificate")
 	}
 	digest := sha256.Sum256(append([]byte("Tor TLS RSA/Ed25519 cross-certificate"), cross[:36]...))
@@ -157,4 +169,24 @@ func VerifyRelayCertificates(certs map[uint8][]byte, tlsCert []byte) ([20]byte, 
 	}
 	rsaID = sha1.Sum(x509.MarshalPKCS1PublicKey(key))
 	return rsaID, edID, nil
+}
+
+// Test/compatibility time-injected aliases.
+func verifyConnectionAt(cert4, cert5 *TorCert, tlsCert []byte, when time.Time) error {
+	return verifyConnection(cert4, cert5, tlsCert, when)
+}
+func VerifyConnectionAt(cert4, cert5 *TorCert, tlsCert []byte, when time.Time) error {
+	return verifyConnection(cert4, cert5, tlsCert, when)
+}
+func VerifyConnectionWithTime(cert4, cert5 *TorCert, tlsCert []byte, when time.Time) error {
+	return verifyConnection(cert4, cert5, tlsCert, when)
+}
+func verifyRelayCertificatesAt(certs map[uint8][]byte, tlsCert []byte, when time.Time) ([20]byte, [32]byte, error) {
+	return verifyRelayCertificates(certs, tlsCert, when)
+}
+func VerifyRelayCertificatesAt(certs map[uint8][]byte, tlsCert []byte, when time.Time) ([20]byte, [32]byte, error) {
+	return verifyRelayCertificates(certs, tlsCert, when)
+}
+func VerifyRelayCertificatesWithTime(certs map[uint8][]byte, tlsCert []byte, when time.Time) ([20]byte, [32]byte, error) {
+	return verifyRelayCertificates(certs, tlsCert, when)
 }

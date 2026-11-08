@@ -31,7 +31,8 @@ func TestRelayCertificateChainPositive(t *testing.T) {
 		5: bytes.Clone(cert5Bytes),
 		7: bytes.Clone(cert7Bytes),
 	}
-	rsaID, edID, err := VerifyRelayCertificates(certs, tlsBytes)
+	validTime := time.Date(2026, 10, 20, 16, 0, 0, 0, time.UTC)
+	rsaID, edID, err := verifyRelayCertificates(certs, tlsBytes, validTime)
 	if err != nil {
 		t.Fatalf("positive chain rejected: %v", err)
 	}
@@ -171,20 +172,66 @@ func TestParseIdentityVSigningCertBasics(t *testing.T) {
 	}
 }
 
+func TestCertificateExpiryBoundaries(t *testing.T) {
+	certs := func() map[uint8][]byte {
+		return map[uint8][]byte{
+			2: bytes.Clone(cert2Bytes),
+			4: bytes.Clone(cert4Bytes),
+			5: bytes.Clone(cert5Bytes),
+			7: bytes.Clone(cert7Bytes),
+		}
+	}
+	expiry := time.Date(2026, 10, 20, 17, 0, 0, 0, time.UTC)
+	for _, when := range []time.Time{expiry, expiry.Add(time.Hour)} {
+		when := when
+		t.Run(when.Format(time.RFC3339), func(t *testing.T) {
+			_, _, err := verifyRelayCertificates(certs(), tlsBytes, when)
+			if err == nil || err.Error() == "" {
+				t.Fatalf("expired chain accepted at %v", when)
+			}
+		})
+	}
+	// Ed certificate boundary: cert5 expired at/after its expiration hour.
+	cert, err := ParseIdentityVSigningCert(cert5Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer := bytes.Clone(cert.Extensions[4].Data)
+	_ = signer
+	// cert5 is signed by cert4's key, but expiry check alone is enough here.
+	for _, when := range []time.Time{expiry, expiry.Add(time.Hour)} {
+		when := when
+		t.Run("ed-"+when.Format(time.RFC3339), func(t *testing.T) {
+			if err := cert.Verify(cert4SigningKey(), when); err == nil || err.Error() == "" {
+				t.Fatalf("expired Ed cert accepted at %v", when)
+			}
+		})
+	}
+}
+
+func cert4SigningKey() []byte {
+	c, err := ParseIdentityVSigningCert(cert4Bytes)
+	if err != nil {
+		return nil
+	}
+	return bytes.Clone(c.Extensions[4].Data)
+}
+
 func TestTorCertVerify(t *testing.T) {
 	cert, err := ParseIdentityVSigningCert(cert4Bytes)
 	if err != nil {
 		t.Fatal(err)
 	}
 	key := bytes.Clone(cert.Extensions[4].Data)
-	if err := cert.Verify(key, time.Now()); err != nil {
+	validTime := time.Date(2026, 10, 15, 0, 0, 0, 0, time.UTC)
+	if err := cert.Verify(key, validTime); err != nil {
 		t.Fatalf("valid cert rejected: %v", err)
 	}
 	key[0] ^= 1
-	if err := cert.Verify(key, time.Now()); err == nil || err.Error() == "" {
+	if err := cert.Verify(key, validTime); err == nil || err.Error() == "" {
 		t.Fatal("wrong signer accepted")
 	}
-	if err := cert.Verify(make([]byte, 32), time.Now()); err == nil || err.Error() == "" {
+	if err := cert.Verify(make([]byte, 32), validTime); err == nil || err.Error() == "" {
 		t.Fatal("all-zero signer accepted")
 	}
 }
