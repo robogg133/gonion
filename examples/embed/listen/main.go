@@ -29,6 +29,7 @@ func run(state string) error {
 	defer cancel()
 	opts := embed.DefaultOptions()
 	var err error
+
 	opts.Guards, err = guardstate.New(init, state)
 	if err != nil {
 		return err
