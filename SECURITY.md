@@ -26,12 +26,16 @@ Fixes are tracked with a public security note when a stable release notes entry 
 - **Guard state (`path.GuardManager`) persistence is caller-owned.** A failed save
   poisons the manager by design; reports must account for that contract.
 - **Path-bias counters are deliberately conservative** where the §7.2 END-echo probe
-  is not implemented; see the `shortcut:` comments and
-  `pkg/hs/IMPLEMENTATION_STATUS.md`.
+  is not implemented. §7.3 scaling and §7.4 rate tiers are implemented; the probe
+  and `pb_dropguards=1` remain explicitly unsupported and fail closed. See the
+  `shortcut:` comments and `pkg/hs/IMPLEMENTATION_STATUS.md`.
 - Out-of-scope features (IPv6 exits, multi-bridge selection, authorized onion
   services, congestion-control/PoW negotiation, multi-port routing, full ns
   hydration) fail closed by design and are not attack surface work requests.
 
 Known limitations are summarized in
 [pkg/hs/IMPLEMENTATION_STATUS.md](pkg/hs/IMPLEMENTATION_STATUS.md) and the current
-tests. No release claim should exceed that evidence.
+tests. No release claim should exceed that evidence. The optional log writer and
+`Stats` snapshot are privacy-safe by design: they carry failure classes and
+counters, never private keys, cookies, descriptor plaintext, or destination
+labels.

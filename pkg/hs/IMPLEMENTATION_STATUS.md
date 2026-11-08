@@ -1,11 +1,10 @@
 # Tor client and onion-v3 implementation status
 
-Checkpoint: **2026-10-18**; planning audit: **2026-11-07**. Results below describe
-the tree on which they were produced; rerun the repository validation commands
-before relying on them. On 2026-11-07, `go vet ./...` passed but `go test ./...`
-failed in `pkg/crypto` because a captured certificate fixture had expired; full
-race testing was not run. That fixture needs an injected reference-time test
-seam, not weakened certificate validation.
+Checkpoint: **2026-11-08**. Results below describe the tree on which they were
+produced; rerun the repository validation commands before relying on them. On
+this tree, `go test ./...`, `go vet ./...`, and `go test -race ./...` pass. The
+2026-11-07 certificate-fixture expiry was fixed with a reference-time test seam;
+production certificate validation still uses the real clock.
 
 Gonion is experimental. Successful interoperability tests are **not** a security
 audit, proof of anonymity, censorship resistance, or complete Tor compatibility.
@@ -71,7 +70,13 @@ proof that a particular client can reach the service.
 Descriptors rotate at the authenticated consensus's SRV boundary and republish
 at randomized 60–120-minute intervals or when the responsible directory set
 changes. Old introduction circuits remain for three hours after their last
-successful upload, including partial uploads.
+successful upload, including partial uploads. Maintenance now uses bounded,
+randomized exponential backoff per period for failed introduction rebuilds and
+partial descriptor uploads, resets on success or a material HSDir-set change,
+and exposes the pending failure through `Listener.Err()` without burning a new
+revision on every retry. Revision history is pruned to the two live blinded
+identities; anti-rollback remains anchored to the caller's strictly increasing
+`NextRevision` contract.
 
 Local resource ceilings include 64 queued accepted connections, 32 rendezvous
 circuits/builds, 16 active/retiring descriptors, 4096 replay entries per intro
@@ -122,27 +127,28 @@ CI. The reference-peer variant needs a C Tor binary on PATH.
 ## Remaining work, in priority order
 
 1. **Path-bias accounting limits, and independent review of the guard batches.**
-   Guard-scoped path-bias construction/usage accounting is implemented with two
-   documented code shortcuts (see the `shortcut:` comments): the §7.2 END-echo
-   usage-failure probe and per-hop build progress at the 30s build deadline;
-   §7.3 rate/scale enforcement still fails closed (`path.ErrGuardPathBias`). The
-   persistent guard manager, its callers, and the trust/recovery batches also
-   require independent specification review before any anonymity claim.
-2. **Long-running resilience.** Directory refresh now reconnects after its
+   Guard-scoped path-bias construction/usage accounting now implements the §7.3
+   scaling and §7.4 rate tiers with C Tor’s strict comparisons and open-circuit
+   accounting. The §7.2 END-echo usage-failure probe and `pb_dropguards=1`
+   remain explicitly unsupported and fail closed. The persistent guard manager,
+   its callers, and the trust/recovery batches still require independent
+   specification review before any anonymity claim.
+2. **Long-running resilience.** Directory refresh reconnects after its
    bootstrap/bridge channel dies (`StartConsensusRecovery`, fail-closed without a
-   redial policy); controlled-network coverage of rollover, prolonged
-   publication failure, intro replacement, and restart with persisted revisions
-   remains open. Review revision map retention and replay/connection limits
-   under sustained load.
+   redial policy). Offline SRV/period rollover, changed-HSDir republish,
+   delayed-client fetch, restart revision anti-rollback, bounded maintenance
+   backoff, partial-publication retry and saturation tests are implemented.
+   Controlled Chutney coverage of the same flows remains open.
 3. **Trust-model review.** Authorization now reads privately owned authenticated
    state (`OwnAuthenticatedHydration`/`Trusted`), so mutated public clones cannot
-   grant trust; the boundary still needs independent review, cache crash/partial
-   file states still need broader verification, and full `ns` hydration remains
-   unsupported.
-4. **Coverage and audit.** Add fixed modern CERTS-chain negative fixtures, broader
-   parser fuzzing, sustained-throughput stream profiling (close/write ordering
-   now has offline stress tests) and current C Tor/Chutney interoperability. No
-   full independent security audit has been completed.
+   grant trust; the boundary still needs independent review. Cache crash and
+   partial-file states now have deterministic tests, and full `ns` hydration
+   remains unsupported.
+4. **Coverage and audit.** Fixed modern CERTS-chain negative fixtures, broader
+   parser fuzzing, sustained-throughput stream profiling and current
+   C Tor/Chutney interoperability remain open. Benchmark and fuzz-smoke harnesses
+   now exist, but no baseline campaign or independent security audit has been
+   completed.
 5. **Unsupported features.** Normal (`ns`) server-descriptor hydration,
    bridge-aware persistent guard state instances (bridge mode stays one pinned
    bridge outside the guard manager) and directory-purpose one-hop guard state,

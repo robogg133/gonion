@@ -61,6 +61,33 @@ clear it when the client must not reach a guard directly, and they must supply
 selected relay's pin automatically. Do not replace identity validation with an
 insecure TLS setting.
 
+**Security-required migration (E4.1):** the former `IgnoreRelayCheck`,
+`ORConnectionSkipRelayFingerprintCheck` and
+`GuardConnectionSkipRelayFingerprintCheck` option fields and the
+`CTXKeySkipRelayIdentityCheck` context key are **removed**, not runtime-
+rejected; code that set them now fails to compile, which is the intended
+fail-closed behavior. Every bootstrap and traffic channel always verifies the
+relay CERTS chain and matches the authenticated RSA identity against the
+explicit pin (traffic channels additionally must match the consensus-selected
+guard). There is no direct or bridge configuration that declines relay
+identity verification; the low-level `gonion.NewConn` option of the same
+name remains outside this embedded contract and is not a supported embedding
+path.
+
+### Observability
+
+`Options.Log` (default `nil`) is the only logging surface: an `io.Writer`
+receiving standard-library `log` messages for bootstrap, circuit build, guard
+dial, bridge descriptor refresh, and listener lifecycle **classes**. The
+default is completely silent. Lines never contain stream destinations, onion
+addresses, cookies, keys, or descriptor plaintext. `Client.Stats()` returns a
+value `Stats` snapshot (bootstrap/consensus age and trust flags, circuit
+builds/failures, guard dial failures, guard mode, bridge descriptor
+retention, listener count and faults) using only standard-library types; no
+metrics dependency, no high-cardinality labels. Operators distinguish
+bootstrap/guard/directory/service failure classes without changing library
+code.
+
 ## Persistent public guard state
 
 Guard identity persists across restarts by design: resampling a new guard
@@ -115,8 +142,10 @@ introductions, rendezvous, service publication and service joins. Only the two
 remaining hops come from the authenticated live consensus. Identity, family and
 subnet exclusions include the bridge's signed addresses, not a Snowflake proxy
 or dummy transport address. Each channel still matches both RSA and Ed25519
-CERTS identities and uses the bridge's verified ntor key. Bridge mode rejects
-all skip-identity options and ignores the legacy skip-check context key.
+CERTS identities and uses the bridge's verified ntor key. All skip-identity
+options and the legacy skip-check context key have been removed (see the E4.1
+migration above): identity verification is unconditional in bridge mode and
+outside it.
 
 Initialization fetches `/tor/server/authority.z` through a pinned one-hop
 CREATE_FAST directory circuit, only because the ntor key is not known yet.
@@ -276,8 +305,23 @@ Opt-in tests make public network requests and may publish a temporary onion:
 ```sh
 GONION_NETWORK_TESTS=1 go test -race ./internal/tests -run '^TestEmbedDialExit$' -count=1 -v -timeout 5m
 GONION_TEST_ONION=1 go test -race ./internal/tests -run '^TestEmbedDialOnion$' -count=1 -v -timeout 5m
-GONION_TEST_SERVICE=1 GONION_TEST_REFERENCE_TOR=1 go test -race ./internal/tests -run '^TestEmbedListenOnion$' -count=1 -v -timeout 13m
+GONION_TEST_SNOWFLAKE=1 go test -race ./internal/tests -run '^TestEmbedDialSnowflake$' -count=1 -v -timeout 10m
 ```
+
+**Transport evidence status (E4.4).** Only the following classes have current
+in-repo evidence; none is proof of censorship resistance, and public-relay
+reachability changes over time without invalidating the controlled results:
+
+| Configuration | Current evidence | Third-party exposure |
+| --- | --- | --- |
+| obfs4 pinned bridge | Controlled local obfs4 server (upstream `gitlab.com/yawning/obfs4.git` c3e2d44b1033, 2023-10-12): handshake, foreign-cert rejection, RSA pin metadata, handshake cancellation (`pkg/transports/obfs4`). Live public-bridge transport handshake succeeded (2026-11-08), but the existing opt-in public obfs4 **bootstrap** flow currently fails at the root: the core link handshake sets socket deadlines and upstream `obfs4Conn` deliberately returns `ENOTSUP` for deadlines (observable-timing protection). That incompatibility must be fixed in the root conn path before public obfs4 bootstrap can be documented as validated. | Direct TCP plus DNS of the bridge address only. |
+| Snowflake fronted (`DefaultOptions`) | Configuration/pin validation offline; full authenticated traffic is opt-in only (`GONION_TEST_SNOWFLAKE=1`). Fork pinned at `snowflake-with-logging-setting/v2 v2.14.2-0.20261002001353-aff631a5b504` (upstream Snowflake v2.14.1 plus a configurable logger). | Broker HTTPS via CDN front domains, DNS of broker+fronts+STUN hosts, UDP ICE/STUN probing, WebRTC/DTLS to volunteer proxies; TURN accepted but not in defaults. |
+| Snowflake unfronted (`UnfrontedOptions`) | Validation parity with fronted offline only; not independently re-validated against a public broker in this change. | DNS, TCP and TLS SNI of the broker become visible; remaining exposure as above. |
+| Direct bootstrap/traffic | Offline construction matrix in `pkg/embed` proves every nil/cleared/conflicting dialer or pin combination fails closed; live direct-TCP microdesc bootstrap passed (2026-11-08, opt-in `internal/tests`). Live exit traffic was not re-run in this change. | Only the bootstrap fallback/authority and selected guard relays themselves. |
+
+Meek and webtunnel carry their own E4.2 cancellation evidence; their upstream
+pins are webtunnel `v0.0.6` and the bundled meek implementation derived from
+the torspec/C-Tor lineage recorded in that package.
 
 The last command optionally runs an independently installed C Tor test client.
 It is not needed to embed Gonion. Passing these tests demonstrates only the

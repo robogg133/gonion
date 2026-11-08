@@ -24,28 +24,38 @@ closed and requires separate specification review and acceptance evidence:
 - Deliberately unsupported and rejected: IPv6 exit streams, multi-bridge
   selection, authorized onion services, congestion-control/PoW negotiation,
   multi-port service routing, and full `ns` server-descriptor hydration.
-- Known path-bias limits are documented as `shortcut:` comments with their
-  upgrade paths.
+- Known path-bias limits: §7.3 scaling and §7.4 rate tiers are implemented; the
+  §7.2 END-echo probe and `pb_dropguards=1` remain explicitly unsupported and
+  fail closed.
 - Vulnerability disclosure: [SECURITY.md](SECURITY.md).
 
 ## Current functionality
 
 - TLS/OR link negotiation, relay CERTS authentication and expected identity pins.
 - Tor cell framing, ntor circuit construction, per-hop cryptography, streams,
-  SENDME flow control and deadlines.
+  SENDME flow control and deadlines. Circuit ownership now has one idempotent
+  teardown path, random collision-checked IDs, context/deadline-aware build and
+  stream APIs, and per-connection circuit/stream/queue ceilings.
 - Authenticated consensus download, microdescriptor hydration, refresh,
-  connection-owned refresh recovery after channel loss, and separate
-  raw/hydrated cache files.
+  connection-owned refresh recovery after channel loss, crash-consistent atomic
+  cache replacement, and separate raw/hydrated cache files. The Tor cache backend
+  requires an explicit caller-owned directory.
 - `pkg/embed`: `DefaultOptions`, caller-controlled bootstrap/guard dialers and
   storage, persistent caller-owned public guard state (`Options.Guards`, one
   guard choice shared across exit and onion circuit construction; construction
   fails closed without it), TCP/HTTPS/onion Dial, circuit pooling and lifecycle
-  management.
-- Onion-v3 descriptor validation, introduction/rendezvous, and service publication.
+  management. A privacy-safe optional log writer and `Stats` snapshot expose
+  bootstrap, guard, bridge and listener failure classes without destination
+  labels.
+- Onion-v3 descriptor validation, introduction/rendezvous, service publication,
+  deterministic SRV/period rollover, bounded maintenance backoff and restart
+  revision anti-rollback.
 - A Tor-backed `net.Listener` for onion services, without a local listening socket.
   Service identities and durable descriptor revision allocation belong to callers.
-- An obfs4 transport adapter. End-to-end bridge-aware guard selection is not yet
-  implemented; using obfs4 for bootstrap alone does not route traffic through it.
+- Transport adapters for meek, webtunnel, Snowflake and obfs4. Meek and webtunnel
+  honor context cancellation; obfs4 requires a pinned RSA identity and has local
+  server-handshake evidence. Public end-to-end obfs4 bootstrap is still blocked by
+  the root connection deadline API.
 
 See the [embedding guide](pkg/embed/README.md),
 [runnable examples](examples/embed/README.md), and
@@ -114,14 +124,15 @@ protocol vectors, negative tests, fuzzing, controlled-network testing or audit.
 ## Development priorities
 
 1. Review the implemented persistent guard state/persistence and the integrated
-   path-bias accounting (two documented `shortcut:` cases).
-2. Exercise long-running service rollover, publication failures and restarts on
-   a controlled network; refresh recovery after channel loss is implemented
-   (`StartConsensusRecovery`, fail-closed without a redial policy), but its
-   long-run behavior still needs controlled-network coverage.
+   path-bias accounting. §7.3 scaling and §7.4 rate tiers are implemented; the
+   §7.2 END-echo probe and `pb_dropguards=1` remain explicitly unsupported.
+2. Rerun controlled Chutney/current C Tor interoperability for surface Dial,
+   onion Dial, service publication, refresh and the new SRV/period rollover and
+   maintenance-backoff flows.
 3. Review the immutable directory trust boundary and expand CERTS/parser negative
    and concurrency tests.
-4. Add unsupported capabilities only with their corresponding spec review and
+4. Record benchmark baselines and profiles, then optimize only measured costs.
+5. Add unsupported capabilities only with their corresponding spec review and
    interoperability tests: bridge-aware guard state instances, IPv6 streams,
    normal consensus server-descriptor hydration and high-level authorized
    services.
