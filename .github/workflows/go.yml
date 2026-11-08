@@ -1,4 +1,6 @@
-# This workflow will build a golang project
+# This workflow builds and tests the Gonion Go implementation.
+# Default pull-request suite is offline: public-network tests stay gated behind
+# GONION_NETWORK_TESTS / GONION_TEST_* and are not executed here.
 # For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-go
 
 name: Go
@@ -8,21 +10,54 @@ on:
     branches: [ "main" ]
   pull_request:
     branches: [ "main" ]
+  release:
+    types: [ published ]
+  schedule:
+    - cron: "0 2 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
 
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-    permissions:
-      contents: read
+    timeout-minutes: 25
+    name: Build / offline unit tests
     steps:
-    - uses: actions/checkout@v4
+    # Pinned by commit SHA; tag comment records the audited release.
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
     - name: Set up Go
-      uses: actions/setup-go@v4
+      uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
       with:
         go-version-file: go.mod
+
+    - name: Verify gofmt
+      run: |
+        gofmt -l . > /tmp/gofmt.out
+        # Never scan the C Tor reference tree for Go files.
+        grep -v '^tor-source/' /tmp/gofmt.out > /tmp/gofmt.clean || true
+        cat /tmp/gofmt.out || true
+        if [ -s /tmp/gofmt.clean ]; then
+          echo "gofmt: files need formatting:"
+          cat /tmp/gofmt.clean
+          exit 1
+        fi
+        echo "gofmt: clean"
+
+    - name: Verify Go modules
+      run: |
+        go mod verify
+        go list -m all > /dev/null
+        go mod tidy -diff
+
+    - name: Build (CGO disabled)
+      run: CGO_ENABLED=0 go build ./...
+
+    - name: Build examples
+      run: CGO_ENABLED=0 go build ./examples/...
 
     - name: Test
       run: go test ./... -count=1 -timeout 4m
@@ -33,4 +68,160 @@ jobs:
 
     - name: Race
       if: ${{ !cancelled() }}
-      run: go test -race ./... -count=1 -timeout 4m
+      run: go test -race ./... -count=1 -timeout 6m
+
+  matrix:
+    name: Matrix ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows/amd64
+            os: windows-latest
+            goos: windows
+            goarch: amd64
+          - name: macos/amd64
+            os: macos-latest
+            goos: darwin
+            goarch: amd64
+          - name: linux/arm64
+            os: ubuntu-latest
+            goos: linux
+            goarch: arm64
+          - name: linux/386
+            os: ubuntu-latest
+            goos: linux
+            goarch: 386
+    steps:
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+    - name: Set up Go
+      uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+      with:
+        go-version-file: go.mod
+
+    - name: Cross-build
+      env:
+        CGO_ENABLED: "0"
+        GOOS: ${{ matrix.goos }}
+        GOARCH: ${{ matrix.goarch }}
+      run: go build ./... && go build ./examples/...
+
+  fuzz-smoke:
+    name: Fuzz smoke (PR, bounded)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    steps:
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+    - name: Set up Go
+      uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+      with:
+        go-version-file: go.mod
+
+    - name: Fuzz seed corpus (fast subset)
+      run: |
+        go test ./pkg/common/ -run '^Fuzz(ParseConsensus|ParseMicrodescriptor|BridgeDescriptor)' -count=1 -timeout 3m
+        go test ./pkg/crypto/ -run '^Fuzz(ParseIdentityVSigningCert|VerifyRelayCertificates)' -count=1 -timeout 3m
+        go test ./pkg/cells/base/ -run '^Fuzz(ReadFrame|ReadCell|Netinfo)' -count=1 -timeout 3m
+        go test ./pkg/cells/relay/ -run '^Fuzz(RelayCell|UnmarshalPlain)' -count=1 -timeout 3m
+        go test ./pkg/lspec/ -run '^FuzzLspec' -count=1 -timeout 3m
+        go test ./pkg/path/ -run '^FuzzGuard' -count=1 -timeout 3m
+        go test ./pkg/hs/crypto/ -run '^FuzzDescriptor' -count=1 -timeout 3m
+        go test ./pkg/hs/desc/ -run '^FuzzDescriptor' -count=1 -timeout 3m
+        go test ./pkg/parsers/json/ -run '^FuzzConsensusJSON' -count=1 -timeout 3m
+
+    - name: Fuzz timed smoke (10s per target, deterministic seeds only)
+      run: |
+        set -e
+        run_fuzz() {
+          pkg="$1"; name="$2"
+          echo "== fuzz $name in $pkg (10s)"
+          go test "$pkg" -run '^$' -fuzz "^${name}\$" -fuzztime=10s -timeout 90s
+        }
+        run_fuzz ./pkg/common/ FuzzParseConsensus
+        run_fuzz ./pkg/common/ FuzzParseMicrodescriptor
+        run_fuzz ./pkg/common/ FuzzBridgeDescriptor
+        run_fuzz ./pkg/crypto/ FuzzParseIdentityVSigningCert
+        run_fuzz ./pkg/crypto/ FuzzVerifyRelayCertificates
+        run_fuzz ./pkg/cells/base/ FuzzReadFrame
+        run_fuzz ./pkg/cells/base/ FuzzReadCell
+        run_fuzz ./pkg/cells/relay/ FuzzRelayCellCodec
+        run_fuzz ./pkg/lspec/ FuzzLspecRead
+        run_fuzz ./pkg/path/ FuzzGuardStateDecode
+        run_fuzz ./pkg/hs/crypto/ FuzzDescriptorLayers
+        run_fuzz ./pkg/hs/desc/ FuzzDescriptorParsers
+        run_fuzz ./pkg/parsers/json/ FuzzConsensusJSON
+
+  fuzz-nightly:
+    name: Fuzz campaign (scheduled, long)
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+    - name: Set up Go
+      uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+      with:
+        go-version-file: go.mod
+
+    - name: Fuzz campaigns (10m per target, corpus archived)
+      run: |
+        set -e
+        mkdir -p fuzz-artifacts
+        run_fuzz() {
+          pkg="$1"; name="$2"
+          echo "== campaign $name in $pkg (10m)"
+          go test "$pkg" -run '^$' -fuzz "^${name}\$" -fuzztime=10m -timeout 12m || {
+            echo "fuzz finding in $name (see artifacts)"
+            cp -r "$(go env GOCACHE)/fuzz/$pkg" fuzz-artifacts/ 2>/dev/null || true
+            cp -r ./testdata/fuzz 2>/dev/null fuzz-artifacts/ || true
+            return 1
+          }
+        }
+        run_fuzz ./pkg/common/ FuzzParseConsensus
+        run_fuzz ./pkg/common/ FuzzParseMicrodescriptor
+        run_fuzz ./pkg/common/ FuzzBridgeDescriptor
+        run_fuzz ./pkg/crypto/ FuzzParseIdentityVSigningCert
+        run_fuzz ./pkg/crypto/ FuzzVerifyRelayCertificates
+        run_fuzz ./pkg/cells/base/ FuzzReadFrame
+        run_fuzz ./pkg/cells/base/ FuzzReadCell
+        run_fuzz ./pkg/cells/base/ FuzzNetinfoDecode
+        run_fuzz ./pkg/cells/relay/ FuzzRelayCellCodec
+        run_fuzz ./pkg/lspec/ FuzzLspecRead
+        run_fuzz ./pkg/path/ FuzzGuardStateDecode
+        run_fuzz ./pkg/hs/crypto/ FuzzDescriptorLayers
+        run_fuzz ./pkg/hs/crypto/ FuzzHsIntroRoundTrip
+        run_fuzz ./pkg/hs/desc/ FuzzDescriptorParsers
+        run_fuzz ./pkg/hs/desc/ FuzzDescriptorDecode
+        run_fuzz ./pkg/parsers/json/ FuzzConsensusJSON
+
+    - name: Upload fuzz corpus/findings
+      if: always()
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: fuzz-findings-${{ github.sha }}
+        path: fuzz-artifacts
+        if-no-files-found: warn
+        retention-days: 90
+
+  govulncheck:
+    name: govulncheck (scheduled/release)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: github.event_name == 'schedule' || github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+    - id: govulncheck
+      uses: golang/govulncheck-action@032d45514ae346b1db93c04b0c90b841c370344f # v1.1.0
+      with:
+        go-version-file: go.mod
+        go-package: ./...
+        output-format: text
+        cache: true
