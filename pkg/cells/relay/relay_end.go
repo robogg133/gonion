@@ -37,11 +37,84 @@ func (c *RelayEndCell) Encode(w io.Writer) error {
 	return err
 }
 func (c *RelayEndCell) Decode(r io.Reader) error {
-	b := make([]byte, 1)
-	_, err := r.Read(b)
+	var b [1]byte
+	_, err := io.ReadFull(r, b[:])
+	if err == io.EOF {
+		// tor-spec 6.3: empty RELAY_END is treated as REASON_MISC.
+		c.Reason = END_REASON_MISC
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	// Unknown reasons are accepted: future Tor versions may add some.
 	c.Reason = b[0]
+	return nil
+}
+
+// RELAY_TRUNCATED (tor-spec 6.1, command 9) is a backward control cell
+// whose payload is a single octet describing why the circuit was closed.
+// The values are the DESTROY/TRUNCATED reason list in tor-spec 5.4,
+// distinct from the RELAY_END reasons above.
+const COMMAND_RELAY_TRUNCATED uint8 = 9
+
+const (
+	TRUNCATED_REASON_NONE           uint8 = iota // No reason given.
+	TRUNCATED_REASON_PROTOCOL                    // Tor protocol violation.
+	TRUNCATED_REASON_INTERNAL                    // Internal error.
+	TRUNCATED_REASON_REQUESTED                   // A client sent a TRUNCATE command.
+	TRUNCATED_REASON_HIBERNATING                 // Not currently operating.
+	TRUNCATED_REASON_RESOURCELIMIT               // Out of memory, sockets, or circuit IDs.
+	TRUNCATED_REASON_CONNECTFAILED               // Unable to reach relay.
+	TRUNCATED_REASON_OR_IDENTITY                 // Relay identity was not as expected.
+	TRUNCATED_REASON_CHANNEL_CLOSED              // The OR connection carrying this circuit died.
+	TRUNCATED_REASON_FINISHED                    // The circuit expired for being dirty or old.
+	TRUNCATED_REASON_TIMEOUT                     // Circuit construction took too long.
+	TRUNCATED_REASON_DESTROYED                   // Circuit destroyed without a client TRUNCATE.
+	TRUNCATED_REASON_NOSUCHSERVICE               // Request for unknown hidden service.
+)
+
+// RelayTruncatedCell is the decodable representation of RELAY_TRUNCATED,
+// for later circuit-teardown integration in the circuit loop (parser side
+// only). The reason is a single octet; unknown values are accepted.
+type RelayTruncatedCell struct {
+	StreamID uint16
+	Reason   uint8
+}
+
+func (*RelayTruncatedCell) ID() uint8              { return COMMAND_RELAY_TRUNCATED }
+func (c *RelayTruncatedCell) GetStreamID() uint16  { return c.StreamID }
+func (c *RelayTruncatedCell) SetStreamID(n uint16) { c.StreamID = n }
+
+func (c *RelayTruncatedCell) Encode(w io.Writer) error {
+	_, err := w.Write([]byte{c.Reason})
 	return err
 }
+func (c *RelayTruncatedCell) Decode(r io.Reader) error {
+	var b [1]byte
+	if _, err := io.ReadFull(r, b[:]); err != nil {
+		return err
+	}
+	c.Reason = b[0]
+	return nil
+}
+
+// RELAY_DROP (tor-spec 6.1, command 10) is a forward-or-backward control
+// dummy cell with no payload semantics: "upon receiving such a cell, the
+// OR or OP must drop it".
+const COMMAND_RELAY_DROP uint8 = 10
+
+// RelayDropCell is an ignorable RELAY_DROP cell (no payload).
+type RelayDropCell struct {
+	StreamID uint16
+}
+
+func (*RelayDropCell) ID() uint8              { return COMMAND_RELAY_DROP }
+func (c *RelayDropCell) GetStreamID() uint16  { return c.StreamID }
+func (c *RelayDropCell) SetStreamID(n uint16) { c.StreamID = n }
+
+func (*RelayDropCell) Encode(io.Writer) error { return nil }
+func (*RelayDropCell) Decode(io.Reader) error { return nil }
 
 // EndReasonString returns a short public description of a RELAY_END reason.
 func EndReasonString(reason uint8) string {

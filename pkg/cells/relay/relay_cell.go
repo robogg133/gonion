@@ -15,14 +15,16 @@ import (
 const RELAY_BODY_LEN = 498
 
 var AllKnownRellayCells = map[uint8]func() Cell{
-	COMMAND_BEGIN:     func() Cell { return &BeginCell{} },
-	COMMAND_DATA:      func() Cell { return &DataCell{} },
-	COMMAND_CONNECTED: func() Cell { return &ConnectedCell{} },
-	COMMAND_EXTEND2:   func() Cell { return &Extend2Cell{} },
-	COMMAND_EXTENDED2: func() Cell { return &Extended2Cell{} },
-	COMMAND_SENDME:    func() Cell { return &SendMeCell{} },
-	COMMAND_RELAY_END: func() Cell { return &RelayEndCell{} },
-	COMMAND_BEGIN_DIR: func() Cell { return &BeginDirCell{} },
+	COMMAND_BEGIN:           func() Cell { return &BeginCell{} },
+	COMMAND_DATA:            func() Cell { return &DataCell{} },
+	COMMAND_CONNECTED:       func() Cell { return &ConnectedCell{} },
+	COMMAND_EXTEND2:         func() Cell { return &Extend2Cell{} },
+	COMMAND_EXTENDED2:       func() Cell { return &Extended2Cell{} },
+	COMMAND_SENDME:          func() Cell { return &SendMeCell{} },
+	COMMAND_RELAY_END:       func() Cell { return &RelayEndCell{} },
+	COMMAND_RELAY_TRUNCATED: func() Cell { return &RelayTruncatedCell{} },
+	COMMAND_RELAY_DROP:      func() Cell { return &RelayDropCell{} },
+	COMMAND_BEGIN_DIR:       func() Cell { return &BeginDirCell{} },
 
 	COMMAND_ESTABLISH_INTRO:        func() Cell { return &EstIntroCell{} },
 	COMMAND_ESTABLISH_RENDEZVOUS:   func() Cell { return &EstRendezvousCell{} },
@@ -65,6 +67,16 @@ func NewDataCellCoder(backwards, forward *crypto.RunningValues) *RelayCellCoder 
 }
 
 var ErrUnrecognized = errors.New("relay cell is not recognized by this hop")
+
+// ErrUnknownRelayCommand reports a relay cell that was recognized by this
+// hop (recognized field zero and digest validated, so the running digest
+// has advanced and the cell counts toward flow control), but whose relay
+// command this implementation does not understand. Per tor-spec 6.1 such
+// cells must be dropped and ignored without tearing down the circuit;
+// callers can test for this sentinel with errors.Is. It is distinct from
+// ErrUnrecognized, which means the cell was not recognized at all and the
+// digest was not advanced.
+var ErrUnknownRelayCommand = errors.New("relay: unknown relay command")
 
 func IsDecrypted(data []byte) bool {
 	return len(data) >= 3 && data[1] == 0 && data[2] == 0
@@ -170,7 +182,10 @@ func (d *RelayCellCoder) UnmarshalPlain(plain []byte) (Cell, error) {
 	}
 	factory, ok := AllKnownRellayCells[plain[0]]
 	if !ok {
-		return nil, fmt.Errorf("unknown relay command: %d", plain[0])
+		// Digest was already validated/advanced by backwardCheck above:
+		// the cell is recognized, so it must be ignored, not treated as
+		// an undecryptable cell for another hop.
+		return nil, fmt.Errorf("%w: %d", ErrUnknownRelayCommand, plain[0])
 	}
 	c := factory()
 

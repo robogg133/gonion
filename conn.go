@@ -2,6 +2,7 @@ package gonion
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/binary"
@@ -12,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/robogg133/gonion/internal/shared"
 	cells "github.com/robogg133/gonion/pkg/cells/base"
 	"github.com/robogg133/gonion/pkg/common"
 	"github.com/robogg133/gonion/pkg/crypto"
@@ -46,6 +48,20 @@ type Conn struct {
 	writeCall chan cellWrite
 	ctx       context.Context
 	ctxCancel context.CancelCauseFunc
+
+	// closeOnce makes link teardown idempotent: every circuit is released and
+	// the socket is closed at most once, whether the cause is Close or an I/O
+	// error observed by either link loop.
+	closeOnce sync.Once
+	closeErr  error
+
+	// circuit IDs are allocated and registered while holding circIDMu. The
+	// reservation set covers the window between allocation (which needs the ID
+	// for logging and the Circuit context) and registration.
+	circIDMu    sync.Mutex
+	circuitIDs  map[uint32]struct{}
+	circIDRand  io.Reader
+	maxCircuits int
 
 	guardID uint32
 	exitID  uint32
@@ -129,12 +145,14 @@ func NewConn(c net.Conn, logOut io.Writer, debug bool, opts ...ConnOption) (*Con
 
 	ctx, cancel := context.WithCancelCause(withLogger(context.Background(), base))
 	conn := &Conn{
-		writeCall: make(chan cellWrite, 4096),
+		writeCall: make(chan cellWrite, maxQueuedLinkCells),
 		ctx:       ctx,
 		ctxCancel: cancel,
 		circuits: &circuits{
 			circs: make(map[uint32]*Circuit),
 		},
+		circuitIDs:  make(map[uint32]struct{}),
+		circIDRand:  rand.Reader,
 		cellBodyLen: cells.CELL_BODY_LEN,
 	}
 
@@ -292,12 +310,220 @@ func (conn *Conn) Close() error {
 	if replacement != nil {
 		_ = replacement.Close()
 	}
-	conn.ctxCancel(ErrClosed)
-	return conn.socket.Close()
+	// Best-effort DESTROY for established circuits is queued before the socket
+	// is closed. There is no acknowledgement wait.
+	conn.shutdown(ErrClosed, true)
+	return conn.closeErr
+}
+
+// fail records a terminal link error: every owned circuit is torn down and the
+// underlying socket is closed so blocked readers and writers cannot survive.
+func (conn *Conn) fail(cause error) {
+	conn.shutdown(cause, false)
+}
+
+func (conn *Conn) shutdown(cause error, notifyPeer bool) {
+	if cause == nil {
+		cause = ErrClosed
+	}
+	conn.closeOnce.Do(func() {
+		shutdownCircuits := func() {
+			for _, circuit := range conn.circuitSnapshot() {
+				circuit.teardown(cause, destroyReasonFor(cause), notifyPeer)
+			}
+		}
+		if notifyPeer {
+			// Queue best-effort DESTROY while the writer still exists.
+			shutdownCircuits()
+			if conn.ctxCancel != nil {
+				conn.ctxCancel(cause)
+			}
+		} else {
+			// On I/O failure, cancel ownership first so no observer sees a dead
+			// link with a still-live connection context.
+			if conn.ctxCancel != nil {
+				conn.ctxCancel(cause)
+			}
+			shutdownCircuits()
+		}
+		if conn.socket != nil {
+			conn.closeErr = conn.socket.Close()
+		}
+	})
+}
+
+func (conn *Conn) circuitSnapshot() []*Circuit {
+	if conn.circuits == nil {
+		return nil
+	}
+	conn.circuits.mu.RLock()
+	defer conn.circuits.mu.RUnlock()
+	out := make([]*Circuit, 0, len(conn.circuits.circs))
+	for _, circuit := range conn.circuits.circs {
+		out = append(out, circuit)
+	}
+	return out
 }
 
 func (conn *Conn) Context() context.Context {
 	return conn.ctx
+}
+
+// circuitLimit is the per-connection ceiling. A non-positive field selects the
+// package default, so manually built Conns keep the production ceiling.
+func (conn *Conn) circuitLimit() int {
+	if conn.maxCircuits > 0 {
+		return conn.maxCircuits
+	}
+	return MaxCircuitsPerConn
+}
+
+// allocCircID reserves a random, nonzero, collision-checked CircID. The connection
+// is the only allocator: occupancy is checked against the registry and the
+// per-connection reservation set under circIDMu.
+func (conn *Conn) allocCircID() (uint32, error) {
+	conn.circIDMu.Lock()
+	defer conn.circIDMu.Unlock()
+	if conn.circuitIDs == nil {
+		conn.circuitIDs = make(map[uint32]struct{})
+	}
+	source := conn.circIDRand
+	if source == nil {
+		source = rand.Reader
+	}
+	version := conn.ProtcolVersion
+	if version == 0 {
+		// Manually assembled Conns have no negotiated version; production links
+		// always expose 4 or 5 here.
+		version = 4
+	}
+	for attempt := 0; attempt < shared.CIRCUIT_ID_MAX_RETRIES; attempt++ {
+		id, err := shared.RandomCircID(source, version)
+		if err != nil {
+			if conn.ctx != nil {
+				return 0, fail(conn.ctx, ErrCircuit, "circuit id generation failed", err)
+			}
+			return 0, Public(ErrCircuit, "circuit id generation failed")
+		}
+		if id == 0 {
+			continue
+		}
+		if conn.circuits != nil && conn.circuits.Get(id) != nil {
+			continue
+		}
+		if _, reserved := conn.circuitIDs[id]; reserved {
+			continue
+		}
+		conn.circuitIDs[id] = struct{}{}
+		return id, nil
+	}
+	return 0, &CircuitIDExhaustedError{Attempts: shared.CIRCUIT_ID_MAX_RETRIES}
+}
+
+// registerCircuit moves a reserved ID into the live registry without replacing
+// an existing entry. A registry collision leaves the existing circuit intact.
+func (conn *Conn) registerCircuit(circuit *Circuit) error {
+	conn.circIDMu.Lock()
+	defer conn.circIDMu.Unlock()
+	if conn.circuits == nil {
+		delete(conn.circuitIDs, circuit.ID)
+		return Public(ErrCircuit, "connection has no circuit registry")
+	}
+	if conn.ctx != nil && conn.ctx.Err() != nil {
+		delete(conn.circuitIDs, circuit.ID)
+		return Public(ErrClosed, "connection is closed")
+	}
+	if conn.circuits.Len() >= conn.circuitLimit() {
+		delete(conn.circuitIDs, circuit.ID)
+		return &CircuitLimitError{Limit: conn.circuitLimit()}
+	}
+	if !conn.circuits.Add(circuit.ID, circuit) {
+		delete(conn.circuitIDs, circuit.ID)
+		return &CircuitIDExhaustedError{Attempts: shared.CIRCUIT_ID_MAX_RETRIES}
+	}
+	delete(conn.circuitIDs, circuit.ID)
+	return nil
+}
+
+// sendDestroy queues a link-layer DESTROY best effort and never waits for the
+// write. A full or closed outbound queue is intentionally not fatal here.
+func (conn *Conn) sendDestroy(id uint32, reason uint8) {
+	if conn == nil || conn.writeCall == nil {
+		return
+	}
+	coder := cells.NewCellCoder(cells.AllKnownCells)
+	raw, err := coder.MarshalCell(&cells.DestroyCell{CircuitID: id, Reason: reason})
+	if err != nil {
+		return
+	}
+	done := make(chan error, 1)
+	select {
+	case conn.writeCall <- cellWrite{data: raw, done: done}:
+	default:
+	}
+}
+
+// Add registers a circuit only when the ID is free. It never replaces a live
+// entry, so a late teardown cannot hide a newer circuit using the same ID.
+func (m *circuits) Add(id uint32, value *Circuit) bool {
+	if m == nil {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.circs == nil {
+		m.circs = make(map[uint32]*Circuit)
+	}
+	if _, exists := m.circs[id]; exists {
+		return false
+	}
+	m.circs[id] = value
+	return true
+}
+
+// DeleteIf removes id only while it still maps to the exact circuit value.
+func (m *circuits) DeleteIf(id uint32, value *Circuit) bool {
+	if m == nil {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if current, ok := m.circs[id]; !ok || current != value {
+		return false
+	}
+	delete(m.circs, id)
+	return true
+}
+
+func (m *circuits) Len() int {
+	if m == nil {
+		return 0
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return len(m.circs)
+}
+
+func (m *streams) Len() int {
+	if m == nil {
+		return 0
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return len(m.streams)
+}
+
+func (m *streams) snapshot() []*Stream {
+	if m == nil {
+		return nil
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]*Stream, 0, len(m.streams))
+	for _, stream := range m.streams {
+		out = append(out, stream)
+	}
+	return out
 }
 
 func setupTls(ctx context.Context, c net.Conn) (net.Conn, *x509.Certificate, error) {

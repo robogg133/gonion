@@ -2,6 +2,7 @@ package gonion
 
 import (
 	"bytes"
+	"context"
 	"crypto/ecdh"
 	"crypto/rand"
 	"fmt"
@@ -77,8 +78,17 @@ func (e *pathBiasHopsError) PathBiasHops() int { return e.hops }
 func (e *pathBiasHopsError) Error() string { return e.err.Error() }
 func (e *pathBiasHopsError) Unwrap() error { return e.err }
 
-// Dial opens a stream to addr (host:port) through the circuit exit hop.
+// Dial opens a stream to addr (host:port) through the circuit exit hop. The
+// source-compatible wrapper supplies a bounded begin deadline.
 func (c *Circuit) Dial(addr string) (net.Conn, error) {
+	ctx, cancel := context.WithTimeout(c.Ctx, STREAM_BEGIN_TIMEOUT)
+	defer cancel()
+	return c.DialContext(ctx, addr)
+}
+
+// DialContext opens a stream while honoring the caller's context/deadline.
+// Cancellation after a successful Dial does not close the returned connection.
+func (c *Circuit) DialContext(ctx context.Context, addr string) (net.Conn, error) {
 	if c.hops.Len() == 0 {
 		return nil, Public(ErrCircuit, "empty circuit")
 	}
@@ -89,7 +99,7 @@ func (c *Circuit) Dial(addr string) (net.Conn, error) {
 	if isOnion {
 		return c.dialOnion(addr)
 	}
-	stream, err := c.NewStream(addr, c.hops.Len()-1)
+	stream, err := c.NewStreamContext(ctx, addr, c.hops.Len()-1)
 	if err != nil {
 		return nil, err
 	}

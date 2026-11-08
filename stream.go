@@ -11,6 +11,7 @@ import (
 
 	"github.com/robogg133/gonion/internal/shared"
 	"github.com/robogg133/gonion/internal/window"
+	cells "github.com/robogg133/gonion/pkg/cells/base"
 	"github.com/robogg133/gonion/pkg/cells/relay"
 	"github.com/smallnest/ringbuffer"
 )
@@ -63,7 +64,7 @@ func (c *Circuit) newStream(id uint16, target string, hopDest int) *Stream {
 	ctx, cancel := context.WithCancelCause(withLogger(c.Ctx, log))
 	s := &Stream{
 		ID: id, circuit: c, myHopDestination: hopDest, addr: shared.NewAddr("tcp", target),
-		InboundControl: make(chan relay.Cell, 16), outbound: make(chan RelayOut, 32),
+		InboundControl: make(chan relay.Cell, maxStreamControlCells), outbound: make(chan RelayOut, maxStreamOutboundCells),
 		Ctx: ctx, ctxCancel: cancel, receiveSendMe: make(chan struct{}, 1),
 		SendWindow: window.NewWindow(500, 50), ReceiveWindow: window.NewWindow(500, 50),
 		State: STREAM_OPENING, buffer: ringbuffer.New(STREAM_BUFFER_SIZE), readReady: make(chan struct{}, 1),
@@ -76,28 +77,34 @@ func (c *Circuit) newStream(id uint16, target string, hopDest int) *Stream {
 	return s
 }
 
+// NewStream preserves the context-free API with a bounded default deadline.
 func (c *Circuit) NewStream(target string, hopDest int) (*Stream, error) {
+	ctx, cancel := context.WithTimeout(c.Ctx, STREAM_BEGIN_TIMEOUT)
+	defer cancel()
+	return c.NewStreamContext(ctx, target, hopDest)
+}
+
+// NewStreamContext allocates and opens a stream. Every early return releases
+// the stream; a completed open is not owned by the caller's begin context.
+func (c *Circuit) NewStreamContext(ctx context.Context, target string, hopDest int) (*Stream, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if c.Ctx.Err() != nil {
 		return nil, context.Cause(c.Ctx)
 	}
 	if hopDest < 0 || hopDest >= c.hops.Len() {
 		return nil, ErrInvalidHop
 	}
-	c.streamMu.Lock()
-	// IDs may not be reused, even after a stream is closed (tor-spec 6.2).
-	for c.nextStreamID <= 65535 && (c.nextStreamID == 0 || c.usedStreamIDs[c.nextStreamID/8]&(1<<(c.nextStreamID%8)) != 0) {
-		c.nextStreamID++
+	s, err := c.reserveStream(target, hopDest)
+	if err != nil {
+		return nil, err
 	}
-	if c.nextStreamID > 65535 {
-		c.streamMu.Unlock()
-		return nil, Public(ErrStream, "circuit stream IDs exhausted")
-	}
-	id := uint16(c.nextStreamID)
-	c.nextStreamID++
-	c.usedStreamIDs[id/8] |= 1 << (id % 8)
-	s := c.newStream(id, target, hopDest)
-	c.streamMu.Unlock()
-	var err error
+	stop := context.AfterFunc(ctx, func() { s.ctxCancel(context.Cause(ctx)) })
+	defer stop()
 	if target == "dir" {
 		err = s.beginDir()
 	} else {
@@ -112,6 +119,31 @@ func (c *Circuit) NewStream(target string, hopDest int) (*Stream, error) {
 		return nil, net.ErrClosed
 	}
 	return s, nil
+}
+
+// reserveStream applies the per-circuit stream ceiling and allocates the next
+// never-reused StreamID (tor-spec 6.2).
+func (c *Circuit) reserveStream(target string, hopDest int) (*Stream, error) {
+	c.streamMu.Lock()
+	defer c.streamMu.Unlock()
+	limit := c.maxStreams
+	if limit <= 0 {
+		limit = MaxStreamsPerCircuit
+	}
+	if c.streams.Len() >= limit {
+		return nil, &StreamLimitError{Limit: limit}
+	}
+	// IDs may not be reused, even after a stream is closed (tor-spec 6.2).
+	for c.nextStreamID <= 65535 && (c.nextStreamID == 0 || c.usedStreamIDs[c.nextStreamID/8]&(1<<(c.nextStreamID%8)) != 0) {
+		c.nextStreamID++
+	}
+	if c.nextStreamID > 65535 {
+		return nil, Public(ErrStream, "circuit stream IDs exhausted")
+	}
+	id := uint16(c.nextStreamID)
+	c.nextStreamID++
+	c.usedStreamIDs[id/8] |= 1 << (id % 8)
+	return c.newStream(id, target, hopDest), nil
 }
 
 func (s *Stream) open() bool {
@@ -143,14 +175,14 @@ func (s *Stream) controlLoop() {
 					default:
 					}
 				default:
-					s.circuit.ctxCancel(Public(ErrSendMe, "unsolicited stream SENDME"))
+					s.circuit.abort(Public(ErrSendMe, "unsolicited stream SENDME"))
 					return
 				}
 			case relay.COMMAND_RELAY_END:
 				_ = s.Close()
 				return
 			default:
-				s.circuit.ctxCancel(Public(ErrProtocolViolation, "unexpected stream control cell"))
+				s.circuit.abort(Public(ErrProtocolViolation, "unexpected stream control cell"))
 				return
 			}
 		case <-s.Ctx.Done():
@@ -253,7 +285,7 @@ func (s *Stream) queueControl(cell relay.Cell) {
 	case s.circuit.writeControl <- RelayOut{Cell: cell, Dst: s.myHopDestination}:
 	case <-s.circuit.Ctx.Done():
 	default:
-		s.circuit.ctxCancel(Public(ErrCircuit, "stream control queue exhausted"))
+		s.circuit.abortWithReason(Public(ErrCircuit, "stream control queue exhausted"), cells.DESTROY_REASON_RESOURCELIMIT)
 	}
 }
 

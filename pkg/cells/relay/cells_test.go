@@ -2,6 +2,7 @@ package relay_test
 
 import (
 	"bytes"
+	"errors"
 	"testing"
 
 	"github.com/robogg133/gonion/pkg/cells/relay"
@@ -195,19 +196,23 @@ func TestRelayCellCoder_MarshalUnmarshal_Data(t *testing.T) {
 }
 
 func TestRelayCellCoder_UnknownCommand(t *testing.T) {
+	// A zero body has recognized=0 but a digest that does not validate, so
+	// it is unrecognized (digest not advanced), not an unknown command.
+	// The recognized-but-unknown case is covered in relay_control_test.go.
 	kf := bytes.Repeat([]byte{1}, 16)
 	df := bytes.Repeat([]byte{2}, 20)
 	fwd, _ := crypto.NewRunningValues(kf, df)
 	bwd, _ := crypto.NewRunningValues(kf, df)
 	coder := relay.NewDataCellCoder(bwd, fwd)
 
-	// Build a fake decrypted body with unknown cmd 0xfe and recognized=0
 	plain := make([]byte, 509)
 	plain[0] = 0xfe
-	// recognized already 0
 	_, err := coder.UnmarshalPlain(plain)
-	if err == nil {
-		t.Fatal("expected unknown command error")
+	if !errors.Is(err, relay.ErrUnrecognized) {
+		t.Fatalf("expected ErrUnrecognized, got %v", err)
+	}
+	if errors.Is(err, relay.ErrUnknownRelayCommand) {
+		t.Fatalf("unrecognized cell must not match ErrUnknownRelayCommand: %v", err)
 	}
 }
 

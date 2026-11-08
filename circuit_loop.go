@@ -15,10 +15,11 @@ func (c *Circuit) readloop() {
 	for {
 		select {
 		case rawCell := <-c.Inbound:
+			c.releaseInbound(len(rawCell))
 			cell, err := c.Coder.ReadCell(bytes.NewReader(rawCell))
 			if err != nil {
 				pub := fail(c.Ctx, ErrIO, "decode inbound cell failed", err)
-				c.ctxCancel(pub)
+				c.abort(pub)
 				return
 			}
 
@@ -36,13 +37,13 @@ func (c *Circuit) readloop() {
 				if err != nil {
 					log.Error().Err(err).Msg("onion decrypt failed")
 					pub := fail(c.Ctx, ErrDecrypt, "relay decrypt failed", err)
-					c.ctxCancel(pub)
+					c.abort(pub)
 					return
 				}
 
 				if rcCell.GetStreamID() == 0 {
 					if rcCell.ID() == relay.COMMAND_BEGIN || rcCell.ID() == relay.COMMAND_DATA || rcCell.ID() == relay.COMMAND_CONNECTED {
-						c.ctxCancel(Public(ErrProtocolViolation, "stream command has zero stream ID"))
+						c.abort(Public(ErrProtocolViolation, "stream command has zero stream ID"))
 						return
 					}
 					c.relayControlFunc(rcCell, hopN)
@@ -52,7 +53,7 @@ func (c *Circuit) readloop() {
 				if data, ok := rcCell.(*relay.DataCell); ok {
 					hop := c.hops.At(hopN)
 					if hop == nil || hop.Recv().Value() <= 0 {
-						c.ctxCancel(Public(ErrProtocolViolation, "circuit receive window exceeded"))
+						c.abort(Public(ErrProtocolViolation, "circuit receive window exceeded"))
 						return
 					}
 					hop.Recv().SetDigest(data.Digest())
@@ -73,7 +74,7 @@ func (c *Circuit) readloop() {
 				}
 
 				if stream.myHopDestination != hopN {
-					c.ctxCancel(Public(ErrProtocolViolation, "stream cell recognized by wrong hop"))
+					c.abort(Public(ErrProtocolViolation, "stream cell recognized by wrong hop"))
 					return
 				}
 				if rcCell.ID() == relay.COMMAND_DATA {
@@ -81,7 +82,7 @@ func (c *Circuit) readloop() {
 
 					if err := stream.writeDataCell(dataCell); err != nil {
 						logger(stream.Ctx).Warn().Err(err).Msg("stream buffer write failed")
-						c.ctxCancel(Public(ErrProtocolViolation, "stream receive buffer or window exceeded"))
+						c.abort(Public(ErrProtocolViolation, "stream receive buffer or window exceeded"))
 						return
 					}
 					continue
@@ -91,13 +92,15 @@ func (c *Circuit) readloop() {
 				case stream.InboundControl <- rcCell:
 				case <-stream.Ctx.Done():
 				default:
-					c.ctxCancel(Public(ErrProtocolViolation, "stream control queue exceeded"))
+					c.abortWithReason(Public(ErrProtocolViolation, "stream control queue exceeded"), cells.DESTROY_REASON_RESOURCELIMIT)
 					return
 				}
 				continue
 
 			default:
-				go c.handleCell(cell)
+				// Handle terminal link cells inline; a goroutine per cell would let a
+				// remote peer create unbounded work.
+				c.handleCell(cell)
 			}
 		case <-c.Ctx.Done():
 			return
@@ -112,7 +115,7 @@ func (c *Circuit) writeLoop() {
 
 	sendControl := func(out RelayOut) bool {
 		if err := c.sendRelay(out.Cell, out.Dst, false); err != nil {
-			c.ctxCancel(err)
+			c.abort(err)
 			return false
 		}
 		return true
@@ -127,7 +130,7 @@ func (c *Circuit) writeLoop() {
 			if out.Cell.ID() == relay.COMMAND_DATA {
 				hop := c.hops.At(out.Dst)
 				if hop == nil {
-					c.ctxCancel(ErrInvalidHop)
+					c.abort(ErrInvalidHop)
 					return
 				}
 				for hop.Send().IsZero() {
@@ -149,7 +152,7 @@ func (c *Circuit) writeLoop() {
 			if err != nil {
 				log.Error().Err(err).Int("dst", out.Dst).Uint8("relay_cmd", out.Cell.ID()).Msg("onion encrypt failed")
 				pub := fail(c.Ctx, ErrCircuit, "relay encrypt failed", err)
-				c.ctxCancel(pub)
+				c.abort(pub)
 				return
 			}
 
@@ -166,12 +169,11 @@ func (c *Circuit) relayControlFunc(rc relay.Cell, dst int) {
 	case relay.COMMAND_SENDME:
 		hop := c.hops.At(dst)
 		if hop == nil {
-			pub := failf(c.Ctx, ErrInvalidHop, nil, "invalid hop destination %d", dst)
-			c.ctxCancel(pub)
+			c.abort(Publicf(ErrInvalidHop, "invalid hop destination %d", dst))
 			return
 		}
 		if err := verifySendMe(c.Ctx, rc.(*relay.SendMeCell), c.SendMeVersion, hop.Send()); err != nil {
-			c.ctxCancel(err)
+			c.abort(err)
 			return
 		}
 		log.Debug().Msg("circuit SENDME accepted")
@@ -188,21 +190,21 @@ func (c *Circuit) relayControlFunc(rc relay.Cell, dst int) {
 	case relay.COMMAND_RENDEZVOUS_ESTABLISHED, relay.COMMAND_RENDEZVOUS2,
 		relay.COMMAND_INTRO_ESTABLISHED, relay.COMMAND_INTRODUCE_ACK, relay.COMMAND_INTRODUCE2:
 		if dst != c.hops.Len()-1 || rc.GetStreamID() != 0 {
-			c.ctxCancel(Public(ErrProtocolViolation, "HS control recognized by wrong hop"))
+			c.abort(Public(ErrProtocolViolation, "HS control recognized by wrong hop"))
 			return
 		}
 		c.controlMu.RLock()
 		ch := c.HSControl
 		c.controlMu.RUnlock()
 		if ch == nil {
-			c.ctxCancel(Public(ErrProtocolViolation, "unsolicited HS control cell"))
+			c.abort(Public(ErrProtocolViolation, "unsolicited HS control cell"))
 			return
 		}
 		select {
 		case ch <- rc:
 		case <-c.Ctx.Done():
 		default:
-			c.ctxCancel(Public(ErrProtocolViolation, "HS control queue exhausted"))
+			c.abortWithReason(Public(ErrProtocolViolation, "HS control queue exhausted"), cells.DESTROY_REASON_RESOURCELIMIT)
 		}
 	default:
 		log.Debug().Msg("unhandled circuit control relay")
