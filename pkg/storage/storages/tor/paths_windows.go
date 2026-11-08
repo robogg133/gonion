@@ -2,15 +2,15 @@
 
 package tor
 
-import (
-	"os"
-	"path/filepath"
-)
-
-// DefaultDataDir is the tor data directory used by the tor C binary on Windows.
-// The %APPDATA% marker is expanded in defaultDataDir.
+// DefaultDataDir is the C Tor default data directory on Windows. It is exposed
+// only for callers that deliberately want that legacy location; Gonion does not
+// select it automatically.
 const DefaultDataDir = "%APPDATA%\\Tor"
 
-func defaultDataDir() string {
-	return filepath.Join(os.Getenv("APPDATA"), "Tor")
+// syncDirectory is a no-op on Windows, where directory fsync is not available
+// through this interface. File-level sync and atomic rename provide the best
+// available durability.
+func syncDirectory(dir string) error {
+	_ = dir
+	return nil
 }

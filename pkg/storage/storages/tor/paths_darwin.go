@@ -2,17 +2,19 @@
 
 package tor
 
-import (
-	"os"
-	"path/filepath"
-)
+import "os"
 
-// DefaultDataDir is the tor data directory used by the tor C binary when running as root.
+// DefaultDataDir is the C Tor default data directory. It is exposed only for
+// callers that deliberately want that legacy location; Gonion does not select
+// it automatically.
 const DefaultDataDir = "/var/lib/tor"
 
-func defaultDataDir() string {
-	if os.Geteuid() == 0 {
-		return DefaultDataDir
+// syncDirectory persists directory entries on platforms that support it.
+func syncDirectory(dir string) error {
+	f, err := os.Open(dir)
+	if err != nil {
+		return err
 	}
-	return filepath.Join(os.Getenv("HOME"), ".tor")
+	defer f.Close()
+	return f.Sync()
 }

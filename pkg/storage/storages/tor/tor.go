@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -27,13 +28,24 @@ type store struct {
 	mu  sync.Mutex
 }
 
-// New returns a consensus store rooted at dir. An empty dir selects Tor's
-// platform default data directory. Prefer a dedicated Gonion directory.
-func New(dir string) storage.Storage {
+// ErrDataDirRequired is returned when New is called without an explicit storage
+// directory. Gonion no longer silently reuses C Tor's implicit data directory:
+// callers must choose and own the directory. To retain the old behavior during
+// migration, pass tor.DefaultDataDir explicitly after selecting it for the
+// process.
+var ErrDataDirRequired = errors.New("tor storage: data directory is required")
+
+// New returns a consensus store rooted at dir.
+//
+// Breaking change (security-required migration): an empty dir used to select C
+// Tor's platform default data directory. It is now an error. Update callers to
+// pass a dedicated, caller-owned directory, or tor.DefaultDataDir when that
+// legacy location is deliberately intended.
+func New(dir string) (storage.Storage, error) {
 	if dir == "" {
-		dir = defaultDataDir()
+		return nil, ErrDataDirRequired
 	}
-	return &store{dir: dir}
+	return &store{dir: dir}, nil
 }
 
 func (s *store) StoreConsensus(c *common.Consensus) error {
@@ -65,23 +77,43 @@ func (s *store) StoreConsensus(c *common.Consensus) error {
 	return s.writeAtomic(snapshotFile, b)
 }
 
+var (
+	// syncDir is fsyncing the containing directory after a rename. Platform
+	// implementations may be no-ops where directory fsync is unavailable.
+	syncDir = syncDirectory
+	// renamePath is the primitive used to publish a completed temporary file.
+	renamePath = os.Rename
+	// syncFile persists file contents before close.
+	syncFile = func(f *os.File) error { return f.Sync() }
+)
+
 func (s *store) writeAtomic(name string, b []byte) error {
 	f, err := os.CreateTemp(s.dir, ".gonion-consensus-*")
 	if err != nil {
 		return err
 	}
 	defer os.Remove(f.Name())
-	defer f.Close()
-	if _, err := f.Write(b); err != nil {
+	if n, err := f.Write(b); err != nil {
+		f.Close()
 		return err
+	} else if n != len(b) {
+		f.Close()
+		return io.ErrShortWrite
 	}
-	if err := f.Sync(); err != nil {
+	if err := syncFile(f); err != nil {
+		f.Close()
 		return err
 	}
 	if err := f.Close(); err != nil {
 		return err
 	}
-	return os.Rename(f.Name(), filepath.Join(s.dir, name))
+	if err := renamePath(f.Name(), filepath.Join(s.dir, name)); err != nil {
+		return err
+	}
+	// A completed rename is not durable until its containing directory is synced.
+	// Some platforms/filesystems do not support directory fsync; those
+	// implementations report success and rely on file-level sync plus rename.
+	return syncDir(s.dir)
 }
 
 // GetConsensus prefers the newest microdesc document, retaining the hydrated
