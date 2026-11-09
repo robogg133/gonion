@@ -490,13 +490,7 @@ func (m *GuardManager) reconcile(ctx context.Context, cns *common.Consensus) err
 	for usable < 20 && len(next.Guards) < limit {
 		r, e := samplePublicGuard(sl, sampled)
 		if e != nil {
-			remaining := false
-			for id := range guards {
-				if !sampled[id] {
-					remaining = true
-				}
-			}
-			if !remaining {
+			if !sampleableGuardRemaining(sl, guards, sampled) {
 				break
 			}
 			return e
@@ -534,14 +528,31 @@ func (m *GuardManager) reconcile(ctx context.Context, cns *common.Consensus) err
 	return nil
 }
 
+// sampleableGuardRemaining reports whether any unsampled relay could still be
+// returned by samplePublicGuard. It must apply the exact same filters and
+// weight test so a pool that is exhausted (or whose unsampled relays all have
+// non-positive guard weight) is treated as termination, not a permanent wedge.
+func sampleableGuardRemaining(sl *Selector, guards map[[20]byte]*common.RouterStatus, sampled map[[20]byte]bool) bool {
+	for id, r := range guards {
+		if sampled[id] || !guardValideFunc(*r) || !r.StatusFlags[common.FLAG_RUNNING] || !r.StatusFlags[common.FLAG_VALID] {
+			continue
+		}
+		if weightedBandwidth(r.BandWidth, guardWeightFunc(r.StatusFlags, sl.weight)) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // pathBiasEnforcementSupported rejects the consensus parameter configuration
 // whose enforcement this implementation cannot reproduce: pb_dropguards != 0
 // (path-spec §7.4). The disable action depends on the §7.2 END-echo usage
 // probe, which the circuit API cannot express, so the configuration fails
 // closed and never relaxes ErrGuardPathBias. With the supported default (0),
 // §7.3 scaling and the §7.4 warning-only rate tiers run normally. Parameter
-// clamping follows C's pathbias_get_dropguards: values outside {0,1} clamp to
-// 1 and are therefore rejected, never silently treated as 0.
+// clamping follows C's pathbias_get_dropguards: negative values clamp to 0
+// (disabled) and are accepted; positive out-of-range values clamp to 1 and
+// are rejected.
 func pathBiasEnforcementSupported(cns *common.Consensus) error {
 	if cns != nil && cns.Parameter("pb_dropguards", 0, 0, 1) != 0 {
 		return ErrGuardPathBias
@@ -711,6 +722,18 @@ func (m *GuardManager) chooseGuard(target *common.RouterStatus) ([20]byte, bool)
 		for _, id := range m.preference() {
 			rt := m.runtime[id]
 			if m.record(id).ConfirmedIndex == 0 && rt.reachable != -1 && !rt.pending && m.allowed(id, target) {
+				chosen = id
+				break
+			}
+		}
+	}
+	// SELECTING step 3: when every usable unconfirmed guard is already pending,
+	// selecting a pending member in sample order is still specified; failing
+	// here would wedge selection while leases are in flight.
+	if chosen == [20]byte{} {
+		for _, id := range m.preference() {
+			rt := m.runtime[id]
+			if m.record(id).ConfirmedIndex == 0 && rt.reachable != -1 && m.allowed(id, target) {
 				chosen = id
 				break
 			}

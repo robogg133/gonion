@@ -619,6 +619,29 @@ func capturePathBiasObserver(m *GuardManager) *[]PathBiasObservation {
 	return obs
 }
 
+// A pool whose unsampled relays all have zero guard weight is exhausted, not
+// permanently sampleable: reconcile must terminate instead of failing Select
+// forever (guard-spec §SAMPLED/§FILTERED termination condition).
+func TestSampleableGuardRemainingIgnoresZeroWeight(t *testing.T) {
+	cns := testutil.Consensus(t, time.Now())
+	sl := New(cns, true)
+	if len(sl.list) < 2 {
+		t.Fatal("fixture needs at least two relays")
+	}
+	candidate := sl.list[0]
+	guards := map[[20]byte]*common.RouterStatus{candidate.NodeID: &candidate}
+	sampled := map[[20]byte]bool{}
+
+	candidate.BandWidth = 0
+	if sampleableGuardRemaining(sl, guards, sampled) {
+		t.Fatal("zero-weight unsampled relay counted as remaining work")
+	}
+	candidate.BandWidth = 1
+	if !sampleableGuardRemaining(sl, guards, sampled) {
+		t.Fatal("positive-weight unsampled relay must remain sampleable")
+	}
+}
+
 // path-spec §7.4 pb_dropguards is the explicitly unsupported configuration.
 // The gate runs in reconcile against the sealed consensus; the signed fixture
 // lives outside this package, so the gate itself is exercised directly,
