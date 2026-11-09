@@ -130,25 +130,27 @@ CI. The reference-peer variant needs a C Tor binary on PATH.
    Guard-scoped path-bias construction/usage accounting now implements the §7.3
    scaling and §7.4 rate tiers with C Tor’s strict comparisons and open-circuit
    accounting. The §7.2 END-echo usage-failure probe and `pb_dropguards=1`
-   remain explicitly unsupported and fail closed. The persistent guard manager,
-   its callers, and the trust/recovery batches still require independent
-   specification review before any anonymity claim.
+   remain explicitly unsupported and fail closed. An independent read-only
+   review found no trust-manufacture or identity/path bypass; its one P1 sampling
+   wedge was fixed with a regression test. An external human security audit is
+   still required before any anonymity claim.
 2. **Long-running resilience.** Directory refresh reconnects after its
    bootstrap/bridge channel dies (`StartConsensusRecovery`, fail-closed without a
    redial policy). Offline SRV/period rollover, changed-HSDir republish,
    delayed-client fetch, restart revision anti-rollback, bounded maintenance
-   backoff, partial-publication retry and saturation tests are implemented.
-   Controlled Chutney coverage of the same flows remains open.
-3. **Trust-model review.** Authorization now reads privately owned authenticated
+   backoff, partial-publication retry and saturation tests are implemented, plus
+   offline leak/soak gates. Controlled Chutney coverage of the same flows remains
+   open (topology and opt-in CI job are checked in).
+3. **Trust-model review.** Authorization reads privately owned authenticated
    state (`OwnAuthenticatedHydration`/`Trusted`), so mutated public clones cannot
-   grant trust; the boundary still needs independent review. Cache crash and
-   partial-file states now have deterministic tests, and full `ns` hydration
+   grant trust. An independent read-only review confirmed the boundary; cache
+   crash and partial-file states have deterministic tests, and full `ns` hydration
    remains unsupported.
 4. **Coverage and audit.** Fixed modern CERTS-chain negative fixtures, broader
    parser fuzzing, sustained-throughput stream profiling and current
    C Tor/Chutney interoperability remain open. Benchmark and fuzz-smoke harnesses
-   now exist, but no baseline campaign or independent security audit has been
-   completed.
+   now exist and baselines are recorded in `docs/BENCHMARKS.md`; no independent
+   security audit has been completed.
 5. **Unsupported features.** Normal (`ns`) server-descriptor hydration,
    bridge-aware persistent guard state instances (bridge mode stays one pinned
    bridge outside the guard manager) and directory-purpose one-hop guard state,

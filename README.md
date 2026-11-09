@@ -54,8 +54,9 @@ closed and requires separate specification review and acceptance evidence:
   Service identities and durable descriptor revision allocation belong to callers.
 - Transport adapters for meek, webtunnel, Snowflake and obfs4. Meek and webtunnel
   honor context cancellation; obfs4 requires a pinned RSA identity and has local
-  server-handshake evidence. Public end-to-end obfs4 bootstrap is still blocked by
-  the root connection deadline API.
+  server-handshake evidence. The link handshake bounds itself with context and
+  tolerates `ENOTSUP` deadlines, so the former obfs4 deadline incompatibility is
+  resolved; a live public obfs4 bootstrap is the remaining evidence step.
 
 See the [embedding guide](pkg/embed/README.md),
 [runnable examples](examples/embed/README.md), and

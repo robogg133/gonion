@@ -17,12 +17,11 @@
 // authentication, identity pinning, and cancellation behavior are validated
 // without any public relay. They are not interoperability proof against a
 // specific third-party bridge, and nothing here is evidence of censorship
-// resistance. A live public-bridge handshake passed on 2026-11-08, but
-// full public obfs4 bootstrap is currently blocked in the root conn path:
-// upstream obfs4Conn deliberately implements SetDeadline as ENOTSUP while
-// the core link handshake sets socket deadlines. That is a root-side
-// incompatibility to resolve, not something the transport wrapper may paper
-// over by stripping the pin.
+// a live public-bridge handshake passed on 2026-11-08. The former root-side
+// incompatibility (upstream obfs4Conn implements SetDeadline as ENOTSUP while
+// the core link handshake required socket deadlines) is resolved: the link
+// handshake now bounds itself with context and tolerates ENOTSUP deadlines.
+// A live public obfs4 bootstrap remains the outstanding evidence step.
 package obfs4
 
 import (
