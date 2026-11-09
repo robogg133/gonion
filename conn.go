@@ -6,11 +6,13 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/binary"
+	"errors"
 	"io"
 	"net"
 	"net/netip"
 	"slices"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/robogg133/gonion/internal/shared"
@@ -124,6 +126,12 @@ func (c *Conn) SetStorage(st storage.Storage) {
 // NewConn performs the Tor link handshake on c.
 // logOut receives structured logs when debug is false; when debug is true, logs go to stderr in console form.
 func NewConn(c net.Conn, logOut io.Writer, debug bool, opts ...ConnOption) (*Conn, error) {
+	return newConn(c, logOut, debug, CONNECTION_TIMEOUT, opts...)
+}
+
+// newConn is NewConn with an explicit handshake timeout. It is a seam for
+// deterministic deadline tests; production callers use NewConn.
+func newConn(c net.Conn, logOut io.Writer, debug bool, timeout time.Duration, opts ...ConnOption) (*Conn, error) {
 	if c == nil {
 		return nil, Public(ErrIO, "nil OR connection")
 	}
@@ -160,14 +168,27 @@ func NewConn(c net.Conn, logOut io.Writer, debug bool, opts ...ConnOption) (*Con
 	log.Info().Msg("link handshake starting")
 
 	var err error
-	conn.socket, conn.Cert, err = setupTls(ctx, c)
+	conn.socket, conn.Cert, err = setupTls(ctx, c, timeout)
 	if err != nil {
 		cancel(err)
 		return nil, fail(ctx, ErrTLS, "tls handshake failed", err)
 	}
 	log.Debug().Msg("tls established")
 
-	if err := conn.socket.SetDeadline(time.Now().Add(CONNECTION_TIMEOUT)); err != nil {
+	// Bound the remaining link handshake with context cancellation. Some
+	// transports (notably obfs4) deliberately report ENOTSUP from SetDeadline,
+	// so a socket deadline cannot be the authoritative bound: closing the
+	// socket is the portable way to unblock handshake reads and writes.
+	handshakeCtx, handshakeCancel := context.WithTimeout(ctx, timeout)
+	defer handshakeCancel()
+	stopHandshakeWatch := context.AfterFunc(handshakeCtx, func() {
+		_ = conn.socket.Close()
+	})
+	defer stopHandshakeWatch()
+
+	// Best-effort kernel deadline as well. An unsupported transport is a
+	// no-op, not a handshake failure.
+	if err := applyHandshakeDeadline(conn.socket, time.Now().Add(timeout)); err != nil {
 		cancel(err)
 		return nil, fail(ctx, ErrIO, "set handshake deadline failed", err)
 	}
@@ -249,10 +270,27 @@ func NewConn(c net.Conn, logOut io.Writer, debug bool, opts ...ConnOption) (*Con
 		return nil, fail(ctx, ErrIO, "write NETINFO cell failed", err)
 	}
 
-	if err := conn.socket.SetDeadline(time.Time{}); err != nil {
+	if err := applyHandshakeDeadline(conn.socket, time.Time{}); err != nil {
 		cancel(err)
 		return nil, fail(ctx, ErrIO, "clear deadline failed", err)
 	}
+
+	// The handshake completed before its deadline. Stop the cancellation
+	// watcher before handing out the connection so a late timer cannot close
+	// the now-live link.
+	if !stopHandshakeWatch() {
+		cause := handshakeCtx.Err()
+		sentinel := ErrHandshake
+		if errors.Is(cause, context.DeadlineExceeded) {
+			sentinel = ErrTimeout
+		}
+		if cause == nil {
+			cause = ErrClosed
+		}
+		cancel(cause)
+		return nil, fail(ctx, sentinel, "link handshake canceled during completion", cause)
+	}
+	handshakeCancel()
 
 	log.Info().Msg("link ready")
 	go conn.readLoop()
@@ -526,8 +564,20 @@ func (m *streams) snapshot() []*Stream {
 	return out
 }
 
-func setupTls(ctx context.Context, c net.Conn) (net.Conn, *x509.Certificate, error) {
-	tctx, cancel := context.WithTimeout(ctx, CONNECTION_TIMEOUT)
+// applyHandshakeDeadline applies a socket deadline unless the transport does
+// not support deadlines. Pluggable transports such as obfs4 report ENOTSUP
+// from SetDeadline; the context-driven watcher in newConn remains the
+// authoritative handshake bound in that case.
+func applyHandshakeDeadline(conn net.Conn, deadline time.Time) error {
+	err := conn.SetDeadline(deadline)
+	if err == nil || errors.Is(err, errors.ErrUnsupported) || errors.Is(err, syscall.ENOTSUP) {
+		return nil
+	}
+	return err
+}
+
+func setupTls(ctx context.Context, c net.Conn, timeout time.Duration) (net.Conn, *x509.Certificate, error) {
+	tctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	tlsConn := tls.Client(c, &tls.Config{
