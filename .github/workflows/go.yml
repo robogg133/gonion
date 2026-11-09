@@ -225,3 +225,68 @@ jobs:
         go-package: ./...
         output-format: text
         cache: true
+
+  chutney:
+    name: Chutney interoperability (opt-in, controlled network)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    env:
+      GONION_TEST_CHUTNEY: "1"
+      CHUTNEY_DATA_DIR: /tmp/opencode/chutney-net
+    steps:
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+    - name: Set up Go
+      uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+      with:
+        go-version-file: go.mod
+
+    - name: Install pinned C Tor
+      run: |
+        set -e
+        sudo apt-get update
+        sudo apt-get install -y tor=0.4.9.11-0ubuntu0.24.04.1 || sudo apt-get install -y tor
+        tor --version | tee /tmp/tor-version.txt
+
+    - name: Checkout pinned Chutney
+      run: |
+        set -e
+        git clone https://gitlab.torproject.org/tpo/core/chutney.git /tmp/chutney
+        git -C /tmp/chutney checkout dbc640bf4863d4e3d6cb1ad9879b41f9f5862c4e
+        printf 'chutney ' > /tmp/chutney-version.txt
+        git -C /tmp/chutney rev-parse HEAD >> /tmp/chutney-version.txt
+
+    - name: Bootstrap chutney network
+      env:
+        CHUTNEY_V3_AUTH_VOTING_INTERVAL_SECONDS: "600"
+      run: |
+        set -e
+        rm -rf /tmp/opencode/chutney-net
+        mkdir -p /tmp/opencode
+        chmod +x /tmp/chutney/chutney
+        /tmp/chutney/chutney --data-dir /tmp/opencode/chutney-net init --net-from-script-path "$GITHUB_WORKSPACE/internal/tests/chutney/gonion-net.py"
+        /tmp/chutney/chutney --data-dir /tmp/opencode/chutney-net bootstrap
+        # Let one consensus period pass so relay bandwidths are populated.
+        sleep 620
+
+    - name: Run TestChutneyLongRunningService
+      run: |
+        set -e
+        go test ./internal/tests -run '^TestChutneyLongRunningService$' -count=1 -v -timeout 13m
+
+    - name: Collect version and log artifacts
+      if: always()
+      run: |
+        mkdir -p /tmp/chutney-artifacts
+        cat /tmp/tor-version.txt /tmp/chutney-version.txt > /tmp/chutney-artifacts/versions.txt
+        cp -r /tmp/opencode/chutney-net/nodes /tmp/chutney-artifacts/ 2>/dev/null || true
+
+    - name: Upload artifacts
+      if: always()
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: chutney-${{ github.sha }}
+        path: /tmp/chutney-artifacts
+        if-no-files-found: warn
+        retention-days: 90

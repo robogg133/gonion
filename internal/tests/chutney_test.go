@@ -77,23 +77,15 @@ import (
 // controlled local network, so it is not evidence about the public Tor network.
 //
 // Opt-in only; the default suite must skip it. It needs an already bootstrapped
-// chutney network built from this script (save it as /tmp/opencode/gonion-net.py):
-//
-//	Authority = Node(tag="a", authority=1, relay=1)
-//	NonExitRelay = Node(tag="r", relay=1)
-//	Client = Node(tag="c", client=1)
-//	ConfigureNodes([
-//	    Node(tag="a", authority=1, relay=1, ip="127.0.0.1"),
-//	    Node(tag="a", authority=1, relay=1, ip="127.1.0.1"),
-//	    Node(tag="a", authority=1, relay=1, ip="127.2.0.1"),
-//	    Node(tag="a", authority=1, relay=1, ip="127.3.0.1"),
-//	    Node(tag="r", relay=1, ip="127.4.0.1"),
-//	    Node(tag="c", client=1, ip="127.5.0.1"),
-//	])
+// chutney network built from the checked-in topology at
+// internal/tests/chutney/gonion-net.py:
 //
 //	git clone https://gitlab.torproject.org/tpo/core/chutney.git
-//	CHUTNEY_V3_AUTH_VOTING_INTERVAL_SECONDS=600 chutney --data-dir /tmp/opencode/chutney-net init --net-from-script-path /tmp/opencode/gonion-net.py
+//	CHUTNEY_V3_AUTH_VOTING_INTERVAL_SECONDS=600 chutney --data-dir /tmp/opencode/chutney-net init --net-from-script-path internal/tests/chutney/gonion-net.py
 //	CHUTNEY_V3_AUTH_VOTING_INTERVAL_SECONDS=600 chutney --data-dir /tmp/opencode/chutney-net bootstrap
+//
+// The topology applies the two adaptations required by Gonion: one IPv4 /16
+// per node, and a plain non-exit relay instead of an exit relay.
 //
 // then run:
 //
