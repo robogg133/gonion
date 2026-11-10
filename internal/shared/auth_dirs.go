@@ -86,16 +86,6 @@ var Authorities = []DirectoryAuthority{
 		Fingerprint: "74A910646BCEEFBCD2E874FC1DC997430F968145",
 	},
 	{
-		Nickname:    "bastet",
-		ORPort:      443,
-		IPv4:        "204.13.164.118",
-		DirPort:     80,
-		IPv6:        "2620:13:4000:6000::1000:118",
-		IPv6Port:    0,
-		V3Ident:     "27102BC123E7AF1D4741AE047E160C91ADC76B21 ",
-		Fingerprint: "24E2F139121D4394C54B5BCC368B3B411857C413",
-	},
-	{
 		Nickname:    "faravahar",
 		ORPort:      443,
 		IPv4:        "216.218.219.41",
