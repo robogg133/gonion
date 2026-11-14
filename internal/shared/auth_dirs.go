@@ -70,9 +70,9 @@ var Authorities = []DirectoryAuthority{
 	{
 		Nickname:    "maatuska",
 		ORPort:      80,
-		IPv4:        "171.25.193.9",
+		IPv4:        "91.223.231.13",
 		DirPort:     443,
-		IPv6:        "2001:67c:289c::9",
+		IPv6:        "2001:67c:8a4:1::13",
 		IPv6Port:    0,
 		V3Ident:     "49015F787433103580E3B66A1707A00E60F2D15B ",
 		Fingerprint: "BD6A829255CB08E66FBE7D3748363586E46B3810",
