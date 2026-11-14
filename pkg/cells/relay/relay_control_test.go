@@ -245,6 +245,129 @@ func TestRelayTruncated_RoundTrip(t *testing.T) {
 	}
 }
 
+// path-spec §7.2 relies on the RELAY_END payload: the exit echoes the probe's
+// 0.a.b.c address in a REASON_EXITPOLICY END. tor-spec 6.3: "Reason [1 byte],
+// IPv4 or IPv6 address [4 bytes or 16 bytes], TTL [4 bytes]".
+func TestRelayEnd_ExitPolicyPayloadRoundTrip(t *testing.T) {
+	payload := []byte{192, 0, 2, 7, 0xff, 0xff, 0xff, 0xff}
+	in := &relay.RelayEndCell{StreamID: 11, Reason: relay.END_REASON_EXITPOLICY, Payload: payload}
+
+	var buf bytes.Buffer
+	if err := in.Encode(&buf); err != nil {
+		t.Fatal(err)
+	}
+	want := append([]byte{relay.END_REASON_EXITPOLICY}, payload...)
+	if !bytes.Equal(buf.Bytes(), want) {
+		t.Fatalf("encoded END = %v, want reason followed by the full payload %v", buf.Bytes(), want)
+	}
+
+	out := &relay.RelayEndCell{}
+	if err := out.Decode(bytes.NewReader(buf.Bytes())); err != nil {
+		t.Fatal(err)
+	}
+	if out.Reason != relay.END_REASON_EXITPOLICY || !bytes.Equal(out.Payload, payload) {
+		t.Fatalf("decoded END = %+v, want reason EXITPOLICY payload %v", out, payload)
+	}
+	addr, ok := out.EchoedIPv4()
+	if !ok || addr != [4]byte{192, 0, 2, 7} {
+		t.Fatalf("EchoedIPv4 = %v, %v; want 192.0.2.7", addr, ok)
+	}
+
+	// The payload survives the real relay framing path, so the probe can read
+	// the echo from a decoded cell.
+	client, server := coderPair(t)
+	ct, err := client.Marshal(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cell, err := server.Unmarshal(ct)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := cell.(*relay.RelayEndCell)
+	if got.GetStreamID() != 11 || got.Reason != relay.END_REASON_EXITPOLICY || !bytes.Equal(got.Payload, payload) {
+		t.Fatalf("framed END = %+v", got)
+	}
+}
+
+func TestRelayEnd_ReasonOnlyEncodingUnchanged(t *testing.T) {
+	// Every existing sender builds an END from the reason alone. The encoding
+	// must stay exactly one octet.
+	in := &relay.RelayEndCell{StreamID: 3, Reason: relay.END_REASON_DONE}
+	var buf bytes.Buffer
+	if err := in.Encode(&buf); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(buf.Bytes(), []byte{relay.END_REASON_DONE}) {
+		t.Fatalf("reason-only END = %v, want a single reason octet", buf.Bytes())
+	}
+
+	// An empty END (no bytes at all) still means REASON_MISC and has no
+	// payload to echo.
+	var empty relay.RelayEndCell
+	if err := empty.Decode(bytes.NewReader(nil)); err != nil {
+		t.Fatal(err)
+	}
+	if empty.Reason != relay.END_REASON_MISC || empty.Payload != nil {
+		t.Fatalf("empty END = %+v, want MISC with no payload", empty)
+	}
+
+	// Present-but-empty payload and a non-nil empty slice both encode the same
+	// single reason octet.
+	single := &relay.RelayEndCell{Reason: relay.END_REASON_EXITPOLICY, Payload: []byte{}}
+	buf.Reset()
+	if err := single.Encode(&buf); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(buf.Bytes(), []byte{relay.END_REASON_EXITPOLICY}) {
+		t.Fatalf("empty payload END = %v, want a single reason octet", buf.Bytes())
+	}
+}
+
+func TestRelayEnd_PayloadBounds(t *testing.T) {
+	// reason octet + payload must fit the 498-byte relay body.
+	over := &relay.RelayEndCell{Reason: relay.END_REASON_EXITPOLICY, Payload: make([]byte, relay.RELAY_BODY_LEN)}
+	if err := over.Encode(&bytes.Buffer{}); err == nil {
+		t.Fatal("oversized END payload must not encode")
+	}
+	limit := &relay.RelayEndCell{Reason: relay.END_REASON_EXITPOLICY, Payload: make([]byte, relay.RELAY_BODY_LEN-1)}
+	if err := limit.Encode(&bytes.Buffer{}); err != nil {
+		t.Fatalf("maximum END payload should encode: %v", err)
+	}
+
+	// Decoding is bounded and returns an error instead of growing without
+	// limit or silently truncating.
+	tooLong := append([]byte{relay.END_REASON_EXITPOLICY}, make([]byte, relay.RELAY_BODY_LEN)...)
+	var out relay.RelayEndCell
+	if err := out.Decode(bytes.NewReader(tooLong)); err == nil {
+		t.Fatal("over-long END payload must not decode")
+	}
+}
+
+func TestRelayEnd_EchoedIPv4Bounds(t *testing.T) {
+	cases := []struct {
+		name    string
+		payload []byte
+		ok      bool
+		addr    [4]byte
+	}{
+		{name: "ipv4 and ttl", payload: []byte{10, 0, 0, 1, 0, 0, 0, 0}, ok: true, addr: [4]byte{10, 0, 0, 1}},
+		{name: "nil", payload: nil},
+		{name: "reason only", payload: []byte{}},
+		{name: "short address", payload: []byte{10, 0, 0, 1, 0, 0, 0}},
+		{name: "ipv6 form", payload: bytes.Repeat([]byte{0x20}, 20)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cell := &relay.RelayEndCell{Reason: relay.END_REASON_EXITPOLICY, Payload: tc.payload}
+			addr, ok := cell.EchoedIPv4()
+			if ok != tc.ok || addr != tc.addr {
+				t.Fatalf("EchoedIPv4 = %v, %v; want %v, %v", addr, ok, tc.addr, tc.ok)
+			}
+		})
+	}
+}
+
 func TestRelayEnd_EmptyIsMisc_UnknownAccepted(t *testing.T) {
 	var empty relay.RelayEndCell
 	if err := empty.Decode(bytes.NewReader(nil)); err != nil {

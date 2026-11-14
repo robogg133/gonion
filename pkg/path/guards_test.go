@@ -642,43 +642,259 @@ func TestSampleableGuardRemainingIgnoresZeroWeight(t *testing.T) {
 	}
 }
 
-// path-spec §7.4 pb_dropguards is the explicitly unsupported configuration.
-// The gate runs in reconcile against the sealed consensus; the signed fixture
-// lives outside this package, so the gate itself is exercised directly,
-// including C's pathbias_get_dropguards clamps (out-of-range values clamp to
-// 1 and are rejected, never silently read as 0).
-func TestPathBiasDropGuardsConfigRejected(t *testing.T) {
+// path-spec §7.4 pb_dropguards is honored, not rejected: the gate that used to
+// fail the configuration closed (ErrGuardPathBias) is gone because the §7.2
+// END-echo probe now exists, and the parsed flag keeps C's
+// pathbias_get_dropguards clamps — negative values clamp to 0 (disabled) and
+// out-of-range positive values clamp to 1 (enabled).
+func TestPathBiasDropGuardsClamp(t *testing.T) {
 	now := time.Now()
 	for _, tc := range []struct {
 		name   string
 		params map[string]int32
-		want   error
+		want   bool
 	}{
-		{"default-unsupported-absent", nil, nil},
-		{"explicit-zero", map[string]int32{"pb_dropguards": 0}, nil},
-		{"drop-enabled", map[string]int32{"pb_dropguards": 1}, ErrGuardPathBias},
-		{"out-of-range-clamps-to-enabled", map[string]int32{"pb_dropguards": 2}, ErrGuardPathBias},
-		{"negative-clamps-to-disabled", map[string]int32{"pb_dropguards": -1}, nil},
+		{"absent-defaults-disabled", nil, false},
+		{"explicit-zero-disabled", map[string]int32{"pb_dropguards": 0}, false},
+		{"drop-enabled", map[string]int32{"pb_dropguards": 1}, true},
+		{"out-of-range-clamps-to-enabled", map[string]int32{"pb_dropguards": 2}, true},
+		{"negative-clamps-to-disabled", map[string]int32{"pb_dropguards": -1}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cns := trustedTestConsensus(t, now)
 			if tc.params != nil {
 				cns.Params = tc.params
 			}
-			err := pathBiasEnforcementSupported(cns)
-			if tc.want == nil {
-				if err != nil {
-					t.Fatalf("supported configuration rejected: %v", err)
-				}
-				return
-			}
-			if !errors.Is(err, tc.want) {
-				t.Fatalf("got %v, want %v", err, tc.want)
+			if got := pathBiasDropGuardsEnabled(cns); got != tc.want {
+				t.Fatalf("pathBiasDropGuardsEnabled = %v, want %v", got, tc.want)
 			}
 		})
 	}
-	if err := pathBiasEnforcementSupported(nil); err != nil {
-		t.Fatalf("nil consensus must not fail the gate: %v", err)
+	if pathBiasDropGuardsEnabled(nil) {
+		t.Fatal("nil consensus must default to disabled")
+	}
+}
+
+// path-spec §7.4 with pb_dropguards=1: an extreme construction or usage rate
+// disables the guard in the same durable save as the triggering increment,
+// the observer still reports the crossing, and the guard is excluded from
+// every later selection (guard-spec FILTERED).
+func TestPathBiasExtremeDisablesGuard(t *testing.T) {
+	t.Run("construction-extreme", func(t *testing.T) {
+		m, cns, data := newGuardFixture(t)
+		ctx := context.Background()
+		l, err := m.Select(ctx, cns, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The parameter is read from the sealed consensus snapshot, exactly as
+		// reconcile exposes it.
+		m.directory.consensus.Params = map[string]int32{"pb_dropguards": 1}
+		id := l.identity
+		obs := capturePathBiasObserver(m)
+		m.record(id).PathBias = GuardPathBias{CircAttempts: 200, CircSuccesses: 200, SuccessfulCircuitsClosed: 59}
+		if err := l.PathBiasBuildAttempted(); err != nil {
+			t.Fatal(err)
+		}
+		if len(*obs) != 1 || (*obs)[0].Threshold != PathBiasExtreme || (*obs)[0].Identity != id {
+			t.Fatalf("observations %+v, want one PathBiasExtreme for this guard", *obs)
+		}
+		// Disabled persists atomically with the triggering increment's save:
+		// one durable snapshot carries both the attempt and the disable.
+		var s GuardSnapshot
+		if err := json.Unmarshal(*data, &s); err != nil {
+			t.Fatal(err)
+		}
+		persisted := GuardRecord{}
+		found := false
+		for _, g := range s.Guards {
+			if g.Identity == id {
+				persisted, found = g, true
+			}
+		}
+		if !found || !persisted.PathBias.Disabled || persisted.PathBias.CircAttempts != 201 {
+			t.Fatalf("persisted record %+v (found %v), want disabled with the triggering increment", persisted, found)
+		}
+		l.Close()
+		next, err := m.Select(ctx, cns, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer next.Close()
+		if next.identity == id {
+			t.Fatal("selected a guard disabled by an extreme path-bias rate")
+		}
+	})
+	t.Run("usage-extreme", func(t *testing.T) {
+		m, cns, data := newGuardFixture(t)
+		ctx := context.Background()
+		l, err := m.Select(ctx, cns, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		m.directory.consensus.Params = map[string]int32{"pb_dropguards": 1}
+		id := l.identity
+		obs := capturePathBiasObserver(m)
+		m.record(id).PathBias = GuardPathBias{UseAttempts: 100, UseSuccesses: 59}
+		if err := l.PathBiasUseAttempted(); err != nil {
+			t.Fatal(err)
+		}
+		if len(*obs) != 1 || (*obs)[0].Threshold != PathBiasUseExtreme || (*obs)[0].Identity != id {
+			t.Fatalf("observations %+v, want one PathBiasUseExtreme for this guard", *obs)
+		}
+		var s GuardSnapshot
+		if err := json.Unmarshal(*data, &s); err != nil {
+			t.Fatal(err)
+		}
+		persisted := GuardRecord{}
+		found := false
+		for _, g := range s.Guards {
+			if g.Identity == id {
+				persisted, found = g, true
+			}
+		}
+		if !found || !persisted.PathBias.Disabled || persisted.PathBias.UseAttempts != 101 {
+			t.Fatalf("persisted record %+v (found %v), want disabled with the triggering increment", persisted, found)
+		}
+		l.Close()
+		next, err := m.Select(ctx, cns, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer next.Close()
+		if next.identity == id {
+			t.Fatal("selected a guard disabled by an extreme path-bias rate")
+		}
+	})
+}
+
+// The §7.4 disable must survive the once-per-tier observer gate: an extreme
+// rate observed while the consensus was warning-only (pb_dropguards=0, tier
+// bit already set) still disables the guard once a later measurement runs
+// with pb_dropguards enabled, exactly as C re-evaluates
+// pathbias_get_dropguards on every measurement.
+func TestPathBiasExtremeDisablesAfterTierAlreadyObserved(t *testing.T) {
+	t.Run("construction", func(t *testing.T) {
+		m, cns, _ := newGuardFixture(t)
+		l, err := m.Select(context.Background(), cns, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer l.Close()
+		m.directory.consensus.Params = map[string]int32{"pb_dropguards": 1}
+		obs := capturePathBiasObserver(m)
+		m.record(l.identity).PathBias = GuardPathBias{CircAttempts: 200, CircSuccesses: 200, SuccessfulCircuitsClosed: 59}
+		m.runtime[l.identity].biasTiers = 1 << PathBiasExtreme
+		if err := l.PathBiasBuildAttempted(); err != nil {
+			t.Fatal(err)
+		}
+		if len(*obs) != 0 {
+			t.Fatalf("observations %+v, want none: the tier was already observed", *obs)
+		}
+		if !m.record(l.identity).PathBias.Disabled {
+			t.Fatal("extreme rate did not disable the guard after the tier was already observed")
+		}
+	})
+	t.Run("usage", func(t *testing.T) {
+		m, cns, _ := newGuardFixture(t)
+		l, err := m.Select(context.Background(), cns, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer l.Close()
+		m.directory.consensus.Params = map[string]int32{"pb_dropguards": 1}
+		obs := capturePathBiasObserver(m)
+		m.record(l.identity).PathBias = GuardPathBias{UseAttempts: 100, UseSuccesses: 59}
+		m.runtime[l.identity].biasTiers = 1 << PathBiasUseExtreme
+		if err := l.PathBiasUseAttempted(); err != nil {
+			t.Fatal(err)
+		}
+		if len(*obs) != 0 {
+			t.Fatalf("observations %+v, want none: the tier was already observed", *obs)
+		}
+		if !m.record(l.identity).PathBias.Disabled {
+			t.Fatal("extreme rate did not disable the guard after the tier was already observed")
+		}
+	})
+}
+
+// Strict below-tier comparison (path-spec §7.4): a rate exactly at an extreme
+// tier does not cross it, so only the lower tier fires and no guard is
+// disabled at the boundary.
+func TestPathBiasExactExtremeBoundaryDoesNotDisable(t *testing.T) {
+	t.Run("construction", func(t *testing.T) {
+		m, cns, _ := newGuardFixture(t)
+		l, err := m.Select(context.Background(), cns, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer l.Close()
+		m.directory.consensus.Params = map[string]int32{"pb_dropguards": 1}
+		obs := capturePathBiasObserver(m)
+		m.record(l.identity).PathBias = GuardPathBias{CircAttempts: 200, CircSuccesses: 200, SuccessfulCircuitsClosed: 60}
+		if err := l.PathBiasBuildAttempted(); err != nil {
+			t.Fatal(err)
+		}
+		// 60/200 is exactly the 30% extreme rate: the warn tier crosses, not
+		// the extreme one, so the guard stays enabled.
+		if len(*obs) != 1 || (*obs)[0].Threshold != PathBiasWarn {
+			t.Fatalf("observations %+v, want one PathBiasWarn", *obs)
+		}
+		if m.record(l.identity).PathBias.Disabled {
+			t.Fatal("exact-extreme boundary disabled the guard")
+		}
+	})
+	t.Run("usage", func(t *testing.T) {
+		m, cns, _ := newGuardFixture(t)
+		l, err := m.Select(context.Background(), cns, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer l.Close()
+		m.directory.consensus.Params = map[string]int32{"pb_dropguards": 1}
+		obs := capturePathBiasObserver(m)
+		m.record(l.identity).PathBias = GuardPathBias{UseAttempts: 100, UseSuccesses: 60}
+		if err := l.PathBiasUseAttempted(); err != nil {
+			t.Fatal(err)
+		}
+		// 60/100 is exactly the 60% extreme-use rate: only the notice tier
+		// crosses, so the guard stays enabled.
+		if len(*obs) != 1 || (*obs)[0].Threshold != PathBiasUseNotice {
+			t.Fatalf("observations %+v, want one PathBiasUseNotice", *obs)
+		}
+		if m.record(l.identity).PathBias.Disabled {
+			t.Fatal("exact-extreme boundary disabled the guard")
+		}
+	})
+}
+
+// With pb_dropguards enabled, a durable extreme-rate disable also fails the
+// Wait of an open succeeded lease on that guard: the circuit stops waiting on
+// a guard that can no longer be selected (guard-spec NO_CIRCLIST).
+func TestOpenLeaseWaitFailsAfterPathBiasDisable(t *testing.T) {
+	m, cns, _ := newGuardFixture(t)
+	ctx := context.Background()
+	l, err := m.Select(ctx, cns, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.directory.consensus.Params = map[string]int32{"pb_dropguards": 1}
+	defer l.Close()
+	if err := l.Succeeded(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Wait(ctx); err != nil {
+		t.Fatalf("open lease did not wait on a usable guard: %v", err)
+	}
+	m.record(l.identity).PathBias = GuardPathBias{CircAttempts: 200, CircSuccesses: 200, SuccessfulCircuitsClosed: 59}
+	if err := l.PathBiasBuildAttempted(); err != nil {
+		t.Fatal(err)
+	}
+	if !m.record(l.identity).PathBias.Disabled {
+		t.Fatal("extreme rate did not disable the guard")
+	}
+	if err := l.Wait(ctx); err == nil {
+		t.Fatal("Wait succeeded after the guard was path-bias disabled")
 	}
 }
 

@@ -1,6 +1,12 @@
 # This workflow builds and tests the Gonion Go implementation.
 # Default pull-request suite is offline: public-network tests stay gated behind
 # GONION_NETWORK_TESTS / GONION_TEST_* and are not executed here.
+#
+# Local weak-machine rule: run only `go test -short ./...` locally. Do NOT run
+# the full suite, `go test -race`, benchmarks, or Chutney on a weak developer
+# computer; those heavy lanes exist only in CI behind schedule/release/manual
+# gates (see jobs below).
+#
 # For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-go
 
 name: Go
@@ -21,10 +27,12 @@ permissions:
 
 jobs:
 
+  # Default lane (PR/push/release): lightweight and offline.
+  # Short tests only; full/race/matrix/fuzz/chutney lanes are event-gated below.
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 25
-    name: Build / offline unit tests
+    name: Build / offline short unit tests
     steps:
     # Pinned by commit SHA; tag comment records the audited release.
     - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -59,23 +67,29 @@ jobs:
     - name: Build examples
       run: CGO_ENABLED=0 go build ./examples/...
 
-    - name: Test
-      run: go test ./... -count=1 -timeout 4m
+    # Local equivalent on a weak machine: `go test -short ./...`.
+    - name: Short test
+      run: go test -short ./... -count=1 -timeout 4m
 
     - name: Vet
       if: ${{ !cancelled() }}
       run: go vet ./...
 
-    - name: Race
+    # Short race lane: bounded; full race lives in the gated full-validation job.
+    - name: Short race
       if: ${{ !cancelled() }}
-      run: go test -race ./... -count=1 -timeout 6m
+      run: go test -race -short ./... -count=1 -timeout 6m
 
+  # Heavy cross-OS matrix: schedule/release/manual only, never on every PR.
+  # max-parallel: 1 bounds runner resource usage on weak machines.
   matrix:
     name: Matrix ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
+    if: github.event_name == 'schedule' || github.event_name == 'release' || github.event_name == 'workflow_dispatch'
     strategy:
       fail-fast: false
+      max-parallel: 1
       matrix:
         include:
           - name: windows/amd64
@@ -109,10 +123,12 @@ jobs:
         GOARCH: ${{ matrix.goarch }}
       run: go build ./... && go build ./examples/...
 
+  # Small, bounded fuzz smoke on PR/push: seed corpus only for a fast subset,
+  # plus two short timed targets. Long fuzz series run in fuzz-nightly only.
   fuzz-smoke:
-    name: Fuzz smoke (PR, bounded)
+    name: Fuzz smoke (PR, small)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     if: github.event_name == 'pull_request' || github.event_name == 'push'
     steps:
     - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -127,40 +143,26 @@ jobs:
         go test ./pkg/common/ -run '^Fuzz(ParseConsensus|ParseMicrodescriptor|BridgeDescriptor)' -count=1 -timeout 3m
         go test ./pkg/crypto/ -run '^Fuzz(ParseIdentityVSigningCert|VerifyRelayCertificates)' -count=1 -timeout 3m
         go test ./pkg/cells/base/ -run '^Fuzz(ReadFrame|ReadCell|Netinfo)' -count=1 -timeout 3m
-        go test ./pkg/cells/relay/ -run '^Fuzz(RelayCell|UnmarshalPlain)' -count=1 -timeout 3m
-        go test ./pkg/lspec/ -run '^FuzzLspec' -count=1 -timeout 3m
-        go test ./pkg/path/ -run '^FuzzGuard' -count=1 -timeout 3m
-        go test ./pkg/hs/crypto/ -run '^FuzzDescriptor' -count=1 -timeout 3m
-        go test ./pkg/hs/desc/ -run '^FuzzDescriptor' -count=1 -timeout 3m
-        go test ./pkg/parsers/json/ -run '^FuzzConsensusJSON' -count=1 -timeout 3m
 
-    - name: Fuzz timed smoke (10s per target, deterministic seeds only)
+    - name: Fuzz timed smoke (2 targets, 5s each, deterministic seeds only)
       run: |
         set -e
         run_fuzz() {
           pkg="$1"; name="$2"
-          echo "== fuzz $name in $pkg (10s)"
-          go test "$pkg" -run '^$' -fuzz "^${name}\$" -fuzztime=10s -timeout 90s
+          echo "== fuzz $name in $pkg (5s)"
+          go test "$pkg" -run '^$' -fuzz "^${name}\$" -fuzztime=5s -timeout 60s
         }
         run_fuzz ./pkg/common/ FuzzParseConsensus
-        run_fuzz ./pkg/common/ FuzzParseMicrodescriptor
-        run_fuzz ./pkg/common/ FuzzBridgeDescriptor
-        run_fuzz ./pkg/crypto/ FuzzParseIdentityVSigningCert
-        run_fuzz ./pkg/crypto/ FuzzVerifyRelayCertificates
         run_fuzz ./pkg/cells/base/ FuzzReadFrame
-        run_fuzz ./pkg/cells/base/ FuzzReadCell
-        run_fuzz ./pkg/cells/relay/ FuzzRelayCellCodec
-        run_fuzz ./pkg/lspec/ FuzzLspecRead
-        run_fuzz ./pkg/path/ FuzzGuardStateDecode
-        run_fuzz ./pkg/hs/crypto/ FuzzDescriptorLayers
-        run_fuzz ./pkg/hs/desc/ FuzzDescriptorParsers
-        run_fuzz ./pkg/parsers/json/ FuzzConsensusJSON
 
+  # Long fuzz campaign: schedule/release/manual only. Never on every PR.
   fuzz-nightly:
     name: Fuzz campaign (scheduled, long)
     runs-on: ubuntu-latest
     timeout-minutes: 360
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'schedule' || github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+    strategy:
+      max-parallel: 1
     steps:
     - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
@@ -209,6 +211,35 @@ jobs:
         if-no-files-found: warn
         retention-days: 90
 
+  # Release gate: full unmodified suite plus full race, schedule/release/manual
+  # only. Do not weaken this job; it preserves release coverage while the PR
+  # lane stays short. Benchmarks also live here (never on PR).
+  full-validation:
+    name: Full validation (scheduled/release)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    if: github.event_name == 'schedule' || github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+    steps:
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+    - name: Set up Go
+      uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+      with:
+        go-version-file: go.mod
+
+    - name: Full test
+      run: go test ./... -count=1 -timeout 15m
+
+    - name: Full race
+      if: ${{ !cancelled() }}
+      run: go test -race ./... -count=1 -timeout 25m
+
+    # Bounded benchmarks: full/race/benchmark runs are CI-scheduled only.
+    # Weak local machines must not run these.
+    - name: Benchmarks (bounded)
+      if: ${{ !cancelled() }}
+      run: go test ./... -run '^$' -bench . -benchtime=1x -count=1 -timeout 10m
+
   govulncheck:
     name: govulncheck (scheduled/release)
     runs-on: ubuntu-latest
@@ -226,11 +257,15 @@ jobs:
         output-format: text
         cache: true
 
+  # Chutney: schedule/manual only, never on every PR. Sequential by nature;
+  # max-parallel: 1 documents the resource bound for this heavy lane.
   chutney:
     name: Chutney interoperability (opt-in, controlled network)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    strategy:
+      max-parallel: 1
     env:
       GONION_TEST_CHUTNEY: "1"
       CHUTNEY_DATA_DIR: /tmp/opencode/chutney-net

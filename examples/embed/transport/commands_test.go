@@ -7,6 +7,9 @@ import (
 )
 
 func TestSeparateCommands(t *testing.T) {
+	if testing.Short() {
+		t.Skip("command help checks invoke go run builds; run without -short")
+	}
 	for _, tc := range []struct{ name, flag string }{{"obfs4", "-iatmode"}, {"meek", "-front"}, {"snowflake", "-ice"}, {"webtunnel", "-servername"}} {
 		t.Run(tc.name, func(t *testing.T) {
 			out, err := exec.Command("go", "run", "./"+tc.name, "-h").CombinedOutput()

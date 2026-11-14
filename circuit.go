@@ -107,15 +107,18 @@ type Circuit struct {
 	ctxCancel      context.CancelCauseFunc
 	rawCancel      context.CancelCauseFunc
 	established    atomic.Bool
-	closeOnce      sync.Once
-	relayMu        sync.Mutex
-	controlMu      sync.RWMutex
-	extendMu       sync.Mutex
-	extensions     int
-	lastKH         []byte // final physical hop nonce, protected by extendMu
-	e2e            bool
-	intro          bool
-	service        *serviceCircuitState // protected by controlMu
+	// streamFailReason holds the relay END reason received in response to the
+	// most recent failed stream attachment attempt (path-spec §7.2).
+	streamFailReason atomic.Uint32
+	closeOnce        sync.Once
+	relayMu          sync.Mutex
+	controlMu        sync.RWMutex
+	extendMu         sync.Mutex
+	extensions       int
+	lastKH           []byte // final physical hop nonce, protected by extendMu
+	e2e              bool
+	intro            bool
+	service          *serviceCircuitState // protected by controlMu
 
 	extended2Received chan *relay.Extended2Cell
 
@@ -614,7 +617,9 @@ func (c *Circuit) sendRelay(cell relay.Cell, dst int, early bool) error {
 }
 
 func (c *Circuit) sendRelayContext(ctx context.Context, cell relay.Cell, dst int, early bool) error {
-	c.relayMu.Lock()
+	if err := c.lockRelayContext(ctx); err != nil {
+		return err
+	}
 	defer c.relayMu.Unlock()
 	if c.Ctx.Err() != nil {
 		return context.Cause(c.Ctx)

@@ -59,6 +59,14 @@ func (c *Circuit) readloop() {
 					hop.Recv().SetDigest(data.Digest())
 					hop.Recv().Subtract(1)
 				}
+				// A path-bias probe owns a reserved StreamID with no Stream
+				// entry (circuit_probe.go). Route its reply, and any
+				// unexpected cell on that StreamID, before the generic stream
+				// lookup so it is never dropped as an unknown stream and never
+				// attributed to a Stream.
+				if c.routePathBiasProbe(rcCell) {
+					continue
+				}
 				if begin, ok := rcCell.(*relay.BeginCell); ok {
 					c.acceptIncomingBegin(begin, hopN)
 					continue

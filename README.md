@@ -113,6 +113,9 @@ go vet ./...
 go test -race ./...
 ```
 
+For weak local machines use `go test -short ./...`; full, race, Chutney, and
+benchmark validation belongs to scheduled CI.
+
 The default suite is offline. Opt-in tests have exercised public exit TCP/HTTPS,
 the Tor Project's onion website, and Gonion service publication with both a
 Gonion client and an independent C Tor client. The service test checks 1 MiB in

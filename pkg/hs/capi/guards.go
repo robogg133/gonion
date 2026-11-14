@@ -322,8 +322,74 @@ func (c *guardLeaseCircuit) accountClosed(byClient bool) {
 	})
 }
 
+// pathBiasProbeTimeout bounds the path-spec §7.2 close-time probe so a client
+// Close can never block indefinitely on a silent exit. The probe context is
+// derived from the circuit context, so a circuit that dies mid-probe aborts
+// the wait instead of holding the classification open.
+const pathBiasProbeTimeout = 10 * time.Second
+
+// probeBareAttempt runs the path-spec §7.2 END-echo usage probe before the
+// close classification when the circuit still holds a bare usage attempt (C
+// pathbias_send_usable_probe at pathbias_check_close): the purpose is counted,
+// the circuit is alive, and the wrapped circuit exposes the optional
+// PathBiasProber capability. A matched nonce echo marks the usage recognized,
+// so the close classifies as PathBiasUseSuccess; an unsent, mismatched,
+// interrupted or errored probe leaves the bare attempt, which classifies as
+// PathBiasUseFailed. A bare attempt whose stream attempt failed with the
+// path-spec §7.2 excluded END reasons (DESTROY, TORPROTOCOL, INTERNAL,
+// reported through the optional StreamFailureReasoner capability) is never
+// probed either. Without the capability the conservative fallback counts
+// the bare attempt directly as a failure. A premature close — the circuit
+// died first — is never probed: its classification already ran through the
+// death hook.
+func (c *guardLeaseCircuit) probeBareAttempt() {
+	if !c.countBias {
+		return
+	}
+	c.mu.Lock()
+	use := c.use
+	c.mu.Unlock()
+	if use != useAttempted {
+		// C probes only circuits still marked as usage attempts; an unused
+		// circuit and a recognized success need no echo.
+		return
+	}
+	if c.Circ.Ctx().Err() != nil {
+		return
+	}
+	prober, ok := c.Circ.(PathBiasProber)
+	if !ok {
+		return
+	}
+	// path-spec §7.2: "If the stream failure reason codes DESTROY,
+	// TORPROTOCOL, or INTERNAL are received in response to any stream attempt,
+	// such circuits are not probed and are declared usage failures." A live
+	// circuit with such a recorded failure skips the echo and keeps the
+	// conservative UseFailed classification; every other reason, and the
+	// absence of a recorded reason, stays eligible. C Tor applies the same
+	// exclusion for DESTROY/TORPROTOCOL and treats INTERNAL as ambiguous
+	// (relay.c connection_edge_process_end); the stricter document behavior is
+	// kept for all three.
+	if reasoner, ok := c.Circ.(StreamFailureReasoner); ok {
+		switch reasoner.StreamFailureReason() {
+		case relay.END_REASON_DESTROY, relay.END_REASON_TORPROTOCOL, relay.END_REASON_INTERNAL:
+			return
+		}
+	}
+	probeCtx, cancel := context.WithTimeout(c.Circ.Ctx(), pathBiasProbeTimeout)
+	defer cancel()
+	if result, err := prober.PathBiasProbe(probeCtx); result == PathBiasProbeMatched && err == nil {
+		c.markUseRecognized()
+	}
+}
+
+// Close first runs any applicable §7.2 close-time probe, then records the
+// terminal close classification exactly once (shared with the natural-death
+// hook through the accounted once), releases the lease, and closes the
+// wrapped circuit.
 func (c *guardLeaseCircuit) Close() error {
 	c.once.Do(func() {
+		c.probeBareAttempt()
 		c.accountClosed(true)
 		c.lease.Close()
 		c.err = c.Circ.Close()

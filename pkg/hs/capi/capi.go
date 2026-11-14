@@ -35,6 +35,66 @@ type Circ interface {
 	Close() error
 }
 
+// PathBiasProbeResult is the outcome of a path-spec §7.2 END-echo usage
+// probe. The probe is a RELAY_BEGIN to 0.a.b.c:25 carrying a random 24-bit
+// nonce; the exit rejects it with REASON_EXITPOLICY and echoes the address,
+// matching C Tor's pathbias_send_usable_probe/pathbias_check_probe_response.
+type PathBiasProbeResult uint8
+
+const (
+	// PathBiasProbeUnsent means no probe reached the circuit, so the result
+	// carries no reachability signal. Examples: the circuit died before the
+	// BEGIN was written, no StreamID was left, or the caller's context was
+	// already done. The zero value is deliberately "nothing was measured".
+	PathBiasProbeUnsent PathBiasProbeResult = iota
+	// PathBiasProbeMatched means the exit echoed the probe's nonce in a
+	// REASON_EXITPOLICY RELAY_END on the probe's reserved StreamID.
+	PathBiasProbeMatched
+	// PathBiasProbeMismatched means the probe was sent but not confirmed: a
+	// RELAY_END with another reason or nonce, an unexpected relay cell on the
+	// probe StreamID, or a wait interrupted by cancellation, deadline, or
+	// circuit loss. A sent probe is never reported as a success without the
+	// nonce echo.
+	PathBiasProbeMismatched
+)
+
+func (r PathBiasProbeResult) String() string {
+	switch r {
+	case PathBiasProbeUnsent:
+		return "unsent"
+	case PathBiasProbeMatched:
+		return "matched"
+	case PathBiasProbeMismatched:
+		return "mismatched"
+	default:
+		return "unknown"
+	}
+}
+
+// PathBiasProber is the optional path-bias probe capability. It is
+// deliberately not part of Circ: a circuit may be usable without exposing it,
+// and callers must type-assert. PathBiasProbe reserves a fresh never-reused
+// StreamID without creating a Stream, sends the probe to the circuit's last
+// hop, and returns after the echo, an interruption, or a send failure. Reuse
+// of the probe StreamID is impossible, so a normal Stream never receives the
+// probe's RELAY_END. The caller owns circuit lifetime; C Tor closes the
+// circuit after the probe is answered.
+type PathBiasProber interface {
+	PathBiasProbe(ctx context.Context) (PathBiasProbeResult, error)
+}
+
+// StreamFailureReasoner is the optional capability exposing the relay END
+// reason received in response to the most recent failed stream attachment
+// attempt (path-spec §7.2); zero means no failed attempt was recorded.
+// Callers combine it with PathBiasProber: a bare usage attempt whose stream
+// attempt failed with DESTROY, TORPROTOCOL, or INTERNAL must not be probed
+// and is declared a usage failure directly. Every other reason, and the
+// absence of a recorded reason, keeps the bare attempt eligible for the
+// close-time probe. The base Circ interface is deliberately unchanged.
+type StreamFailureReasoner interface {
+	StreamFailureReason() uint8
+}
+
 // ServiceCirc adds the service-side operations. The adapter owns the incoming
 // stream queue and the circuit nonce; applications cannot replace either.
 type ServiceCirc interface {

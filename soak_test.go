@@ -8,6 +8,9 @@ import (
 )
 
 func TestSoakBoundedCircuitLoop(t *testing.T) {
+	if testing.Short() {
+		t.Skip("bounded soak loop runs repeatedly; run without -short")
+	}
 	conn := newTestConn(t)
 	destroys := make(chan testDestroy, 32)
 	serveFast(t, conn, false, destroys)

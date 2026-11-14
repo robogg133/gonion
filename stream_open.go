@@ -20,6 +20,9 @@ func (s *Stream) beginDir() error {
 	case relayCell := <-s.InboundControl:
 		if relayCell.ID() != relay.COMMAND_CONNECTED {
 			log.Error().Uint8("cmd", relayCell.ID()).Msg("BEGIN_DIR expected CONNECTED")
+			if end, ok := relayCell.(*relay.RelayEndCell); ok {
+				s.circuit.rememberStreamFailure(end.Reason)
+			}
 			return Publicf(ErrStream, "BEGIN_DIR failed: expected CONNECTED, got command %d", relayCell.ID())
 		}
 		log.Debug().Msg("BEGIN_DIR connected")
@@ -47,6 +50,7 @@ func (s *Stream) begin(addrport string) error {
 		if relayCell.ID() != relay.COMMAND_CONNECTED {
 			if end, ok := relayCell.(*relay.RelayEndCell); ok {
 				log.Error().Uint8("reason", end.Reason).Msg("BEGIN rejected with RELAY_END")
+				s.circuit.rememberStreamFailure(end.Reason)
 				return Publicf(ErrStream, "BEGIN rejected: %s", relay.EndReasonString(end.Reason))
 			}
 			log.Error().Uint8("cmd", relayCell.ID()).Msg("BEGIN expected CONNECTED")

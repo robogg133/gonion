@@ -1,6 +1,10 @@
 package relay
 
-import "io"
+import (
+	"bytes"
+	"fmt"
+	"io"
+)
 
 const COMMAND_RELAY_END uint8 = 3
 
@@ -26,6 +30,12 @@ const (
 type RelayEndCell struct {
 	StreamID uint16
 	Reason   uint8
+	// Payload retains the bytes that follow the reason octet (tor-spec 6.3).
+	// REASON_EXITPOLICY appends an IPv4 (4 bytes) or IPv6 (16 bytes) address
+	// followed by a 4-byte TTL. It is nil for the common reason-only END and
+	// for an empty END, so encoding a reason-only cell is byte-identical to
+	// the historical single-octet encoding.
+	Payload []byte
 }
 
 func (*RelayEndCell) ID() uint8              { return COMMAND_RELAY_END }
@@ -33,23 +43,60 @@ func (c *RelayEndCell) GetStreamID() uint16  { return c.StreamID }
 func (c *RelayEndCell) SetStreamID(n uint16) { c.StreamID = n }
 
 func (c *RelayEndCell) Encode(w io.Writer) error {
-	_, err := w.Write([]byte{c.Reason})
+	if len(c.Payload) > RELAY_BODY_LEN-1 {
+		return fmt.Errorf("relay: RELAY_END payload of %d bytes exceeds the %d-byte bound", len(c.Payload), RELAY_BODY_LEN-1)
+	}
+	if _, err := w.Write([]byte{c.Reason}); err != nil {
+		return err
+	}
+	if len(c.Payload) == 0 {
+		return nil
+	}
+	_, err := w.Write(c.Payload)
 	return err
 }
 func (c *RelayEndCell) Decode(r io.Reader) error {
-	var b [1]byte
-	_, err := io.ReadFull(r, b[:])
-	if err == io.EOF {
-		// tor-spec 6.3: empty RELAY_END is treated as REASON_MISC.
-		c.Reason = END_REASON_MISC
-		return nil
-	}
+	// The whole END payload is retained, so read at most one byte beyond the
+	// relay body instead of trusting the caller's reader. The frame decoder
+	// already limits the reader to the declared payload length.
+	body, err := io.ReadAll(io.LimitReader(r, RELAY_BODY_LEN+1))
 	if err != nil {
 		return err
 	}
+	if len(body) == 0 {
+		// tor-spec 6.3: empty RELAY_END is treated as REASON_MISC.
+		c.Reason = END_REASON_MISC
+		c.Payload = nil
+		return nil
+	}
+	if len(body) > RELAY_BODY_LEN {
+		return fmt.Errorf("relay: RELAY_END payload of %d bytes exceeds the %d-byte bound", len(body), RELAY_BODY_LEN)
+	}
 	// Unknown reasons are accepted: future Tor versions may add some.
-	c.Reason = b[0]
+	c.Reason = body[0]
+	if len(body) == 1 {
+		c.Payload = nil
+		return nil
+	}
+	c.Payload = bytes.Clone(body[1:])
 	return nil
+}
+
+// EchoedIPv4 returns the IPv4 address echoed after the reason octet of an
+// EXITPOLICY RELAY_END (tor-spec 6.3: Reason | IPv4 or IPv6 | TTL), without
+// the TTL. It is the structurally parsed field C Tor's
+// pathbias_check_probe_response compares against the probe nonce.
+//
+// ok is false when the payload cannot hold a complete IPv4 address plus TTL
+// (fewer than 8 bytes) or is shaped like the 16-byte IPv6 form (20 bytes or
+// more). The reason octet is not inspected: callers that require EXITPOLICY
+// must check Reason themselves.
+func (c *RelayEndCell) EchoedIPv4() (addr [4]byte, ok bool) {
+	if len(c.Payload) < 8 || len(c.Payload) >= 20 {
+		return addr, false
+	}
+	copy(addr[:], c.Payload[:4])
+	return addr, true
 }
 
 // RELAY_TRUNCATED (tor-spec 6.1, command 9) is a backward control cell

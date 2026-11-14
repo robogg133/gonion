@@ -603,11 +603,11 @@ func TestPathBiasCloseEventLostOnFailedSave(t *testing.T) {
 	}
 }
 
-// probeWatchCircuit counts stream attachments so tests can prove that no
-// path-spec §7.2 close-time probe is ever sent through this circuit API: the
-// END-echo probe cannot be verified here (no END payload, no structured END
-// result, no interruptible probe deadline), so a bare usage attempt at close
-// must classify directly and conservatively as a usage failure instead.
+// probeWatchCircuit counts stream attachments and deliberately does not
+// implement PathBiasProber, so tests can pin the conservative fallback: a
+// circuit without the probe capability never sends a §7.2 close-time probe,
+// and a bare usage attempt at close classifies directly and conservatively as
+// a usage failure instead.
 type probeWatchCircuit struct {
 	*guardTestCircuit
 	wmu     sync.Mutex
@@ -640,9 +640,10 @@ func (b *probeWatchBuilder) BuildPath(_ uint32, relays []*common.RouterStatus) (
 	return b.watch, nil
 }
 
-// path-spec §7.2 outcomes without the END-echo probe: the probe stream is
-// never sent (neither at client close nor at a premature close), and the bare
-// usage attempt is therefore counted as a usage failure — never as a success.
+// path-spec §7.2 outcomes for a circuit without the probe capability: no
+// probe stream is ever sent (neither at client close nor at a premature
+// close), and the bare usage attempt is therefore counted as a usage failure
+// — never as a success.
 func TestPathBiasEndEchoProbeUnavailableClassifiesConservatively(t *testing.T) {
 	t.Run("client-close-bare-attempt", func(t *testing.T) {
 		cns := testutil.Consensus(t, time.Now())
@@ -725,6 +726,255 @@ func TestPathBiasEndEchoProbeUnavailableClassifiesConservatively(t *testing.T) {
 			t.Fatalf("unused close attached %d streams", got)
 		}
 	})
+}
+
+// probingCircuit exposes the optional PathBiasProber capability over the fake
+// guard-test circuit and records every probe with the context it was given.
+type probingCircuit struct {
+	*guardTestCircuit
+	pmu    sync.Mutex
+	probes int
+	result PathBiasProbeResult
+	err    error
+	ctxs   []context.Context
+	alive  []bool // ctx.Err() == nil at each call
+	// failReason is what the optional StreamFailureReasoner capability
+	// reports; zero means no failed stream attempt was recorded.
+	failReason uint8
+}
+
+// StreamFailureReason implements the optional capi.StreamFailureReasoner
+// capability with the canned reason.
+func (c *probingCircuit) StreamFailureReason() uint8 { return c.failReason }
+
+func (c *probingCircuit) PathBiasProbe(ctx context.Context) (PathBiasProbeResult, error) {
+	c.pmu.Lock()
+	c.probes++
+	c.ctxs = append(c.ctxs, ctx)
+	c.alive = append(c.alive, ctx.Err() == nil)
+	c.pmu.Unlock()
+	return c.result, c.err
+}
+
+func (c *probingCircuit) probeCount() int {
+	c.pmu.Lock()
+	defer c.pmu.Unlock()
+	return c.probes
+}
+
+func (c *probingCircuit) lastProbeCtx() context.Context {
+	c.pmu.Lock()
+	defer c.pmu.Unlock()
+	if len(c.ctxs) == 0 {
+		return nil
+	}
+	return c.ctxs[len(c.ctxs)-1]
+}
+
+func (c *probingCircuit) lastProbeAlive() bool {
+	c.pmu.Lock()
+	defer c.pmu.Unlock()
+	return len(c.alive) > 0 && c.alive[len(c.alive)-1]
+}
+
+type probingBuilder struct {
+	guardTestBuilder
+	probe *probingCircuit
+}
+
+func (b *probingBuilder) BuildPath(_ uint32, relays []*common.RouterStatus) (Circ, error) {
+	b.selected = relays[0].NodeID
+	if b.resultErr != nil {
+		return nil, b.resultErr
+	}
+	return b.probe, nil
+}
+
+// probingGuardedCircuit returns a wrapped circuit whose inner circuit
+// implements PathBiasProber with a canned probe result and reports failReason
+// through the optional StreamFailureReasoner capability.
+func probingGuardedCircuit(t *testing.T, purpose path.BuildPurpose, result PathBiasProbeResult, err error, failReason uint8) (Circ, *probingCircuit, [20]byte, func() path.GuardSnapshot) {
+	t.Helper()
+	cns := testutil.Consensus(t, time.Now())
+	m, snap := testGuardManager(t, nil)
+	life, cancel := context.WithCancel(context.Background())
+	inner := &guardTestCircuit{ctx: life, cancel: cancel}
+	probe := &probingCircuit{guardTestCircuit: inner, result: result, err: err, failReason: failReason}
+	b := &probingBuilder{guardTestBuilder: guardTestBuilder{guards: m}, probe: probe}
+	got, _, err := BuildGuardedCircuit(context.Background(), b, cns, 1, 3, 80, nil, false, purpose)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return got, probe, b.selected, snap
+}
+
+// path-spec §7.2: a bare usage attempt is probed with the END echo before the
+// close classification, and a matched nonce echo finalizes the usage success
+// instead of the conservative unusable classification.
+func TestPathBiasCloseProbeMatchedClassifiesUseSuccess(t *testing.T) {
+	w, probe, id, snap := probingGuardedCircuit(t, path.PurposeCounted, PathBiasProbeMatched, nil, 0)
+	if _, err := w.NewStream("dest.example.invalid", 1); err == nil {
+		t.Fatal("expected stream error")
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got := probe.probeCount(); got != 1 {
+		t.Fatalf("close ran %d probes, want 1", got)
+	}
+	probeCtx := probe.lastProbeCtx()
+	if probeCtx == nil {
+		t.Fatal("probe ran without a context")
+	} else if _, ok := probeCtx.Deadline(); !ok {
+		t.Fatal("probe context is not bounded by a deadline")
+	}
+	if !probe.lastProbeAlive() {
+		t.Fatal("probe context was already dead at call time")
+	}
+	want := path.GuardPathBias{CircAttempts: 1, CircSuccesses: 1, UseAttempts: 1, UseSuccesses: 1, SuccessfulCircuitsClosed: 1}
+	if got := biasRecord(snap(), id); got != want {
+		t.Fatalf("counters %+v, want %+v", got, want)
+	}
+}
+
+// An unsent, mismatched or errored probe never rescues the bare attempt: the
+// close classification stays the conservative usage failure.
+func TestPathBiasCloseProbeFailureClassifiesUseFailed(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		result PathBiasProbeResult
+		err    error
+	}{
+		{"mismatched", PathBiasProbeMismatched, nil},
+		{"unsent", PathBiasProbeUnsent, errors.New("stream ids exhausted")},
+		{"send interrupted", PathBiasProbeUnsent, context.DeadlineExceeded},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w, probe, id, snap := probingGuardedCircuit(t, path.PurposeCounted, tc.result, tc.err, 0)
+			if _, err := w.NewStream("dest.example.invalid", 1); err == nil {
+				t.Fatal("expected stream error")
+			}
+			if err := w.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if got := probe.probeCount(); got != 1 {
+				t.Fatalf("close ran %d probes, want 1", got)
+			}
+			want := path.GuardPathBias{CircAttempts: 1, CircSuccesses: 1, UseAttempts: 1, UnusableCircuits: 1}
+			if got := biasRecord(snap(), id); got != want {
+				t.Fatalf("counters %+v, want %+v", got, want)
+			}
+		})
+	}
+}
+
+// path-spec §7.2: a bare usage attempt whose stream attempt failed with
+// DESTROY, TORPROTOCOL, or INTERNAL is not probed and is declared a usage
+// failure, even when the prober would report a nonce match.
+func TestPathBiasStreamFailureReasonExcludesProbe(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		reason uint8
+	}{
+		{"destroy", relay.END_REASON_DESTROY},
+		{"torprotocol", relay.END_REASON_TORPROTOCOL},
+		{"internal", relay.END_REASON_INTERNAL},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w, probe, id, snap := probingGuardedCircuit(t, path.PurposeCounted, PathBiasProbeMatched, nil, tc.reason)
+			if _, err := w.NewStream("dest.example.invalid", 1); err == nil {
+				t.Fatal("expected stream error")
+			}
+			if err := w.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if got := probe.probeCount(); got != 0 {
+				t.Fatalf("excluded reason ran %d probes, want 0", got)
+			}
+			want := path.GuardPathBias{CircAttempts: 1, CircSuccesses: 1, UseAttempts: 1, UnusableCircuits: 1}
+			if got := biasRecord(snap(), id); got != want {
+				t.Fatalf("counters %+v, want %+v", got, want)
+			}
+		})
+	}
+}
+
+// Every other recorded relay END reason, and the absence of a recorded
+// reason, leaves the bare usage attempt eligible for the close-time probe.
+func TestPathBiasEligibleReasonsStillProbe(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		reason uint8
+	}{
+		{"connectionrefused", relay.END_REASON_CONNECTIONREFUSED},
+		{"exitpolicy", relay.END_REASON_EXITPOLICY},
+		{"none", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w, probe, id, snap := probingGuardedCircuit(t, path.PurposeCounted, PathBiasProbeMatched, nil, tc.reason)
+			if _, err := w.NewStream("dest.example.invalid", 1); err == nil {
+				t.Fatal("expected stream error")
+			}
+			if err := w.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if got := probe.probeCount(); got != 1 {
+				t.Fatalf("eligible reason ran %d probes, want 1", got)
+			}
+			want := path.GuardPathBias{CircAttempts: 1, CircSuccesses: 1, UseAttempts: 1, UseSuccesses: 1, SuccessfulCircuitsClosed: 1}
+			if got := biasRecord(snap(), id); got != want {
+				t.Fatalf("counters %+v, want %+v", got, want)
+			}
+		})
+	}
+}
+
+// A premature close never probes (path-spec §7.2): the circuit died first,
+// its classification already ran through the death hook, and the later client
+// Close must not send a probe into a dead circuit.
+func TestPathBiasPrematureCloseNeverProbes(t *testing.T) {
+	w, probe, id, snap := probingGuardedCircuit(t, path.PurposeCounted, PathBiasProbeMatched, nil, 0)
+	if _, err := w.NewStream("dest.example.invalid", 1); err == nil {
+		t.Fatal("expected stream error")
+	}
+	probe.cancel()
+	deadline := time.Now().Add(2 * time.Second)
+	for biasRecord(snap(), id).UnusableCircuits != 1 {
+		if time.Now().After(deadline) {
+			t.Fatal("premature close was not accounted")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got := probe.probeCount(); got != 0 {
+		t.Fatalf("premature close ran %d probes, want 0", got)
+	}
+	want := path.GuardPathBias{CircAttempts: 1, CircSuccesses: 1, UseAttempts: 1, UnusableCircuits: 1}
+	if got := biasRecord(snap(), id); got != want {
+		t.Fatalf("counters %+v, want %+v", got, want)
+	}
+}
+
+// A purpose C's pathbias_should_count excludes never probes at close, even
+// with a bare usage attempt on a live circuit and a prober present.
+func TestPathBiasExcludedPurposeNeverProbes(t *testing.T) {
+	for _, purpose := range []path.BuildPurpose{path.PurposeRendezvousJoin, path.PurposeClientIntro} {
+		w, probe, id, snap := probingGuardedCircuit(t, purpose, PathBiasProbeMatched, nil, 0)
+		if _, err := w.NewStream("dest.example.invalid", 1); err == nil {
+			t.Fatal("expected stream error")
+		}
+		if err := w.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if got := probe.probeCount(); got != 0 {
+			t.Fatalf("excluded purpose ran %d probes, want 0", got)
+		}
+		if got := biasRecord(snap(), id); got != (path.GuardPathBias{}) {
+			t.Fatalf("excluded purpose persisted counters %+v", got)
+		}
+	}
 }
 
 // All HS circuit purposes through the guarded seam: the counted purpose

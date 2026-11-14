@@ -75,7 +75,22 @@ func (a circAdapter) AppendE2EHop(Kf, Kb, Df, Db []byte) error {
 	return a.c.AppendE2EHop(Kf, Kb, Df, Db)
 }
 
-func (a circAdapter) Close() error                                 { return a.c.Close() }
+func (a circAdapter) Close() error { return a.c.Close() }
+
+// PathBiasProbe implements the optional capi.PathBiasProber capability. The
+// base capi.Circ interface is deliberately unchanged.
+func (a circAdapter) PathBiasProbe(ctx context.Context) (capi.PathBiasProbeResult, error) {
+	return a.c.PathBiasProbe(ctx)
+}
+
+var _ capi.PathBiasProber = circAdapter{}
+
+// StreamFailureReason implements the optional capi.StreamFailureReasoner
+// capability over the gonion circuit.
+func (a circAdapter) StreamFailureReason() uint8 { return a.c.StreamFailureReason() }
+
+var _ capi.StreamFailureReasoner = circAdapter{}
+
 func (a circAdapter) EstablishIntro(auth ed25519.PrivateKey) error { return a.c.EstablishIntro(auth) }
 func (a circAdapter) JoinRendezvous(cookie [20]byte, reply, Kf, Kb, Df, Db []byte, address string) error {
 	return a.c.JoinRendezvous(cookie, reply, Kf, Kb, Df, Db, address)

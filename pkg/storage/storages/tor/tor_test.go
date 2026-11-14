@@ -13,6 +13,9 @@ import (
 )
 
 func TestStoreReload(t *testing.T) {
+	if testing.Short() {
+		t.Skip("consensus storage round-trip parses large fixtures; run without -short")
+	}
 	for _, tc := range []struct{ fixture, name string }{{"consensus.txt", cachedConsensusFile}, {"consensus-microdesc.txt", cachedMicrodescConsensusFile}} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -75,6 +78,9 @@ func TestD21NewRequiresDirectory(t *testing.T) {
 }
 
 func TestD21SyncRenameFailure(t *testing.T) {
+	if testing.Short() {
+		t.Skip("consensus storage failure path parses large fixtures; run without -short")
+	}
 	for name, hook := range map[string]func(error) func(){
 		"sync": func(e error) func() {
 			old := syncDir
@@ -114,6 +120,9 @@ func TestD21StaleTempIgnored(t *testing.T) {
 }
 
 func TestD21EqualEpochConflict(t *testing.T) {
+	if testing.Short() {
+		t.Skip("consensus storage conflict path parses large fixtures; run without -short")
+	}
 	dir := t.TempDir()
 	data, _ := os.ReadFile("../../../../internal/tests/consensus.txt")
 	c, _ := (usual.Parser{}).Parse(bytes.NewReader(data))
@@ -138,6 +147,9 @@ func TestD21EqualEpochConflict(t *testing.T) {
 }
 
 func TestD21AlteredHydratedFieldsNotTrusted(t *testing.T) {
+	if testing.Short() {
+		t.Skip("consensus storage reauthentication parses large fixtures; run without -short")
+	}
 	dir := t.TempDir()
 	data, _ := os.ReadFile("../../../../internal/tests/consensus-microdesc.txt")
 	c, _ := (usual.Parser{}).Parse(bytes.NewReader(data))
@@ -171,6 +183,9 @@ func TestD21PartialJSON(t *testing.T) {
 }
 
 func TestD21OriginalByteReauthentication(t *testing.T) {
+	if testing.Short() {
+		t.Skip("consensus storage reauthentication parses large fixtures; run without -short")
+	}
 	dir := t.TempDir()
 	data, _ := os.ReadFile("../../../../internal/tests/consensus-microdesc.txt")
 	c, _ := (usual.Parser{}).Parse(bytes.NewReader(data))
@@ -190,6 +205,9 @@ func TestD21OriginalByteReauthentication(t *testing.T) {
 }
 
 func TestRejectMislabeledCache(t *testing.T) {
+	if testing.Short() {
+		t.Skip("mislabeled-cache check reads full consensus fixture; run without -short")
+	}
 	data, err := os.ReadFile("../../../../internal/tests/consensus-microdesc.txt")
 	if err != nil {
 		t.Fatal(err)

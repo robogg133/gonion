@@ -18,16 +18,16 @@ import (
 
 var ErrGuardPersistence = errors.New("path: durable public guard persistence is required")
 
-// ErrGuardPathBias rejects the only guard configuration this implementation
-// cannot honor honestly: a consensus with pb_dropguards != 0. Dropping a guard
-// for an extreme rate (path-spec §7.4) is evaluated against the usage success
-// rate, and that rate is only meaningful when path-spec §7.2's close-time
-// END-echo probe can rescue circuits whose streams failed while the path was
-// healthy. The probe requires a structured RELAY_END with its nonce echo, which
-// the capi circuit API cannot express (see PathBiasUseFailed), so enabling the
-// action would disable guards from a measurement that systematically
-// undercounts usage successes. The error is deliberately not relaxed: the
-// configuration stays explicitly unsupported and fails closed (path-spec §7.5).
+// ErrGuardPathBias is retained only for source compatibility; nothing returns
+// it anymore. While the path-spec §7.2 close-time END-echo probe had no
+// implementation, a consensus with pb_dropguards != 0 was rejected with this
+// error: dropping a guard for an extreme rate (path-spec §7.4) is evaluated
+// against the usage success rate, which is only meaningful when circuits whose
+// streams failed while the path was healthy can first be rescued by the
+// probe's nonce echo. The probe now exists (PathBiasProbeResult and
+// PathBiasProber in pkg/hs/capi, PathBiasProbe on the gonion circuit), so the
+// extreme-rate disable action is enforced and no guard configuration is
+// rejected for it (path-spec §7.5).
 var ErrGuardPathBias = errors.New("path: pb_dropguards guard dropping is unsupported without the path-spec §7.2 END-echo probe")
 
 // GuardPersistence is separate from the directory cache. Load returns nil only
@@ -66,10 +66,10 @@ type GuardRecord struct {
 // path-spec §7.3 scaling and §7.4 rate evaluation: construction and usage
 // attempts, successes, and the informational close classifications are
 // recorded per lease from explicit events, never inferred from generic
-// builder/stream errors. The §7.2 END-echo probe and the pb_dropguards disable
-// action remain explicitly unsupported (ErrGuardPathBias); the rate tiers for
-// the supported pb_dropguards=0 configuration are reported through
-// GuardManager.SetPathBiasObserver.
+// builder/stream errors. The §7.4 rate tiers are reported through
+// GuardManager.SetPathBiasObserver; with pb_dropguards enabled, a
+// PathBiasExtreme or PathBiasUseExtreme crossing additionally persists
+// Disabled=true in the same durable save, and the guard stops being selected.
 type GuardPathBias struct {
 	UseAttempts              float64 `json:"use_attempts"`
 	UseSuccesses             float64 `json:"use_successes"`
@@ -117,25 +117,25 @@ const (
 	// observed; the usage success is finalized and the close counted.
 	PathBiasUseSuccess
 	// PathBiasUseFailed: the circuit closed while its last state was a bare
-	// usage attempt without recognized activity. path-spec §7.2 would send a
-	// RELAY_BEGIN with a 0.a.b.c:25 nonce destination first and count a
-	// nonce-matching RELAY_END as a usage success. This implementation cannot
-	// verify that echo: the capi circuit API exposes neither the END payload
-	// (RelayEndCell decoding keeps only the reason octet) nor a structured END
-	// result from NewStream, and NewStream offers no interruptible probe
-	// deadline (it can block for the full stream-open timeout inside Close).
-	// No probe is sent and the bare attempt is counted directly as a
-	// failure. The deviation is conservative — it never converts a failure
-	// into a success — and it is why pb_dropguards enforcement stays
-	// explicitly unsupported (ErrGuardPathBias).
+	// usage attempt without recognized activity. path-spec §7.2 sends a
+	// RELAY_BEGIN with a 0.a.b.c:25 nonce destination first and counts a
+	// nonce-matching RELAY_END as a usage success. That probe now exists
+	// (PathBiasProber in pkg/hs/capi, implemented by the gonion circuit), and
+	// the guard-lease wrapper runs it at close when the wrapped circuit
+	// exposes it: a matched echo marks the usage recognized so the close
+	// classifies as PathBiasUseSuccess instead. A circuit without the
+	// capability, and an unsent, mismatched or interrupted probe, classify the
+	// bare attempt directly as a failure. That fallback stays conservative —
+	// it never converts a failure into a success.
 	PathBiasUseFailed
 )
 
 // PathBiasThreshold is one path-spec §7.4 rate tier a guard's counters
-// crossed. With the supported pb_dropguards=0 configuration the specified
-// enforcement is warning-only: C Tor emits these as log messages, and Gonion
-// reports each crossing once per guard and tier through
-// GuardManager.SetPathBiasObserver.
+// crossed. Every crossing is reported once per guard and tier through
+// GuardManager.SetPathBiasObserver. With the default pb_dropguards=0 the
+// specified enforcement is warning-only, exactly as C Tor's log messages;
+// with pb_dropguards enabled, a PathBiasExtreme or PathBiasUseExtreme
+// crossing also disables the guard durably.
 type PathBiasThreshold uint8
 
 const (
@@ -164,9 +164,9 @@ type PathBiasObservation struct {
 }
 
 // GuardManager implements the unrestricted public-default guard state. Pinned
-// bridges do not use this manager. Path-bias accounting, scaling and rate
-// observation are supplied by this manager; the pb_dropguards disable action
-// fails explicitly (ErrGuardPathBias).
+// bridges do not use this manager. Path-bias accounting, scaling, rate
+// observation and the pb_dropguards extreme-rate disable action are supplied
+// by this manager.
 type GuardManager struct {
 	mu           sync.Mutex
 	persistence  GuardPersistence
@@ -433,11 +433,6 @@ func (m *GuardManager) reconcile(ctx context.Context, cns *common.Consensus) err
 	if err := sl.checkConsensus(); err != nil {
 		return err
 	}
-	// path-spec §7.4 pb_dropguards is the one unsupported bias configuration;
-	// see pathBiasEnforcementSupported.
-	if err := pathBiasEnforcementSupported(sl.consensus); err != nil {
-		return err
-	}
 	if !m.state.LastValidAfter.IsZero() && sl.consensus.ValidAfter.Before(m.state.LastValidAfter) {
 		return fmt.Errorf("path: consensus predates persisted guard directory epoch")
 	}
@@ -544,20 +539,13 @@ func sampleableGuardRemaining(sl *Selector, guards map[[20]byte]*common.RouterSt
 	return false
 }
 
-// pathBiasEnforcementSupported rejects the consensus parameter configuration
-// whose enforcement this implementation cannot reproduce: pb_dropguards != 0
-// (path-spec §7.4). The disable action depends on the §7.2 END-echo usage
-// probe, which the circuit API cannot express, so the configuration fails
-// closed and never relaxes ErrGuardPathBias. With the supported default (0),
-// §7.3 scaling and the §7.4 warning-only rate tiers run normally. Parameter
-// clamping follows C's pathbias_get_dropguards: negative values clamp to 0
-// (disabled) and are accepted; positive out-of-range values clamp to 1 and
-// are rejected.
-func pathBiasEnforcementSupported(cns *common.Consensus) error {
-	if cns != nil && cns.Parameter("pb_dropguards", 0, 0, 1) != 0 {
-		return ErrGuardPathBias
-	}
-	return nil
+// pathBiasDropGuardsEnabled reports whether the consensus enables the
+// path-spec §7.4 pb_dropguards disable action. Parameter clamping follows C's
+// pathbias_get_dropguards: negative values clamp to 0 (disabled) and
+// out-of-range positive values clamp to 1 (enabled), so every accepted
+// consensus honors one of the two documented behaviors and none is rejected.
+func pathBiasDropGuardsEnabled(cns *common.Consensus) bool {
+	return cns != nil && cns.Parameter("pb_dropguards", 0, 0, 1) != 0
 }
 
 // GuardLease owns one build and its fixed tail restriction. Close releases the
@@ -889,12 +877,15 @@ const (
 // pathBiasParams carries the path-spec §7.4 consensus parameters with C Tor's
 // circpathbias.c defaults and networkstatus_get_param clamps. C clamps the
 // percentage parameters to [0,100] rather than the document's Min values so a
-// zero rate can disable a tier; that deployed behavior is kept.
+// zero rate can disable a tier; that deployed behavior is kept. dropGuards is
+// the clamped pb_dropguards flag: when set, an extreme construction or usage
+// rate disables the guard instead of only warning.
 type pathBiasParams struct {
 	minCircs, noticePct, warnPct, extremePct int
 	minUse, noticeUsePct, extremeUsePct      int
 	scaleCircs, scaleUse                     int
 	scaleNumerator, scaleDenominator         int
+	dropGuards                               bool
 }
 
 func pathBiasRatio(p pathBiasParams) float64 {
@@ -922,6 +913,7 @@ func (m *GuardManager) biasParams() pathBiasParams {
 	p.scaleUse = cns.Parameter("pb_scaleuse", 100, 10, 1<<31-1)
 	p.scaleDenominator = cns.Parameter("pb_scalefactor", 2, 2, 1<<31-1)
 	p.scaleNumerator = cns.Parameter("pb_multfactor", 1, 1, int32(p.scaleDenominator))
+	p.dropGuards = pathBiasDropGuardsEnabled(cns)
 	return p
 }
 
@@ -1001,12 +993,14 @@ func scaleUsage(p pathBiasParams, b *GuardPathBias, openUse int) {
 
 // biasCounters persists one path-bias mutation for this lease's guard,
 // running the path-spec §7.4 measurement and §7.3 scaling before the
-// triggering increment (C's pathbias_measure_*/pathbias_scale_* order). It
-// returns success without writing when the sampled guard expired while the
-// circuit lived: the record and its counters are already gone. A failed Save
-// poisons the manager exactly like a failed confirmation; scale and measure
-// results are discarded with the uncommitted copy, and the observation is
-// reported only after the save commits.
+// triggering increment (C's pathbias_measure_*/pathbias_scale_* order). With
+// pb_dropguards enabled, an extreme construction or usage rate also disables
+// the guard in this same durable snapshot, on every measurement and not only
+// when a tier is first observed. It returns success without writing when the
+// sampled guard expired while the circuit lived: the record and its counters
+// are already gone. A failed Save poisons the manager exactly like a failed
+// confirmation; scale and measure results are discarded with the uncommitted
+// copy, and the observation is reported only after the save commits.
 func (l *GuardLease) biasCounters(event biasEvent, update func(*GuardPathBias), once *bool) error {
 	if l == nil || l.manager == nil {
 		return fmt.Errorf("path: guard lease has no manager")
@@ -1053,22 +1047,42 @@ func (l *GuardLease) biasCounters(event biasEvent, update func(*GuardPathBias), 
 	if rt != nil {
 		openBuilt, openUse = rt.openBuilt, rt.openUse
 	}
+	var p pathBiasParams
 	var observed PathBiasObservation
+	var extreme bool
 	switch event {
 	case biasEventBuildFailed, biasEventBuildSuccess:
-		p := m.biasParams()
-		if tier, ok := constructionTier(p, &record.PathBias, openBuilt); ok && rt != nil && rt.biasTiers&(1<<tier) == 0 {
-			observed = PathBiasObservation{Identity: l.identity, Threshold: tier, Attempts: record.PathBias.CircAttempts, Successes: record.PathBias.SuccessfulCircuitsClosed + float64(openBuilt)}
+		p = m.biasParams()
+		if tier, ok := constructionTier(p, &record.PathBias, openBuilt); ok {
+			extreme = tier == PathBiasExtreme
+			// The observer notification stays once per tier and runtime; the
+			// disable decision below must not inherit that gate, because C
+			// evaluates pathbias_get_dropguards on every measurement.
+			if rt != nil && rt.biasTiers&(1<<tier) == 0 {
+				observed = PathBiasObservation{Identity: l.identity, Threshold: tier, Attempts: record.PathBias.CircAttempts, Successes: record.PathBias.SuccessfulCircuitsClosed + float64(openBuilt)}
+			}
 		}
 		scaleConstruction(p, &record.PathBias, openBuilt)
 	case biasEventUseAttempt:
-		p := m.biasParams()
-		if tier, ok := usageTier(p, &record.PathBias, openUse); ok && rt != nil && rt.biasTiers&(1<<tier) == 0 {
-			observed = PathBiasObservation{Identity: l.identity, Threshold: tier, Attempts: record.PathBias.UseAttempts, Successes: record.PathBias.UseSuccesses + float64(openUse)}
+		p = m.biasParams()
+		if tier, ok := usageTier(p, &record.PathBias, openUse); ok {
+			extreme = tier == PathBiasUseExtreme
+			if rt != nil && rt.biasTiers&(1<<tier) == 0 {
+				observed = PathBiasObservation{Identity: l.identity, Threshold: tier, Attempts: record.PathBias.UseAttempts, Successes: record.PathBias.UseSuccesses + float64(openUse)}
+			}
 		}
 		scaleUsage(p, &record.PathBias, openUse)
 	case biasEventClose:
 		// C performs no measurement or scaling at close classification.
+	}
+	// The pb_dropguards disable action (path-spec §7.4, C's
+	// pathbias_get_dropguards) persists with the triggering measurement save:
+	// every measurement while the rate is below an extreme percentage sets
+	// Disabled in the same durable snapshot as the increment, not only the
+	// increment that first observes the tier, and the existing Disabled
+	// filtering then keeps the guard out of every later selection.
+	if extreme && p.dropGuards {
+		record.PathBias.Disabled = true
 	}
 	update(&record.PathBias)
 	if err := m.save(context.Background(), next); err != nil {
@@ -1154,9 +1168,13 @@ func (l *GuardLease) PathBiasUseAttempted() error {
 // PathBiasCircuitClosed records the terminal close classification selected by
 // the circuit wrapper: closed-and-unused, collapsed, unusable, or a finalized
 // usage success with the successful close. Per path-spec §7.2 a bare usage
-// attempt is probed with an END echo before classification; that probe is not
-// expressible through the circuit API, so PathBiasUseFailed is the conservative
-// direct classification. Path-bias counters are not guard reachability;
+// attempt is probed with an END echo before classification; the wrapper sends
+// that probe when the wrapped circuit exposes the PathBiasProber capability
+// and the recorded stream failure reason is not one of the excluded §7.2
+// codes (DESTROY, TORPROTOCOL, INTERNAL), and reclassifies a matched echo as
+// PathBiasUseSuccess before calling this, so PathBiasUseFailed here means the
+// probe was absent, unsent, mismatched, interrupted, or excluded by the
+// stream failure reason. Path-bias counters are not guard reachability;
 // nothing here changes the reachability or confirmation state.
 func (l *GuardLease) PathBiasCircuitClosed(kind PathBiasClose) error {
 	err := l.biasCounters(biasEventClose, func(b *GuardPathBias) {

@@ -151,6 +151,9 @@ func newControlledBridge(t *testing.T, echo, stall bool) *controlledBridge {
 // a controlled local obfs4 bridge and proves the returned connection carries
 // the mandatory RSA identity pin that embed's CERTS verification enforces.
 func TestControlledObfs4PinnedBridgeFlow(t *testing.T) {
+	if testing.Short() {
+		t.Skip("controlled obfs4 handshake is heavy; run without -short")
+	}
 	t.Parallel()
 	br := newControlledBridge(t, true, false)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -189,6 +192,9 @@ func TestControlledObfs4PinnedBridgeFlow(t *testing.T) {
 // enforced by the ntor handshake: a valid-looking bridge line for a
 // *different* key pair cannot complete against this bridge.
 func TestControlledObfs4RejectsForeignCertificate(t *testing.T) {
+	if testing.Short() {
+		t.Skip("controlled obfs4 handshake is heavy; run without -short")
+	}
 	t.Parallel()
 	br := newControlledBridge(t, true, false)
 	other := newControlledBridge(t, false, false)
@@ -204,6 +210,9 @@ func TestControlledObfs4RejectsForeignCertificate(t *testing.T) {
 // TestControlledObfs4HandshakeCancellation proves ctx bounds a stalled
 // handshake and the connection attempt is not orphaned.
 func TestControlledObfs4HandshakeCancellation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("controlled obfs4 handshake is heavy; run without -short")
+	}
 	t.Parallel()
 	br := newControlledBridge(t, false, true)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
