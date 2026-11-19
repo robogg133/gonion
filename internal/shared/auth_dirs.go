@@ -93,4 +93,12 @@ var Authorities = []DirectoryAuthority{
 		V3Ident:     "70849B868D606BAECFB6128C5E3D782029AA394F ",
 		Fingerprint: "E3E42D35F801C9D5AB23584E0025D56FE2B33396",
 	},
+	{
+		Nickname:    "sekhmet",
+		ORPort:      443,
+		IPv4:        "204.13.164.118",
+		DirPort:     80,
+		V3Ident:     "E30CF7B3DFA63FBDC5FC9E46EC75C543AB6D7403 ",
+		Fingerprint: "27326CD9AF0C39259CFB383CAFC50F5CEB0D8906",
+	},
 }
